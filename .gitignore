@@ -1,0 +1,7 @@
+node_modules
+dist
+public/ort
+.model-cache
+.model-cache-node
+*.log
+test-results

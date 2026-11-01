@@ -1,0 +1,18 @@
+Photo Tagger – third-party components
+
+Code (all permissively licensed, bundled or loaded at run time):
+  - Transformers.js (@huggingface/transformers) – Apache-2.0
+  - ONNX Runtime Web (onnxruntime-web) – MIT
+  - React / React DOM – MIT
+  - exifr – MIT
+  - idb – ISC
+  - Vite, vite-plugin-pwa, Workbox – MIT
+
+Model (downloaded from Hugging Face at first use, not stored in this repository):
+  - CLIP ViT-B/32 by OpenAI – MIT licence (https://github.com/openai/CLIP)
+  - ONNX conversion and quantisations: Xenova/clip-vit-base-patch32 – MIT (https://huggingface.co/Xenova/clip-vit-base-patch32)
+
+Sample photos in samples/ (used only by tests and screenshots):
+  - Public-domain / CC0 images from Wikimedia Commons. Per-file sources are in samples/ATTRIBUTION.md.
+
+Dropbox is a trademark of Dropbox, Inc. This project is not affiliated with or endorsed by Dropbox, OpenAI or Hugging Face.

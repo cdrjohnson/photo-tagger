@@ -1,0 +1,406 @@
+// End-to-end tests (Playwright + Chromium) against the production build served by `vite preview`.
+// Real CLIP model, real sample photos (samples/), real IndexedDB. Hugging Face files are cached on disk after the first run.
+// Run: npm run build && npm run test:e2e
+import fs from 'node:fs/promises'
+import path from 'node:path'
+import { devices } from 'playwright'
+import { launch, makeScreenshotSample, ROOT, sample, startPreview, URL_BASE } from './testkit.mjs'
+
+const results = []
+let current = ''
+const T0 = Date.now()
+let beforeEach = async () => {}
+async function test(name, fn) {
+  current = name
+  const t = Date.now()
+  try { await beforeEach(); await fn(); results.push({ name, ok: true, ms: Date.now() - t }); console.log(`  ✓ ${name} (${((Date.now() - t) / 1000).toFixed(1)}s)`) }
+  catch (e) { results.push({ name, ok: false, ms: Date.now() - t, error: String(e.message ?? e).split('\n')[0] }); console.log(`  ✗ ${name}\n      ${String(e.message ?? e).split('\n').slice(0, 4).join('\n      ')}`) }
+}
+const eq = (a, b, m = '') => { if (JSON.stringify(a) !== JSON.stringify(b)) throw new Error(`${m} expected ${JSON.stringify(b)}, got ${JSON.stringify(a)}`) }
+const ok = (c, m) => { if (!c) throw new Error(m) }
+
+const srv = await startPreview()
+const { browser, context } = await launch()
+await makeScreenshotSample(browser)
+const FILES = ['dog.jpg', 'cat.jpg', 'beach.jpg', 'city.jpg', 'pizza.jpg', 'mountain.jpg', 'person.jpg', 'document.jpg',
+  'blurry-mountain.jpg', 'dark-city.jpg', 'bright-beach.jpg', 'geotagged-cat.jpg', 'screenshot.png']
+
+// Dropbox is stubbed: the Chooser script and the direct-link host are served locally.
+await context.route('https://www.dropbox.com/static/api/2/dropins.js', (r) => r.fulfill({
+  contentType: 'text/javascript',
+  body: `window.__dbxKey = document.getElementById('dropboxjs').dataset.appKey;
+         window.Dropbox = { choose(o){ o.success([{ name: 'from-dropbox.jpg', link: 'https://dl.dropboxusercontent.com/s/test/from-dropbox.jpg', bytes: 1 }]) } }`,
+}))
+await context.route('https://dl.dropboxusercontent.com/**', async (r) => r.fulfill({
+  contentType: 'image/jpeg', headers: { 'access-control-allow-origin': '*' }, body: await fs.readFile(sample('mountain.jpg')),
+}))
+
+const page = await context.newPage()
+const errors = []
+page.on('pageerror', (e) => errors.push(e.message))
+page.on('dialog', (d) => d.accept())
+
+const tile = (n) => page.locator(`[data-testid=photo-tile][data-name="${n}"]`)
+const tagsOf = async (n) => ((await tile(n).getAttribute('data-tags')) ?? '').split('|').filter(Boolean)
+const names = async () => (await page.getByTestId('photo-tile').evaluateAll((els) => els.map((e) => e.dataset.name))).sort()
+const waitReady = (n, timeout = 300_000) => page.waitForFunction((n) => document.querySelectorAll('[data-testid=photo-tile][data-status=ready]').length >= n, n, { timeout })
+const chip = async (tag) => {
+  const c = page.locator(`[data-testid=tag-chip][data-tag="${tag}"]`)
+  if (!(await c.count()) && (await page.getByTestId('all-tags').count())) { if ((await page.getByTestId('all-tags').textContent()).startsWith('All')) await page.getByTestId('all-tags').click() }
+  return c
+}
+const clearFilters = async () => { if (await page.getByTestId('clear-filters').count()) await page.getByTestId('clear-filters').click() }
+const openSettings = async (tab) => { await page.getByTestId('open-settings').click(); if (tab) await page.getByTestId(`tab-${tab}`).click() }
+const closeSettings = () => page.getByTestId('settings-close').click()
+beforeEach = async () => {
+  if (page.url() === 'about:blank') return
+  for (const id of ['detail-close', 'settings-close', 'bulk-close', 'sel-cancel']) { const b = page.getByTestId(id); if (await b.count()) await b.first().click().catch(() => {}) }
+  if (await page.getByTestId('clear-filters').count()) await page.getByTestId('clear-filters').click()
+}
+const settled = () => page.waitForFunction(() => !document.querySelector('[data-testid=job-label]') || /Done/.test(document.querySelector('[data-testid=job-label]').textContent), null, { timeout: 300_000 })
+
+console.log('\nDesktop (Chromium 1280×860)')
+
+await test('app shell loads, shows empty state, manifest + service worker are present', async () => {
+  await page.goto(URL_BASE)
+  await page.getByTestId('empty').waitFor()
+  const man = await (await fetch(URL_BASE + 'manifest.webmanifest')).json()
+  eq(man.name, 'Photo Tagger'); eq(man.display, 'standalone')
+  eq([man.start_url, man.scope], ['/photo-tagger/', '/photo-tagger/'], 'manifest start_url/scope')
+  eq(await page.evaluate(() => navigator.serviceWorker.ready.then((r) => new URL(r.scope).pathname)), '/photo-tagger/', 'service worker scope')
+  ok((await fetch(URL_BASE + 'ort/ort-wasm-simd-threaded.wasm')).ok && (await fetch(URL_BASE + 'ort/ort-wasm-simd-threaded.mjs')).ok, 'wasm under base')
+  ok(man.icons.length >= 3, 'icons')
+  for (const i of man.icons) ok((await fetch(URL_BASE + i.src)).ok, `icon ${i.src}`)
+  ok(await page.evaluate(() => navigator.serviceWorker.ready.then((r) => !!r.active)), 'service worker active')
+  eq(await page.locator('link[rel=manifest]').count(), 1)
+})
+
+await test('ingest: 13 photos through the file picker are decoded, tagged on-device and shown', async () => {
+  await page.getByTestId('file-input').setInputFiles(FILES.map(sample))
+  await waitReady(13)
+  eq((await names()).length, 13)
+  const okImgs = await page.locator('[data-testid=photo-tile] img').evaluateAll((els) => els.filter((i) => i.complete && i.naturalWidth > 0).length)
+  eq(okImgs, 13, 'thumbnails rendered')
+  eq(errors, [], 'page errors')
+})
+
+await test('auto-tags match what is in the photos (CLIP zero-shot)', async () => {
+  const expect = { 'dog.jpg': ['dog', 'pets'], 'cat.jpg': ['cat', 'pets'], 'pizza.jpg': ['pizza', 'food'], 'city.jpg': ['city'],
+    'beach.jpg': ['beach'], 'mountain.jpg': ['mountain'], 'person.jpg': ['people'], 'document.jpg': ['document'], 'screenshot.png': ['screenshot'] }
+  const miss = []
+  for (const [f, want] of Object.entries(expect)) {
+    const got = await tagsOf(f)
+    for (const w of want) if (!got.includes(w)) miss.push(`${f} missing "${w}" (got ${got.join(', ')})`)
+  }
+  eq(miss, [], 'tag mismatches')
+})
+
+await test('EXIF (camera, year, GPS) and quality (blur, dark, bright) tags', async () => {
+  const g = await tagsOf('geotagged-cat.jpg')
+  for (const t of ['geotagged', 'samplecam sample phone 1', '2021', 'cat']) ok(g.includes(t), `geotagged-cat.jpg lacks ${t}: ${g}`)
+  ok((await tagsOf('blurry-mountain.jpg')).includes('blurry'), 'blurry')
+  ok(!(await tagsOf('mountain.jpg')).includes('blurry'), 'sharp mountain not blurry')
+  ok((await tagsOf('dark-city.jpg')).includes('dark'), 'dark')
+  ok(!(await tagsOf('dark-city.jpg')).includes('blurry'), 'dark-but-sharp city is not "blurry"')
+  ok((await tagsOf('bright-beach.jpg')).includes('bright'), 'bright')
+  ok(!(await tagsOf('city.jpg')).includes('dark') && !(await tagsOf('city.jpg')).includes('bright'), 'normal exposure')
+})
+
+await test('tag chip filter with AND / OR', async () => {
+  await (await chip('pets')).click()
+  eq(await names(), ['cat.jpg', 'dog.jpg', 'geotagged-cat.jpg'], 'pets')
+  eq((await page.getByTestId('count').textContent()), '3 of 13')
+  await (await chip('geotagged')).click()
+  eq(await names(), ['geotagged-cat.jpg'], 'AND')
+  await page.getByTestId('mode-or').click()
+  eq(await names(), ['cat.jpg', 'dog.jpg', 'geotagged-cat.jpg'], 'OR')
+  await page.getByTestId('mode-and').click()
+  await clearFilters()
+  eq((await names()).length, 13)
+})
+
+await test('search box, quality filter and date range', async () => {
+  await page.getByTestId('search').fill('pizza')
+  eq(await names(), ['pizza.jpg'], 'search tag')
+  await page.getByTestId('search').fill('sample phone')
+  eq(await names(), ['geotagged-cat.jpg'], 'search camera')
+  await page.getByTestId('search').fill('')
+  await page.getByTestId('quality').selectOption('blurry'); eq(await names(), ['blurry-mountain.jpg'], 'blurry')
+  await page.getByTestId('quality').selectOption('dark'); eq(await names(), ['dark-city.jpg'], 'dark')
+  await page.getByTestId('quality').selectOption('bright'); eq(await names(), ['bright-beach.jpg', 'screenshot.png'], 'bright (a white UI screenshot is bright too)')
+  await page.getByTestId('quality').selectOption('good')
+  const good = await names()
+  ok(!good.includes('blurry-mountain.jpg') && !good.includes('dark-city.jpg') && !good.includes('bright-beach.jpg') && good.length >= 8, `good only: ${good}`)
+  await page.getByTestId('quality').selectOption('any')
+  await page.getByTestId('date-from').fill('2021-01-01'); await page.getByTestId('date-to').fill('2021-12-31')
+  eq(await names(), ['geotagged-cat.jpg'], 'date range (EXIF date 4 Jul 2021)')
+  await clearFilters()
+})
+
+await test('tag counts in the chip bar are faceted by the other filters', async () => {
+  await page.getByTestId('search').fill('cat')
+  const c = await (await chip('pets')).locator('small').textContent()
+  eq(c, '2', 'pets count within "cat" search')
+  await page.getByTestId('search').fill('')
+})
+
+await test('detail view: edit tags by hand, navigate, persists across reload', async () => {
+  await tile('dog.jpg').click()
+  await page.getByTestId('detail').waitFor()
+  eq(await page.getByTestId('detail-name').textContent(), 'dog.jpg')
+  await page.getByTestId('detail-img').waitFor()
+  await page.getByTestId('detail-tag-input').fill('my pet, good boy'); await page.getByTestId('detail-tag-input').press('Enter')
+  const dt = (t) => page.locator(`[data-testid=detail-tag][data-tag="${t}"]`)
+  await dt('my pet').waitFor(); await dt('good boy').waitFor()
+  await dt('animals').locator('[data-testid=remove-tag]').click()
+  await dt('animals').waitFor({ state: 'detached' })
+  await page.getByTestId('detail-next').click()
+  ok((await page.getByTestId('detail-name').textContent()) !== 'dog.jpg', 'moved to next photo')
+  await page.keyboard.press('ArrowLeft')
+  eq(await page.getByTestId('detail-name').textContent(), 'dog.jpg')
+  await page.keyboard.press('Escape')
+  await page.getByTestId('detail').waitFor({ state: 'detached' })
+  await page.reload(); await page.getByTestId('grid').waitFor()
+  const t = await tagsOf('dog.jpg')
+  ok(t.includes('my pet') && t.includes('good boy') && !t.includes('animals'), `after reload: ${t}`)
+  eq((await names()).length, 13, 'library persisted')
+  await (await chip('my pet')).click(); eq(await names(), ['dog.jpg']); await clearFilters()
+})
+
+await test('multi-select + bulk tagging (and bulk removal)', async () => {
+  await page.getByTestId('select-mode').click()
+  await tile('city.jpg').locator('[data-testid=tile-check]').click()
+  await tile('beach.jpg').locator('[data-testid=tile-check]').click()
+  eq(await page.getByTestId('sel-count').textContent(), '2 selected')
+  await page.getByTestId('bulk-tag').click()
+  await page.getByTestId('bulk-input').fill('holiday trip'); await page.getByTestId('bulk-input').press('Enter')
+  await page.locator('[data-testid=bulk-tag-chip][data-tag="holiday trip"]').waitFor()
+  await page.getByTestId('bulk-close').click()
+  await (await chip('holiday trip')).click(); eq(await names(), ['beach.jpg', 'city.jpg']); await clearFilters()
+})
+
+let exportedJson
+await test('export tags as JSON and CSV', async () => {
+  await openSettings('data')
+  const [dj] = await Promise.all([page.waitForEvent('download'), page.getByTestId('export-json').click()])
+  exportedJson = await fs.readFile(await dj.path(), 'utf8')
+  const j = JSON.parse(exportedJson)
+  eq(j.app, 'photo-tagger'); eq(j.photos.length, 13)
+  const dog = j.photos.find((p) => p.name === 'dog.jpg')
+  ok(dog.tags.some((t) => t.name === 'my pet' && t.source === 'manual') && dog.tags.some((t) => t.name === 'dog' && t.source === 'auto'), 'dog tags in JSON')
+  const [dc] = await Promise.all([page.waitForEvent('download'), page.getByTestId('export-csv').click()])
+  const csv = await fs.readFile(await dc.path(), 'utf8')
+  const lines = csv.trim().split(/\r?\n/)
+  eq(lines[0], 'name,size,taken,camera,latitude,longitude,source,tags'); eq(lines.length, 14)
+  ok(lines.some((l) => l.startsWith('geotagged-cat.jpg') && l.includes('48.858') && l.includes('geotagged')), 'geotag row in CSV')
+  await closeSettings()
+})
+
+await test('import tags from JSON (restores removed tags) and from CSV (merges new ones)', async () => {
+  // remove the bulk tag, then restore it from the exported JSON
+  await page.getByTestId('select-mode').click()
+  await tile('city.jpg').locator('[data-testid=tile-check]').click(); await tile('beach.jpg').locator('[data-testid=tile-check]').click()
+  await page.getByTestId('bulk-tag').click()
+  await page.locator('[data-testid=bulk-tag-chip][data-tag="holiday trip"] [data-testid=bulk-remove]').click()
+  await page.getByTestId('bulk-close').click(); await page.getByTestId('sel-cancel').click()
+  ok(!(await tagsOf('city.jpg')).includes('holiday trip'), 'removed')
+  const jp = path.join(ROOT, 'test-results', 'tags.json'); await fs.mkdir(path.dirname(jp), { recursive: true }); await fs.writeFile(jp, exportedJson)
+  await openSettings('data'); await page.getByTestId('import-input').setInputFiles(jp); await closeSettings()
+  await page.waitForFunction(() => document.querySelector('[data-name="city.jpg"]')?.dataset.tags.includes('holiday trip'))
+  ok((await tagsOf('beach.jpg')).includes('holiday trip'), 'restored on beach too')
+  const cp = path.join(ROOT, 'test-results', 'tags.csv')
+  await fs.writeFile(cp, 'name,tags\r\ncat.jpg,"cuddly;Fluffy Friend"\r\nnot-in-library.jpg,x\r\n')
+  await openSettings('data'); await page.getByTestId('import-input').setInputFiles(cp); await closeSettings()
+  await page.waitForFunction(() => document.querySelector('[data-name="cat.jpg"]')?.dataset.tags.includes('fluffy friend'))
+  ok((await tagsOf('cat.jpg')).includes('cuddly'), 'csv tag')
+  ok((await tagsOf('cat.jpg')).includes('cat'), 'existing tags kept')
+})
+
+await test('vocabulary: switch a built-in label off and back on, re-tags the library', async () => {
+  ok((await tagsOf('dog.jpg')).includes('dog'))
+  await openSettings('vocab')
+  await page.getByTestId('label-dog').uncheck()
+  await closeSettings() // closing applies changes
+  await page.waitForFunction(() => !document.querySelector('[data-name="dog.jpg"]')?.dataset.tags.split('|').includes('dog'), null, { timeout: 60_000 })
+  const t = await tagsOf('dog.jpg')
+  ok(t.includes('my pet'), 'manual tags survive re-tagging')
+  await openSettings('vocab'); await page.getByTestId('label-dog').check(); await closeSettings()
+  await page.waitForFunction(() => document.querySelector('[data-name="dog.jpg"]')?.dataset.tags.split('|').includes('dog'), null, { timeout: 60_000 })
+  ok(!(await tagsOf('dog.jpg')).includes('animals'), 'a tag you removed by hand stays removed')
+})
+
+await test('vocabulary: add a custom label (text model loads on demand) and apply it', async () => {
+  await openSettings('vocab')
+  await page.getByTestId('custom-label').fill('skyline')
+  await page.getByTestId('custom-prompt').fill('a photo of a city skyline')
+  await page.getByTestId('custom-add').click()
+  await page.locator('[data-testid=custom-chip]', { hasText: 'skyline' }).waitFor({ timeout: 300_000 })
+  await page.waitForFunction(() => !document.querySelector('[data-testid=custom-add]')?.disabled || document.querySelector('[data-testid=custom-add]')?.textContent === 'Add label', null, { timeout: 300_000 })
+  await page.getByTestId('retag-all').click()
+  await settled()
+  await page.waitForFunction(() => document.querySelector('[data-name="city.jpg"]')?.dataset.tags.split('|').includes('skyline'), null, { timeout: 120_000 })
+  await closeSettings()
+  await settled()
+  ok((await tagsOf('city.jpg')).includes('skyline'), 'custom tag on city')
+})
+
+await test('Dropbox: without a key the button explains setup; with a key it imports via the Chooser', async () => {
+  await page.getByTestId('add-btn').click(); await page.getByTestId('add-dropbox').click()
+  await page.getByTestId('settings-note').waitFor()
+  ok((await page.getByTestId('origin').textContent()).startsWith('http://127.0.0.1'), 'shows domain to whitelist')
+  await page.getByTestId('dropbox-key').fill('test_app_key_123'); await page.getByTestId('dropbox-save').click()
+  await closeSettings()
+  await page.waitForFunction(() => window.__dbxKey === 'test_app_key_123')
+  await page.getByTestId('add-btn').click(); await page.getByTestId('add-dropbox').click()
+  await tile('from-dropbox.jpg').waitFor({ timeout: 60_000 })
+  await page.waitForFunction(() => document.querySelector('[data-name="from-dropbox.jpg"]')?.dataset.status === 'ready', null, { timeout: 120_000 })
+  ok((await tagsOf('from-dropbox.jpg')).includes('mountain'), 'tagged')
+  await tile('from-dropbox.jpg').click()
+  await page.getByText('Dropbox', { exact: true }).waitFor()
+  await page.keyboard.press('Escape')
+})
+
+await test('duplicate photos are skipped; non-images are ignored', async () => {
+  const before = (await names()).length
+  await page.getByTestId('file-input').setInputFiles([sample('dog.jpg'), sample('ATTRIBUTION.md')])
+  await page.waitForTimeout(800)
+  eq((await names()).length, before)
+})
+
+await test('delete a photo from the detail view', async () => {
+  const before = (await names()).length
+  await tile('from-dropbox.jpg').click()
+  await page.getByTestId('delete-photo').click()
+  await page.waitForFunction((n) => document.querySelectorAll('[data-testid=photo-tile]').length === n, before - 1)
+})
+
+await test('no page errors on desktop', async () => { eq(errors, []) })
+
+// ---------- mobile ----------
+console.log('\nMobile (iPhone 13 viewport, touch)')
+const iphone = devices['iPhone 13']
+const mctx = await browser.newContext({ viewport: iphone.viewport, userAgent: iphone.userAgent, deviceScaleFactor: iphone.deviceScaleFactor, isMobile: true, hasTouch: true, acceptDownloads: true })
+const { routeModel } = await import('./testkit.mjs')
+await routeModel(mctx)
+const m = await mctx.newPage()
+const merrors = []
+m.on('pageerror', (e) => merrors.push(e.message))
+const noOverflow = async (label) => ok(await m.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), `horizontal overflow on ${label}`)
+
+await test('mobile: empty state, camera/camera-roll inputs, no horizontal overflow', async () => {
+  await m.goto(URL_BASE)
+  await m.getByTestId('empty').waitFor()
+  await noOverflow('empty')
+  await m.getByTestId('add-btn').click()
+  ok(await m.getByTestId('add-camera').isVisible(), 'camera option visible on touch devices')
+  ok(!(await m.getByTestId('add-folder').isVisible()), 'folder option hidden on touch devices')
+  eq(await m.getByTestId('camera-input').getAttribute('capture'), 'environment')
+  eq(await m.getByTestId('file-input').getAttribute('accept'), 'image/*')
+  await m.keyboard.press('Escape'); await m.mouse.click(5, 300)
+})
+
+await test('mobile: ingest via camera input, grid is 3 columns, filters collapse into a panel', async () => {
+  await m.getByTestId('camera-input').setInputFiles(sample('pizza.jpg'))
+  await m.getByTestId('file-input').setInputFiles(['dog.jpg', 'beach.jpg', 'city.jpg', 'blurry-mountain.jpg'].map(sample))
+  await m.waitForFunction(() => document.querySelectorAll('[data-testid=photo-tile][data-status=ready]').length >= 5, null, { timeout: 300_000 })
+  const cols = await m.getByTestId('grid').evaluate((g) => getComputedStyle(g).gridTemplateColumns.split(' ').length)
+  eq(cols, 3)
+  await noOverflow('grid')
+  ok(!(await m.getByTestId('quality').isVisible()), 'advanced filters collapsed')
+  await m.getByTestId('more-filters').click()
+  ok(await m.getByTestId('quality').isVisible(), 'advanced filters open')
+  await m.getByTestId('quality').selectOption('blurry')
+  eq(await m.getByTestId('photo-tile').count(), 1)
+  await m.getByTestId('clear-filters').click()
+  await m.getByTestId('more-filters').click()
+  const tiles = await m.getByTestId('photo-tile').evaluateAll((els) => els.map((e) => Math.round(e.getBoundingClientRect().width)))
+  ok(tiles.every((w) => w >= 100), `tile widths ${tiles}`)
+})
+
+await test('mobile: tap a chip to filter; long-press a photo to start multi-select', async () => {
+  await m.locator('[data-testid=tag-chip][data-tag="food"]').first().tap()
+  eq(await m.getByTestId('photo-tile').count(), 1)
+  await m.getByTestId('clear-filters').tap()
+  const el = m.locator('[data-testid=photo-tile][data-name="dog.jpg"]')
+  await el.evaluate(async (e) => {
+    const t = (type) => e.dispatchEvent(new TouchEvent(type, { bubbles: true, cancelable: true }))
+    t('touchstart'); await new Promise((r) => setTimeout(r, 750)); t('touchend')
+  })
+  await m.getByTestId('selbar').waitFor()
+  eq(await m.getByTestId('sel-count').textContent(), '1 selected')
+  await noOverflow('selection bar')
+  await m.getByTestId('sel-cancel').tap()
+})
+
+await test('mobile: detail view fits the screen and tags can be edited', async () => {
+  await m.locator('[data-testid=photo-tile][data-name="dog.jpg"]').tap()
+  await m.getByTestId('detail').waitFor()
+  await m.getByTestId('detail-img').waitFor()
+  await noOverflow('detail')
+  const box = await m.getByTestId('detail-img').boundingBox()
+  ok(box.width <= iphone.viewport.width && box.height > 120, `image box ${JSON.stringify(box)}`)
+  await m.getByTestId('detail-tag-input').fill('phone tag'); await m.getByTestId('detail-tag-input-add').tap()
+  await m.locator('[data-testid=detail-tag][data-tag="phone tag"]').waitFor()
+  await m.getByTestId('detail-close').tap()
+})
+
+await test('mobile: settings sheet and Dropbox instructions are usable', async () => {
+  await m.getByTestId('open-settings').tap()
+  await m.getByTestId('tab-dropbox').tap()
+  ok(await m.getByTestId('dropbox-key').isVisible())
+  await noOverflow('settings')
+  await m.getByTestId('settings-close').tap()
+})
+
+await test('mobile: library survives a reload (IndexedDB)', async () => {
+  await m.reload(); await m.getByTestId('grid').waitFor()
+  eq(await m.getByTestId('photo-tile').count(), 5)
+  ok((await m.locator('[data-testid=photo-tile][data-name="dog.jpg"]').getAttribute('data-tags')).includes('phone tag'))
+})
+
+await test('no page errors on mobile', async () => { eq(merrors, []) })
+
+// ---------- dark mode ----------
+console.log('\nDark mode')
+await test('follows the system dark preference and can be toggled', async () => {
+  const dctx = await browser.newContext({ colorScheme: 'dark', viewport: { width: 1000, height: 700 } })
+  const d = await dctx.newPage()
+  await d.goto(URL_BASE); await d.getByTestId('empty').waitFor()
+  eq(await d.evaluate(() => document.documentElement.dataset.theme), 'dark')
+  eq(await d.evaluate(() => getComputedStyle(document.body).backgroundColor), 'rgb(15, 17, 23)')
+  await d.getByTestId('theme').click() // auto -> light
+  eq(await d.evaluate(() => document.documentElement.dataset.theme), 'light')
+  await d.getByTestId('theme').click() // light -> dark
+  eq(await d.evaluate(() => document.documentElement.dataset.theme), 'dark')
+  await dctx.close()
+})
+
+// ---------- offline ----------
+console.log('\nOffline / PWA')
+await test('after first use the app opens and tags new photos with the network off', async () => {
+  await page.goto(URL_BASE); await page.getByTestId('grid').waitFor()
+  await page.evaluate(() => navigator.serviceWorker.ready)
+  // make sure the ONNX runtime has been cached by the service worker (it was fetched during tagging)
+  await page.reload(); await page.getByTestId('grid').waitFor()
+  await context.setOffline(true)
+  try {
+    await page.reload(); await page.getByTestId('grid').waitFor({ timeout: 20_000 })
+    const before = (await names()).length
+    await page.getByTestId('file-input').setInputFiles(sample('geotagged-cat.jpg').replace('geotagged-cat', 'bright-beach'))
+    await page.waitForTimeout(500)
+    eq((await names()).length, before, 'dedupe while offline')
+    // a new, distinct file name -> must be tagged offline
+    const copy = path.join(ROOT, 'test-results', 'offline-pizza.jpg'); await fs.copyFile(sample('pizza.jpg'), copy)
+    await page.getByTestId('file-input').setInputFiles(copy)
+    await tile('offline-pizza.jpg').waitFor({ timeout: 20_000 })
+    await page.waitForFunction(() => document.querySelector('[data-name="offline-pizza.jpg"]')?.dataset.status === 'ready', null, { timeout: 120_000 })
+    ok((await tagsOf('offline-pizza.jpg')).includes('pizza'), 'tagged offline')
+  } finally { await context.setOffline(false) }
+})
+
+await browser.close(); srv.kill()
+const pass = results.filter((r) => r.ok).length
+console.log(`\n${pass}/${results.length} tests passed in ${((Date.now() - T0) / 1000).toFixed(0)}s`)
+await fs.mkdir('test-results', { recursive: true })
+await fs.writeFile('test-results/e2e-report.json', JSON.stringify({ date: new Date().toISOString(), pass, total: results.length, results }, null, 2))
+process.exit(pass === results.length ? 0 : 1)

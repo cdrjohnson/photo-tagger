@@ -1,0 +1,117 @@
+# Photo Tagger – user guide
+
+Photo Tagger looks at each photo, writes down what's in it as **tags** ("dog", "beach", "document"…), and lets you find photos by combining those tags. It all happens on your own device: **your photos are never uploaded**.
+
+## 1. Add photos
+
+Tap **＋ Add photos** (top right):
+
+| Option | What it does |
+| --- | --- |
+| **Choose photos** | Opens your camera roll / gallery (on a phone) or a file picker (on a computer). Select as many as you like. |
+| **Take a photo** | Phones: opens the camera and adds the shot. |
+| **Add a folder** | Computers: adds every image inside a folder. |
+| **From Dropbox** | Opens the Dropbox picker. Needs a one-time setup: see [Dropbox setup](DROPBOX_SETUP.md). |
+
+On a computer you can also **drag and drop** images anywhere on the page, or paste an image from the clipboard.
+
+![Add menu](images/desktop-add-menu.png)
+
+The first time, the app downloads its tagging model (about 64 MB) – a progress bar shows this. It is stored in the browser, so this only happens once. Photos you add again later (same name, size and date) are skipped as duplicates.
+
+While a photo is being processed its tile shows *tagging…*; tags appear a moment later.
+
+## 2. What the tags mean
+
+Each photo can carry four kinds of tags, shown with a coloured dot:
+
+- 🟣 **Detected in image** – found by the AI (for example `dog`, `pets`, `beach`, `city`, `screenshot`). In the detail view each shows its confidence.
+- 🟢 **Added by you** – tags you typed yourself.
+- 🟠 **From photo metadata** – the year it was taken, the camera, and `geotagged` if the photo has GPS coordinates.
+- 🔴 **Quality check** – `blurry`, `dark` or `bright`.
+
+## 3. Find photos
+
+![Filtering](images/desktop-filtered.png)
+
+- **Tag chips** (below the search bar) – tap one or more. The number on each chip is how many photos have it *given your other filters*. **All 27** (the number varies) shows every tag.
+- **AND / OR** – with **AND** a photo must have *all* selected tags (`pets` AND `geotagged`); with **OR** it needs *any* of them.
+- **Search** – matches file names, tag names and camera models ("pizza", "iphone").
+- **Quality** – *Good only* hides blurry/dark/bright photos; or show just one of those kinds (handy for clean-up).
+- **From / To** – date range, using the date the photo was taken (EXIF) or the file date if there isn't one.
+- **Sort** – newest, oldest, recently added or by name.
+- **Clear** resets the filters.
+
+On a phone, the date, quality and sort controls fold into the **Filters ▾** button.
+
+## 4. Look at one photo
+
+Tap a photo to open it. From here you can:
+
+![Detail](images/desktop-detail.png)
+
+- **Add a tag**: type in the box and press Enter (separate several with commas; suggestions appear as you type).
+- **Remove a tag**: tap the **×** on it. A detected tag you remove will not come back when you re-tag.
+- See the **date, camera, GPS location** (tap the coordinates to open a map), size, sharpness and brightness.
+- Move between photos with ‹ › (or the ← → keys). **Esc** closes.
+- **Re-run tagging**, **Download** (the original if kept, otherwise the stored copy) or **Delete** (this only removes it from the app).
+
+## 5. Work on many photos at once
+
+Tap **Select** (or press and hold a photo on a phone, or tick the circle that appears on a tile). On a computer, **Shift-click** selects a range.
+
+![Bulk tagging](images/desktop-bulk.png)
+
+The bar at the bottom lets you **Select all** photos matching the current filter, edit **Tags…** (add tags to all selected photos, or remove a tag from all of them), **Export** just those photos' tags, or **Delete** them.
+
+## 6. Settings
+
+Open **⚙️**.
+
+### General
+- **Confidence needed for a tag** – lower gives more tags per photo (and more mistakes); higher gives fewer, safer tags.
+- **Maximum auto-tags per photo.**
+- **Blur / Dark / Bright thresholds** – decide when the quality tags appear. For example, raise the blur threshold to flag more photos as blurry.
+- **Keep full-size originals** – off by default to save space (each photo is stored as a 2048 px copy plus a thumbnail).
+- **Model** – shows whether the model is loaded; you can download it ahead of time (handy on Wi-Fi before you travel).
+
+Changes to tagging settings are applied to your whole library when you close Settings.
+
+### Dropbox
+Paste your Dropbox **app key** here. See [Dropbox setup](DROPBOX_SETUP.md).
+
+### Labels (the vocabulary)
+![Labels](images/desktop-labels.png)
+
+The photos are matched against a list of labels. You can:
+- **Switch labels off** you don't want (for example `wedding`).
+- **Add your own**: type a name ("lighthouse", "bike race", "my dog Rex") and, if you like, a short description such as *a photo of a lighthouse by the sea* – a good description improves accuracy. The first custom label downloads a small text model (about 72 MB, once).
+- **Re-tag library now** applies changes immediately (also done automatically when you close Settings). This is quick, because the app remembers what each photo "looks like".
+- **Reset labels** puts the built-in list back.
+
+### Data
+- **Export JSON / CSV** – saves every photo's tags and metadata (not the images). JSON also keeps your custom labels.
+- **Import JSON or CSV** – add the photos to the app first, then import. Photos are matched by file name (and size); tags are merged with the ones already there. CSV needs `name` and `tags` columns, tags separated by `;`.
+- **Delete all local data** – wipes this app's photos, tags and settings from this browser (asks you to click twice).
+
+## 7. Install it as an app
+
+If the app is served from an https address (see the README):
+
+- **iPhone / iPad:** Safari → Share → *Add to Home Screen*.
+- **Android:** Chrome → ⋮ → *Install app*.
+- **Computer:** click the install icon in the address bar.
+
+Once installed and used once online, it works offline. Use **🌓** (top right) to switch between automatic, light and dark themes.
+
+## 8. Tips and troubleshooting
+
+| Problem | What to try |
+| --- | --- |
+| "Tagging model unavailable" | The model couldn't download (offline?). Photos are kept untagged – connect, then tap **Retry tagging** in the banner. |
+| A tag is wrong | Remove it with ×. Lower-confidence mistakes disappear if you raise *Confidence needed for a tag*. |
+| A photo is missing tags it should have | Lower the confidence threshold, or add a custom label for it. |
+| A photo won't import | The browser may not be able to read that format (for example HEIC on desktop Chrome). Convert to JPEG first. |
+| Photos disappeared | Browser data was cleared, or you opened the app in a different browser/profile – each has its own library. Export your tags regularly. |
+| Dropbox pop-up shows an error | Add this site's address to your Dropbox app's *Chooser / Saver domains* ([steps](DROPBOX_SETUP.md)). |
+| Slow tagging on a phone | Keep the screen on and the app open while it works; photos are processed one by one. |
