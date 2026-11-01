@@ -56,6 +56,7 @@ npx playwright install chromium     # once
 npm run build
 npm run test:e2e                    # 26 end-to-end tests in Chromium
 npm run screenshots                 # regenerates docs/images/*.png
+node scripts/smoke-live.mjs         # smoke-test the deployed site (real network)
 ```
 
 The e2e suite uses the real model and the sample photos in [`samples/`](samples/) (CC0 / public domain, see [`samples/ATTRIBUTION.md`](samples/ATTRIBUTION.md)). Model files are cached under `.model-cache/` after the first run so later runs are quick. Dropbox is exercised against a stubbed Chooser (a real key is not needed and none is used).
