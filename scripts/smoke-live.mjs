@@ -39,7 +39,7 @@ log(`face detection + clustering on live site in ${((Date.now() - t2) / 1000).to
 const fc = page.locator('[data-testid=cluster]', { has: page.locator('.pick[title="biden-2013.jpg"]') })
 await fc.getByTestId('cluster-name').fill('Joe Biden'); await fc.getByTestId('cluster-save').click()
 await page.locator('[data-testid=person-card][data-person="Joe Biden"]').waitFor()
-const faceOk = (await page.locator('[data-testid=person-card][data-person="Joe Biden"] small').textContent()).startsWith('2 photos')
+const faceOk = await page.waitForFunction(() => document.querySelector('[data-testid=person-card][data-person="Joe Biden"] small')?.textContent.startsWith('2 photos'), null, { timeout: 15_000 }).then(() => true, async () => { log('card: ' + await page.locator('[data-testid=person-card] small').first().textContent()); return false })
 log('faces ok: ' + faceOk)
 await page.screenshot({ path: 'docs/images/live-smoke.png' })
 log('model requests: ' + [...new Set(hf)].join(' | '))
