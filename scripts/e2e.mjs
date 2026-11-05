@@ -274,6 +274,162 @@ await test('delete a photo from the detail view', async () => {
   await page.waitForFunction((n) => document.querySelectorAll('[data-testid=photo-tile]').length === n, before - 1)
 })
 
+// ---------- faces / people ----------
+console.log('\nPeople (on-device face recognition)')
+const FACE_FILES = ['biden-2013.jpg', 'biden-2021.jpg', 'biden-2009.jpg', 'obama-biden-2009.jpg', 'obama-portrait.jpg']
+const faceDb = () => page.evaluate(() => new Promise((res) => {
+  const r = indexedDB.open('photo-tagger'); r.onsuccess = () => { const q = r.result.transaction('faces').objectStore('faces').getAll(); q.onsuccess = () => { res(q.result.map((f) => ({ id: f.id, photoId: f.photoId, status: f.status, personId: f.personId ?? null }))); r.result.close() } }
+}))
+const people = (sel = '') => page.locator(`[data-testid=person-card]${sel}`)
+const sugDump = async () => JSON.stringify(await page.locator('[data-testid=suggestion]').evaluateAll((els) => els.map((e) => e.dataset.photo + '@' + e.querySelector('.dist')?.textContent)))
+const sugCount = async () => (await page.getByTestId('suggestion-count').count()) ? Number(await page.getByTestId('suggestion-count').textContent()) : 0
+const setThreshold = (v) => page.getByTestId('face-threshold').evaluate((el, v) => {
+  const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set; set.call(el, String(v)); el.dispatchEvent(new Event('input', { bubbles: true }))
+}, v)
+const goPeople = async () => { await page.getByTestId('view-people').click(); await page.getByTestId('people-view').waitFor() }
+const goPhotos = async () => { await page.getByTestId('view-photos').click(); await page.getByTestId('grid').waitFor() }
+const allScanned = async (n) => { for (let i = 0; i < 300; i++) { if (await page.evaluate((n) => new Promise((res) => { const r = indexedDB.open('photo-tagger'); r.onsuccess = () => { const q = r.result.transaction('photos').objectStore('photos').getAll(); q.onsuccess = () => { res(q.result.length >= n && q.result.every((p) => p.facesScanned)); r.result.close() } } }), n)) return; await page.waitForTimeout(1000) } throw new Error('face scan did not finish') }
+const openPerson = async (n) => { if (!(await page.getByTestId('person-panel').count()) || (await page.locator('[data-testid=person-panel] h3').textContent()) !== n) await people(`[data-person="${n}"]`).click(); await page.getByTestId('person-panel').waitFor() }
+
+await test('faces: portraits are detected on-device and grouped into clusters of the same person', async () => {
+  await page.getByTestId('file-input').setInputFiles(FACE_FILES.map(sample))
+  await waitReady(18)
+  await allScanned(18)
+  await goPeople()
+  await page.waitForFunction(() => !document.querySelector('[data-testid=face-scan-progress]'), null, { timeout: 300_000 })
+  const fs_ = await faceDb()
+  const pn = await page.evaluate(() => new Promise((res) => { const r = indexedDB.open('photo-tagger'); r.onsuccess = () => { const q = r.result.transaction('photos').objectStore('photos').getAll(); q.onsuccess = () => res(Object.fromEntries(q.result.map((p) => [p.id, p.name + ':' + p.faceCount + ':' + p.facesScanned + ':' + p.status]))) } }))
+  eq(fs_.map((f) => pn[f.photoId].split(':')[0]).sort(), ['biden-2009.jpg', 'biden-2013.jpg', 'biden-2021.jpg', 'cat.jpg', 'geotagged-cat.jpg', 'obama-biden-2009.jpg', 'obama-biden-2009.jpg', 'obama-portrait.jpg', 'person.jpg'],
+    'faces: 4 Biden, 2 Obama, 1 distractor person, plus the detector also fires on the (same) cat face ' + JSON.stringify(Object.values(pn)))
+  ok(await page.getByTestId('privacy-note').isVisible(), 'privacy note')
+  const clusters = (await page.getByTestId('cluster').evaluateAll((els) => els.map((e) => e.dataset.photos.split('|').sort().join('|')))).sort()
+  ok(clusters.includes('biden-2009.jpg|biden-2013.jpg|biden-2021.jpg|obama-biden-2009.jpg'), `Biden cluster: ${clusters.join(' / ')}`)
+  ok(clusters.includes('obama-biden-2009.jpg|obama-portrait.jpg'), `Obama cluster: ${clusters.join(' / ')}`)
+  ok(clusters.includes('person.jpg'), `distractor alone: ${clusters.join(' / ')}`)
+  ok(clusters.includes('cat.jpg|geotagged-cat.jpg'), `cat false positives kept apart: ${clusters.join(' / ')}`)
+})
+
+await test('faces: a false positive (cat) can be ignored and stays out of clusters', async () => {
+  for (let i = 0; i < 2; i++) await page.locator('[data-testid=cluster]', { has: page.locator('.pick[title="cat.jpg"], .pick[title="geotagged-cat.jpg"]') }).first().getByTestId('face-ignore').first().click()
+  await page.waitForFunction(() => ![...document.querySelectorAll('[data-testid=cluster]')].some((c) => /cat/.test(c.dataset.photos)))
+  eq(await page.getByTestId('cluster').count(), 3)
+})
+
+await test('faces: name one face, the others are suggested; threshold slider changes suggestions', async () => {
+  const c = page.locator('[data-testid=cluster]', { has: page.locator('.pick[title="biden-2013.jpg"]') })
+  await c.locator('.pick[title="biden-2013.jpg"]').click()
+  await c.getByTestId('cluster-name').fill('Joe Biden'); await c.getByTestId('cluster-save').click()
+  await people('[data-person="Joe Biden"]').waitFor()
+  await page.waitForFunction(() => document.querySelector('[data-testid=suggestion-count]')?.textContent === '3')
+  const sp = (await page.locator('[data-testid=suggestions][data-person="Joe Biden"] [data-testid=suggestion]').evaluateAll((els) => els.map((e) => e.dataset.photo))).length
+  eq(sp, 3)
+  await setThreshold(0.3); await page.waitForTimeout(300)
+  ok((await sugCount()) < 3, `stricter gives fewer: ${await sugCount()}`)
+  await setThreshold(0.7); await page.waitForTimeout(300)
+  eq(await sugCount(), 3, 'looser: still only the 3 Biden faces')
+  await setThreshold(0.5); await page.waitForTimeout(300)
+})
+
+const photoIdOf = (n) => page.evaluate((n) => new Promise((res) => { const r = indexedDB.open('photo-tagger'); r.onsuccess = () => { const q = r.result.transaction('photos').objectStore('photos').getAll(); q.onsuccess = () => { res(q.result.find((p) => p.name === n)?.id); r.result.close() } } }), n)
+
+await test('faces: confirm and reject suggestions; rejections stick across reload and looser thresholds', async () => {
+  const id21 = await photoIdOf('biden-2021.jpg'), id09 = await photoIdOf('biden-2009.jpg')
+  await page.locator(`[data-testid=suggestion][data-photo="${id21}"] [data-testid=suggest-yes]`).click()
+  await page.waitForFunction(() => document.querySelector('[data-testid=suggestion-count]')?.textContent === '2')
+  await page.locator(`[data-testid=suggestion][data-photo="${id09}"] [data-testid=suggest-no]`).click()
+  await page.waitForFunction(() => document.querySelector('[data-testid=suggestion-count]')?.textContent === '1')
+  await page.getByTestId('confirm-all').click()
+  await page.waitForFunction(() => !document.querySelector('[data-testid=suggestion-count]'))
+  await page.reload(); await goPeople(); await setThreshold(0.7); await page.waitForTimeout(500)
+  eq(await sugCount(), 0, 'rejected face not re-suggested ' + await sugDump())
+  await setThreshold(0.5)
+  await goPhotos()
+  for (const n of ['biden-2013.jpg', 'biden-2021.jpg', 'obama-biden-2009.jpg']) ok((await tagsOf(n)).includes('joe biden'), `${n} has person tag`)
+  ok(!(await tagsOf('biden-2009.jpg')).includes('joe biden'), 'rejected photo not tagged')
+})
+
+await test('faces: name a cluster; filter by person with AND / OR and search', async () => {
+  await goPeople()
+  const c = page.locator('[data-testid=cluster]', { has: page.locator('.pick[title="obama-portrait.jpg"]') })
+  await c.getByTestId('cluster-name').fill('Barack Obama'); await c.getByTestId('cluster-save').click()
+  await people('[data-person="Barack Obama"]').waitFor()
+  await goPhotos()
+  await (await chip('joe biden')).click()
+  eq(await names(), ['biden-2013.jpg', 'biden-2021.jpg', 'obama-biden-2009.jpg'])
+  await (await chip('barack obama')).click()
+  eq(await names(), ['obama-biden-2009.jpg'], 'AND')
+  await page.getByTestId('mode-or').click()
+  eq(await names(), ['biden-2013.jpg', 'biden-2021.jpg', 'obama-biden-2009.jpg', 'obama-portrait.jpg'], 'OR')
+  await page.getByTestId('mode-and').click(); await clearFilters()
+  await page.getByTestId('search').fill('obama'); const s = await names(); await page.getByTestId('search').fill('')
+  ok(s.includes('obama-portrait.jpg') && s.includes('obama-biden-2009.jpg'), `search: ${s}`)
+  await goPeople(); await openPerson('Barack Obama'); await page.getByTestId('person-photos').click()
+  await page.getByTestId('grid').waitFor()
+  eq(await names(), ['obama-biden-2009.jpg', 'obama-portrait.jpg'], 'show photos'); await clearFilters()
+})
+
+await test('faces: removing a person tag in the detail view rejects that face', async () => {
+  await tile('biden-2021.jpg').click(); await page.getByTestId('detail').waitFor()
+  ok((await page.getByTestId('face-count').textContent()) === '1', 'face count')
+  await page.locator('[data-testid=detail-tag][data-tag="joe biden"] [data-testid=remove-tag]').click()
+  await page.locator('[data-testid=detail-tag][data-tag="joe biden"]').waitFor({ state: 'detached' })
+  await page.getByTestId('detail-close').click()
+  const id = await photoIdOf('biden-2021.jpg')
+  const f = (await faceDb()).find((x) => x.photoId === id)
+  ok(f.status !== 'confirmed', `status ${f.status}`)
+  await goPeople(); await setThreshold(0.7); await page.waitForTimeout(400)
+  eq(await sugCount(), 0, 'removed face not re-suggested'); await setThreshold(0.5)
+})
+
+await test('people: merge, rename and delete', async () => {
+  const c = page.locator('[data-testid=cluster]', { has: page.locator('.pick[title="biden-2009.jpg"]') })
+  await c.locator('.pick[title="biden-2009.jpg"]').click()
+  await c.getByTestId('cluster-name').fill('J. Biden'); await c.getByTestId('cluster-save').click()
+  await openPerson('J. Biden')
+  await page.getByTestId('person-merge-into').selectOption({ label: 'Joe Biden' }); await page.getByTestId('person-merge').click()
+  await people('[data-person="J. Biden"]').waitFor({ state: 'detached' })
+  await openPerson('Joe Biden')
+  await page.getByTestId('person-rename').fill('President Biden'); await page.getByTestId('person-rename-save').click()
+  await people('[data-person="President Biden"]').waitFor()
+  await openPerson('Barack Obama')
+  await page.getByTestId('person-delete').click(); await page.getByTestId('person-delete').click()
+  await people('[data-person="Barack Obama"]').waitFor({ state: 'detached' })
+  await goPhotos()
+  ok((await tagsOf('biden-2009.jpg')).includes('president biden'), 'merged face tagged with new name')
+  ok(!(await tagsOf('biden-2013.jpg')).includes('joe biden'), 'old name gone')
+  ok(!(await tagsOf('obama-portrait.jpg')).includes('barack obama'), 'deleted person tag removed')
+})
+
+await test('people: JSON and CSV exports include person tags', async () => {
+  await openSettings('data')
+  const [dj] = await Promise.all([page.waitForEvent('download'), page.getByTestId('export-json').click()])
+  const j = JSON.parse(await fs.readFile(await dj.path(), 'utf8'))
+  ok(j.photos.find((p) => p.name === 'biden-2013.jpg').tags.some((t) => t.name === 'president biden' && t.source === 'person'), 'JSON person tag')
+  const [dc] = await Promise.all([page.waitForEvent('download'), page.getByTestId('export-csv').click()])
+  const csv = await fs.readFile(await dc.path(), 'utf8')
+  ok(csv.split(/\r?\n/).some((l) => l.startsWith('biden-2013.jpg') && l.includes('president biden')), 'CSV person tag')
+  await closeSettings()
+})
+
+await test('privacy: recognition off skips new photos; clear deletes all face data; re-enable rescans', async () => {
+  await goPeople()
+  await page.getByTestId('face-enabled').uncheck()
+  await goPhotos()
+  const copy = path.join('/tmp', 'biden-copy.jpg')
+  const buf = await fs.readFile(sample('biden-2013.jpg')); await fs.writeFile(copy, Buffer.concat([buf, Buffer.from('copy')]))
+  await page.getByTestId('file-input').setInputFiles([copy]); await waitReady(19)
+  await tile('biden-copy.jpg').click(); await page.waitForTimeout(500)
+  eq(await page.getByTestId('face-count').textContent(), 'not checked'); await page.getByTestId('detail-close').click()
+  await goPeople(); await page.getByTestId('face-clear').click(); await page.getByTestId('face-clear').click()
+  await page.waitForFunction(() => document.querySelectorAll('[data-testid=person-card]').length === 0)
+  eq((await faceDb()).length, 0, 'faces cleared')
+  await goPhotos(); ok(!(await tagsOf('biden-2013.jpg')).includes('president biden'), 'person tags cleared'); await goPeople()
+  await page.getByTestId('face-enabled').check()
+  await page.getByTestId('face-scan').click()
+  await allScanned(19)
+  eq((await faceDb()).length, 10, '9 detections again (ignores were cleared too) + the copy')
+})
+
 await test('no page errors on desktop', async () => { eq(errors, []) })
 
 // ---------- mobile ----------
@@ -356,6 +512,24 @@ await test('mobile: library survives a reload (IndexedDB)', async () => {
   await m.reload(); await m.getByTestId('grid').waitFor()
   eq(await m.getByTestId('photo-tile').count(), 5)
   ok((await m.locator('[data-testid=photo-tile][data-name="dog.jpg"]').getAttribute('data-tags')).includes('phone tag'))
+})
+
+await test('mobile: People view — find faces, name a cluster, get suggestions, confirm by tap', async () => {
+  await m.getByTestId('file-input').setInputFiles(['biden-2013.jpg', 'biden-2021.jpg', 'obama-portrait.jpg'].map(sample))
+  await m.waitForFunction(() => document.querySelectorAll('[data-testid=photo-tile][data-status=ready]').length >= 8, null, { timeout: 300_000 })
+  await m.getByTestId('view-people').tap(); await m.getByTestId('people-view').waitFor()
+  await m.waitForFunction(() => document.querySelectorAll('[data-testid=cluster]').length >= 2, null, { timeout: 300_000 })
+  await noOverflow('people')
+  ok(await m.getByTestId('privacy-note').isVisible() && await m.getByTestId('face-threshold').isVisible(), 'privacy note + slider visible')
+  const c = m.locator('[data-testid=cluster]', { has: m.locator('.pick[title="biden-2013.jpg"]') })
+  await c.locator('.pick[title="biden-2013.jpg"]').tap()
+  await c.getByTestId('cluster-name').fill('Joe Biden'); await c.getByTestId('cluster-save').tap()
+  await m.getByTestId('suggest-yes').first().waitFor()
+  await m.getByTestId('suggest-yes').first().tap()
+  await m.waitForFunction(() => !document.querySelector('[data-testid=suggestion-count]'))
+  await noOverflow('people with a person')
+  await m.getByTestId('view-photos').tap()
+  ok((await m.locator('[data-testid=photo-tile][data-name="biden-2021.jpg"]').getAttribute('data-tags')).includes('joe biden'), 'person tag on mobile')
 })
 
 await test('no page errors on mobile', async () => { eq(merrors, []) })

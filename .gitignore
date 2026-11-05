@@ -5,3 +5,4 @@ public/ort
 .model-cache-node
 *.log
 test-results
+public/face-models

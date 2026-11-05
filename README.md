@@ -15,7 +15,10 @@ It is an installable web app (PWA) – open it on your laptop or phone, then "in
 <img src="docs/images/mobile-filters.png" width="230" alt="Phone: filters">
 <img src="docs/images/mobile-detail.png" width="230" alt="Phone: detail">
 <img src="docs/images/mobile-dark.png" width="230" alt="Phone: dark mode">
+<img src="docs/images/mobile-people.png" width="230" alt="Phone: People view">
 </p>
+
+![People view: named people, suggestions to confirm, unnamed faces](docs/images/desktop-people.png)
 
 ## Features
 
@@ -27,6 +30,7 @@ It is an installable web app (PWA) – open it on your laptop or phone, then "in
 - **Your own vocabulary**: switch built-in labels off, or add custom labels ("lighthouse", "my dog Rex") and re-tag your whole library instantly.
 - **Filter**: tag chips with counts, **AND / OR**, search box, date range, quality filter, sort. Counts update live as other filters change.
 - **Multi-select** (checkbox, shift-click, long-press on phones) with bulk tag/untag, bulk export and bulk delete.
+- **Face naming (People view)**, on-device: faces are found and fingerprinted in the browser, unnamed faces are **grouped into clusters**, and you **name a face or a whole cluster**. Photo Tagger then **suggests the same person in other photos**, with a **match-strictness slider**. **Confirm or reject** each suggestion (or *Yes to all*); a rejection is remembered and never re-suggested. **Merge, rename and delete** people. Names become **person tags** (their own chip group, listed first) that you can **filter with AND / OR**, search, and that are included in exports. A **privacy toggle** turns recognition off, and **Clear all face data** deletes every face crop, fingerprint and name.
 - **Export / import tags** as **JSON** (everything, including custom labels) or **CSV**.
 - **Storage** in IndexedDB: thumbnail + a 2048 px copy per photo (optionally the full original). Nothing is uploaded.
 - **Responsive**, touch-friendly, **dark mode** (auto / light / dark), keyboard shortcuts in the detail view (←, →, Esc).
@@ -54,7 +58,7 @@ The first time you add a photo the app downloads the tagging model (~64 MB) from
 ```bash
 npx playwright install chromium     # once
 npm run build
-npm run test:e2e                    # 26 end-to-end tests in Chromium
+npm run test:e2e                    # 36 end-to-end tests in Chromium (incl. 9 for faces)
 npm run screenshots                 # regenerates docs/images/*.png
 node scripts/smoke-live.mjs         # smoke-test the deployed site (real network)
 ```
@@ -84,11 +88,16 @@ Your library lives **per browser and per device** (it is stored in that browser'
 | Zero-shot labels | Each label has a few text prompts ("a photo of a dog"…). Their text embeddings are **pre-computed at build time** (`npm run labels:embed`), so only the image tower is downloaded. A photo's image embedding is compared to every label, a softmax gives confidences, and labels above the threshold become tags |
 | Re-tagging | Image embeddings are stored, so changing labels or the threshold re-tags the library instantly without re-running the model |
 | Storage | IndexedDB (via `idb`): photos, thumbnails, 2048 px copies, embeddings, settings |
+| Faces | [`@vladmandic/face-api`](https://github.com/vladmandic/face-api) (MIT) on TensorFlow.js (WebGL, CPU fallback) in a Web Worker: SSD MobileNet v1 detector → 68-point landmarks → 128-number face descriptor. Faces are compared by Euclidean distance; unnamed faces are clustered (leader/centroid, 0.5) and each unknown face is suggested as the nearest confirmed person within the strictness threshold (default 0.5), skipping people you rejected for that face and people already confirmed in the same photo |
 | PWA | `vite-plugin-pwa` (Workbox) precaches the app; ONNX Runtime wasm is served from the app's own origin and cached |
 
 **Model and size.** `Xenova/clip-vit-base-patch32`, vision tower in 4-bit (`vision_model_q4.onnx`, **63.6 MB**), downloaded once from Hugging Face. Custom labels additionally load the text tower (`text_model_q4f16.onnx`, **72.5 MB**) the first time you add one. The ONNX Runtime wasm (14 MB) ships with the app.
 
-**Privacy.** Photos, thumbnails, tags and embeddings never leave the device. The only network requests are: the one-time model download (Hugging Face), the Dropbox Chooser and downloads when *you* use Dropbox import, and OpenStreetMap when you click a location link.
+**Face model and size.** `ssd_mobilenetv1` (5.6 MB) + `face_landmark_68` (0.36 MB) + `face_recognition` (6.4 MB) ≈ **12.4 MB**, shipped with the app (copied from the npm package at build time, served from the app's own origin) and fetched the first time faces are scanned. Licences: face-api code and model weights are MIT (vladmandic/face-api, from justadudewhohacks/face-api.js); the recognition net is a ResNet-34-like architecture modelled on dlib's face recognition network, trained and released by the face-api.js author under MIT.
+
+**Privacy.** Face crops (160 px), face descriptors and names are stored only in this browser's IndexedDB, never uploaded. Turn recognition off in the People view to stop scanning new photos; *Clear all face data* deletes it all (photos and other tags are kept).
+
+**Privacy (photos).** Photos, thumbnails, tags and embeddings never leave the device. The only network requests are: the one-time model download (Hugging Face), the Dropbox Chooser and downloads when *you* use Dropbox import, and OpenStreetMap when you click a location link.
 
 ## Limits worth knowing
 
@@ -97,6 +106,7 @@ Your library lives **per browser and per device** (it is stored in that browser'
 - **CLIP is a general-purpose model**: it is great at scenes and common objects, weaker on fine detail (breeds, small text) and sometimes picks a plausible-but-wrong neighbour. Adjust the confidence slider, edit tags by hand, or add custom labels.
 - **Browser storage**: browsers limit how much a site may store. By default only a 2048 px copy + thumbnail is kept per photo (≈0.3–1 MB each); turn on *Keep full-size originals* if you need them. Clearing site data erases the library.
 - **HEIC** photos are only readable where the browser can decode them (Safari/iOS convert them to JPEG when you pick from the camera roll; desktop Chrome cannot decode HEIC).
+- **Face recognition is good, not perfect.** On the test portraits, the same person scored 0.30–0.47 apart and different people ≥ 0.73, so the 0.5 default separated them cleanly. But candid shots with a turned head, profile, strong lighting or many years' difference scored 0.61–0.77 for the same person (so they are *not* suggested at 0.5 – name them by hand or move the slider right and review). The detector also sometimes finds a "face" on a pet (it found the cat in the samples); tap **×** to ignore it. Small faces in group photos (< ~40 px) may be missed. Face scanning adds roughly **2–3 s per photo** in headless Chromium (CPU); clustering compares every face with every cluster, so very large libraries (many thousands of faces) will make the People view slower.
 - Single-threaded WebAssembly is used (static hosts such as GitHub Pages cannot send the headers that multi-threading needs). WebGPU is not used yet.
 
 ## Project layout

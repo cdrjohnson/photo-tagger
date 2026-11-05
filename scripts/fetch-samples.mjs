@@ -16,6 +16,13 @@ const PICKS = [
   ['mountain.jpg', 'File:Mountain landscape near Los Silos, Tenerife, Canary Islands, Spain 01.jpg'],
   ['person.jpg', 'File:Kalpana Chawla, NASA photo portrait in orange suit.jpg'],
   ['document.jpg', 'File:W.E.F. Britten - The Early Poems of Alfred, Lord Tennyson - The Deserted House.jpg'],
+  // Face-recognition test set: four public-domain US government photos of the same person (Joe Biden),
+  // one of them a two-person photo, plus a different person (Barack Obama) as a distractor
+  ['biden-2013.jpg', 'File:Joe Biden official portrait 2013.jpg'],
+  ['biden-2021.jpg', 'File:Joe Biden presidential portrait.jpg'],
+  ['biden-2009.jpg', 'File:FEMA - 41717 - Vice President Joe Biden - Official Portrait.jpg'],
+  ['obama-biden-2009.jpg', 'File:Official portrait of President Obama and Vice President Biden 2009.jpg'],
+  ['obama-portrait.jpg', 'File:President Barack Obama.jpg'],
 ]
 const strip = (s) => (s || '').replace(/<[^>]+>/g, '').trim()
 
@@ -23,7 +30,7 @@ await fs.mkdir(OUT, { recursive: true })
 const lines = [
   '# Sample image attribution',
   '',
-  'Sample photos used by the end-to-end tests and screenshots. All were downloaded from Wikimedia Commons (1024 px wide thumbnails) and are CC0 or public domain.',
+  'Sample photos used by the end-to-end tests and screenshots. All were downloaded from Wikimedia Commons (1024 px wide thumbnails) and are CC0 or public domain. The five White House / FEMA photos (biden-*, obama-*) are works of the US federal government (public domain in the US) and are used to test face recognition: the same person (Joe Biden) in four photos – one of them together with Barack Obama – plus a portrait of Barack Obama as a distractor. person.jpg (Kalpana Chawla, NASA) is a second distractor.',
   '',
   '| File | Commons page | Licence | Author |',
   '|---|---|---|---|',

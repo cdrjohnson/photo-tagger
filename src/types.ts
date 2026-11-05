@@ -1,4 +1,4 @@
-export type TagSource = 'auto' | 'manual' | 'exif' | 'quality'
+export type TagSource = 'auto' | 'manual' | 'exif' | 'quality' | 'person'
 
 export interface Tag {
   name: string
@@ -39,6 +39,9 @@ export interface Photo {
   hasOriginal: boolean
   status: PhotoStatus
   error?: string
+  /** face detection has run on this photo */
+  facesScanned?: boolean
+  faceCount?: number
 }
 
 export interface Settings {
@@ -51,6 +54,9 @@ export interface Settings {
   darkThreshold: number
   brightThreshold: number
   disabledLabels: string[]
+  faceEnabled: boolean
+  /** max face-descriptor distance for a suggested match (lower = stricter) */
+  faceThreshold: number
 }
 
 export interface CustomLabel {
@@ -70,6 +76,8 @@ export const DEFAULT_SETTINGS: Settings = {
   darkThreshold: 55,
   brightThreshold: 200,
   disabledLabels: [],
+  faceEnabled: true,
+  faceThreshold: 0.5,
 }
 
 export type FilterMode = 'and' | 'or'
@@ -88,4 +96,24 @@ export interface Filters {
 
 export const EMPTY_FILTERS: Filters = {
   tags: [], mode: 'and', query: '', from: '', to: '', quality: 'any', sort: 'taken-desc',
+}
+
+export interface Face {
+  id: string
+  photoId: string
+  /** box as fractions of the photo's width/height */
+  box: { x: number; y: number; w: number; h: number }
+  score: number
+  descriptor: Float32Array
+  thumb: Blob
+  status: 'unknown' | 'confirmed' | 'ignored'
+  personId?: string
+  /** people this face was rejected for – never suggested again */
+  rejected: string[]
+}
+
+export interface Person {
+  id: string
+  name: string
+  createdAt: number
 }

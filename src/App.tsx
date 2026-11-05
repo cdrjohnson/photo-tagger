@@ -2,6 +2,8 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Detail } from './components/Detail'
 import { SettingsDialog } from './components/SettingsDialog'
 import { TagInput } from './components/TagInput'
+import { PeopleView } from './components/PeopleView'
+import { usePeople } from './people'
 import { filterPhotos, tagStats, photoTime } from './filter'
 import { useInView, useTheme, useThumb } from './hooks'
 import { useLibrary } from './store'
@@ -11,6 +13,8 @@ const FEW = 16 // tag chips shown before "All tags"
 
 export default function App() {
   const lib = useLibrary()
+  const ppl = usePeople()
+  const [view, setView] = useState<'photos' | 'people'>('photos')
   const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS)
   const [sel, setSel] = useState<Set<string>>(new Set())
   const [selectMode, setSelectMode] = useState(false)
@@ -124,6 +128,12 @@ export default function App() {
     <div className="app">
       <header className="top" ref={headRef}>
         <div className="brand"><img src={`${import.meta.env.BASE_URL}favicon.svg`} alt="" width="28" height="28" /><span>Photo Tagger</span></div>
+        <div className="seg view-tabs" role="tablist" aria-label="View">
+          <button role="tab" aria-selected={view === 'photos'} className={view === 'photos' ? 'on' : ''} data-testid="view-photos" onClick={() => setView('photos')}>Photos</button>
+          <button role="tab" aria-selected={view === 'people'} className={view === 'people' ? 'on' : ''} data-testid="view-people" onClick={() => setView('people')}>
+            People{ppl.suggestions.size ? <span className="dot-count">{ppl.suggestions.size}</span> : null}
+          </button>
+        </div>
         <div className="search">
           <input type="search" data-testid="search" placeholder="Search names, tags, cameras…" aria-label="Search photos" value={filters.query} onChange={(e) => setFilters((f) => ({ ...f, query: e.target.value }))} />
         </div>
@@ -171,7 +181,7 @@ export default function App() {
         </div>
       )}
 
-      {lib.photos.length > 0 && (
+      {view === 'photos' && lib.photos.length > 0 && (
         <section className="filters" aria-label="Filters">
           <div className="chip-row">
             <div className={`chips ${allTags ? 'wrap' : 'scroll'}`} data-testid="chip-bar">
@@ -211,7 +221,8 @@ export default function App() {
       )}
 
       <main>
-        {!lib.ready ? <div className="center"><div className="spinner" /></div>
+        {view === 'people' ? <PeopleView onShowPhotos={(name) => { setFilters({ ...EMPTY_FILTERS, tags: [name.trim().toLowerCase().replace(/\s+/g, ' ')] }); setView('photos') }} />
+          : !lib.ready ? <div className="center"><div className="spinner" /></div>
           : lib.photos.length === 0 ? (
             <div className="empty" data-testid="empty">
               <div className="empty-art" aria-hidden>🖼️</div>
@@ -240,7 +251,7 @@ export default function App() {
           )}
       </main>
 
-      {inSelection && (
+      {view === 'photos' && inSelection && (
         <div className="selbar" data-testid="selbar">
           <button className="btn icon" onClick={exitSelect} aria-label="Cancel selection" data-testid="sel-cancel">✕</button>
           <b data-testid="sel-count">{sel.size} selected</b>
@@ -261,7 +272,7 @@ export default function App() {
             <div className="chips wrap">
               {selTags.map(([n, c]) => (
                 <span key={n} className="chip static" data-testid="bulk-tag-chip" data-tag={n}>{n}<small>{c}/{sel.size}</small>
-                  <button aria-label={`Remove ${n} from selection`} data-testid="bulk-remove" onClick={() => lib.removeTags(selIds, [n])}>×</button></span>
+                  <button aria-label={`Remove ${n} from selection`} data-testid="bulk-remove" onClick={() => (ppl.isPersonTag(n) ? ppl.rejectOnPhotos(selIds, n) : lib.removeTags(selIds, [n]))}>×</button></span>
               ))}
               {!selTags.length && <span className="muted">None yet</span>}
             </div>

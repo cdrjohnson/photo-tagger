@@ -1,5 +1,5 @@
 import { openDB, type DBSchema, type IDBPDatabase } from 'idb'
-import type { Photo } from './types'
+import type { Face, Photo } from './types'
 
 interface Schema extends DBSchema {
   photos: { key: string; value: Photo }
@@ -8,18 +8,22 @@ interface Schema extends DBSchema {
   originals: { key: string; value: Blob }
   embeddings: { key: string; value: Float32Array }
   kv: { key: string; value: unknown }
+  faces: { key: string; value: Face; indexes: { photoId: string } }
 }
 
 let dbp: Promise<IDBPDatabase<Schema>> | null = null
 export function db() {
-  dbp ??= openDB<Schema>('photo-tagger', 1, {
-    upgrade(d) {
-      d.createObjectStore('photos', { keyPath: 'id' })
-      d.createObjectStore('thumbs')
-      d.createObjectStore('views')
-      d.createObjectStore('originals')
-      d.createObjectStore('embeddings')
-      d.createObjectStore('kv')
+  dbp ??= openDB<Schema>('photo-tagger', 2, {
+    upgrade(d, oldVersion) {
+      if (oldVersion < 1) {
+        d.createObjectStore('photos', { keyPath: 'id' })
+        d.createObjectStore('thumbs')
+        d.createObjectStore('views')
+        d.createObjectStore('originals')
+        d.createObjectStore('embeddings')
+        d.createObjectStore('kv')
+      }
+      if (oldVersion < 2) d.createObjectStore('faces', { keyPath: 'id' }).createIndex('photoId', 'photoId')
     },
   })
   return dbp
@@ -54,16 +58,18 @@ export async function allEmbeddings(): Promise<Map<string, Float32Array>> {
 }
 export async function deletePhotos(ids: string[]) {
   const d = await db()
-  const tx = d.transaction(['photos', 'thumbs', 'views', 'originals', 'embeddings'], 'readwrite')
+  const tx = d.transaction(['photos', 'thumbs', 'views', 'originals', 'embeddings', 'faces'], 'readwrite')
   for (const id of ids) {
     for (const s of ['photos', 'thumbs', 'views', 'originals', 'embeddings'] as const) tx.objectStore(s).delete(id)
+    const fk = await tx.objectStore('faces').index('photoId').getAllKeys(id)
+    for (const k of fk) tx.objectStore('faces').delete(k)
   }
   await tx.done
 }
 export async function clearAll() {
   const d = await db()
-  const tx = d.transaction(['photos', 'thumbs', 'views', 'originals', 'embeddings', 'kv'], 'readwrite')
-  for (const s of ['photos', 'thumbs', 'views', 'originals', 'embeddings', 'kv'] as const) tx.objectStore(s).clear()
+  const tx = d.transaction(['photos', 'thumbs', 'views', 'originals', 'embeddings', 'kv', 'faces'], 'readwrite')
+  for (const s of ['photos', 'thumbs', 'views', 'originals', 'embeddings', 'kv', 'faces'] as const) tx.objectStore(s).clear()
   await tx.done
 }
 export async function kvGet<T>(key: string): Promise<T | undefined> {
@@ -71,4 +77,17 @@ export async function kvGet<T>(key: string): Promise<T | undefined> {
 }
 export async function kvSet(key: string, value: unknown) {
   await (await db()).put('kv', value, key)
+}
+
+export async function allFaces(): Promise<Face[]> {
+  return (await db()).getAll('faces')
+}
+export async function putFaces(fs: Face[]) {
+  const d = await db()
+  const tx = d.transaction('faces', 'readwrite')
+  for (const f of fs) tx.store.put(f)
+  await tx.done
+}
+export async function clearFaces() {
+  await (await db()).clear('faces')
 }

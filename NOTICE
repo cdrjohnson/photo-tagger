@@ -6,11 +6,15 @@ Code (all permissively licensed, bundled or loaded at run time):
   - React / React DOM – MIT
   - exifr – MIT
   - idb – ISC
+  - @vladmandic/face-api – MIT (fork of face-api.js by Vincent Mühler, MIT); TensorFlow.js – Apache-2.0
   - Vite, vite-plugin-pwa, Workbox – MIT
 
 Model (downloaded from Hugging Face at first use, not stored in this repository):
   - CLIP ViT-B/32 by OpenAI – MIT licence (https://github.com/openai/CLIP)
   - ONNX conversion and quantisations: Xenova/clip-vit-base-patch32 – MIT (https://huggingface.co/Xenova/clip-vit-base-patch32)
+
+Face models (shipped in the built app under face-models/, copied from @vladmandic/face-api at build time, not stored in this repository):
+  - ssd_mobilenetv1, face_landmark_68, face_recognition – MIT (face-api.js / @vladmandic/face-api)
 
 Sample photos in samples/ (used only by tests and screenshots):
   - Public-domain / CC0 images from Wikimedia Commons. Per-file sources are in samples/ATTRIBUTION.md.

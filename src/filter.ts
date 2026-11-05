@@ -44,7 +44,7 @@ export function filterPhotos(photos: Photo[], f: Filters): Photo[] {
 
 export interface TagStat { name: string; count: number; source: TagSource }
 
-const PRIORITY: TagSource[] = ['manual', 'auto', 'exif', 'quality']
+const PRIORITY: TagSource[] = ['person', 'manual', 'auto', 'exif', 'quality']
 
 /** Tag counts among the photos that match the non-tag filters; selected tags are always listed. */
 export function tagStats(photos: Photo[], f: Filters): TagStat[] {
@@ -59,5 +59,6 @@ export function tagStats(photos: Photo[], f: Filters): TagStat[] {
   for (const s of f.tags) if (!m.has(s)) m.set(s, { count: 0, src: new Set(['manual']) })
   return [...m.entries()]
     .map(([name, e]) => ({ name, count: e.count, source: PRIORITY.find((s) => e.src.has(s))! }))
-    .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
+    // people first, then by count
+    .sort((a, b) => Number(b.source === 'person') - Number(a.source === 'person') || b.count - a.count || a.name.localeCompare(b.name))
 }

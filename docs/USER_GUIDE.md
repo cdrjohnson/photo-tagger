@@ -64,7 +64,27 @@ Tap **Select** (or press and hold a photo on a phone, or tick the circle that ap
 
 The bar at the bottom lets you **Select all** photos matching the current filter, edit **Tags…** (add tags to all selected photos, or remove a tag from all of them), **Export** just those photos' tags, or **Delete** them.
 
-## 6. Settings
+## 6. People (face naming)
+
+Open the **People** tab at the top. The red badge counts suggestions waiting for you.
+
+![People view](images/desktop-people.png)
+
+- **Everything stays on this device.** Faces are found and compared by a ~12 MB model that runs in your browser. Face crops, face "fingerprints" (128 numbers per face) and names are kept only in this browser.
+- **Find faces**: new photos are checked automatically. Photos added while recognition was off show a **Find faces** button.
+- **Unnamed faces** are grouped – faces that look like the same person sit together. Type a name under a group and press **Name** to name them all, or tap individual faces first to name only those. Tap **×** on something that isn't a face (or someone you don't want to name) to ignore it.
+- **Is this…?** After you name someone, other faces that look like them are suggested. Tap **✓** (yes) or **✕** (no), or **Yes to all**. A "no" is remembered: that face will not be suggested as that person again.
+- **Match strictness**: move the slider left for fewer, safer suggestions, right to catch more (e.g. older photos or side views) – then review more carefully.
+- **A person**: tap their card to see their faces, remove a wrong one (**×**), **Show photos**, **Rename**, **Merge into** another person (if you named someone twice), or **Delete person** (their faces go back to Unnamed; the photos are kept). Renaming to an existing name merges the two.
+- **Person tags**: each named person becomes a tag (in its own colour, listed first in the chip bar). Filter with it like any tag – pick two people with **AND** for photos of both together, **OR** for either. Removing a person tag from a photo (in the photo or with bulk edit) tells the app that face isn't them.
+- **Exports** (JSON / CSV) include person tags. Importing turns them into ordinary tags.
+- **Privacy controls**: untick **Face recognition on** to stop checking new photos; **Clear all face data** (tap twice) deletes all faces, fingerprints, names and person tags.
+
+On a phone the People view works the same way:
+
+<img src="images/mobile-people.png" width="300" alt="People view on a phone">
+
+## 7. Settings
 
 Open **⚙️**.
 
@@ -94,7 +114,7 @@ The photos are matched against a list of labels. You can:
 - **Import JSON or CSV** – add the photos to the app first, then import. Photos are matched by file name (and size); tags are merged with the ones already there. CSV needs `name` and `tags` columns, tags separated by `;`.
 - **Delete all local data** – wipes this app's photos, tags and settings from this browser (asks you to click twice).
 
-## 7. Install it as an app
+## 8. Install it as an app
 
 If the app is served from an https address (see the README):
 
@@ -104,7 +124,7 @@ If the app is served from an https address (see the README):
 
 Once installed and used once online, it works offline. Use **🌓** (top right) to switch between automatic, light and dark themes.
 
-## 8. Tips and troubleshooting
+## 9. Tips and troubleshooting
 
 | Problem | What to try |
 | --- | --- |

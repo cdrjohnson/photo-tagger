@@ -14,6 +14,22 @@ const shot = (p, name) => p.screenshot({ path: path.join(OUT, name) }).then(() =
 const ready = (p, n) => p.waitForFunction((n) => document.querySelectorAll('[data-testid=photo-tile][data-status=ready]').length >= n, n, { timeout: 300_000 })
 const idle = (p) => p.waitForFunction(() => !document.querySelector('[data-testid=banner]'), null, { timeout: 30_000 }).catch(() => {})
 
+const FACES = ['biden-2013.jpg', 'biden-2021.jpg', 'biden-2009.jpg', 'obama-biden-2009.jpg', 'obama-portrait.jpg']
+async function people(p, press) {
+  await p.getByTestId('file-input').setInputFiles(FACES.map(sample))
+  await ready(p, 18)
+  await p.getByTestId('view-people').click()
+  await p.waitForFunction(() => document.querySelectorAll('[data-testid=cluster]').length >= 3, null, { timeout: 300_000 })
+  await p.waitForTimeout(8000) // let the last scan land
+  for (let i = 0; i < 2; i++) { const cat = p.locator('[data-testid=cluster]', { has: p.locator('.pick[title*="cat"]') }).first(); if (await cat.count()) await press(cat, '[data-testid=face-ignore]') }
+  const c = p.locator('[data-testid=cluster]', { has: p.locator('.pick[title="obama-portrait.jpg"]') })
+  await c.getByTestId('cluster-name').fill('Barack Obama'); await press(c, '[data-testid=cluster-save]')
+  const b = p.locator('[data-testid=cluster]', { has: p.locator('.pick[title="biden-2013.jpg"]') })
+  await press(b, '.pick[title="biden-2013.jpg"]'); await press(b, '.pick[title="biden-2021.jpg"]')
+  await b.getByTestId('cluster-name').fill('Joe Biden'); await press(b, '[data-testid=cluster-save]')
+  await p.getByTestId('suggestion').first().waitFor(); await p.waitForTimeout(500)
+}
+
 // ---- desktop ----
 const d = await context.newPage()
 await d.goto(URL_BASE); await d.getByTestId('empty').waitFor()
@@ -44,6 +60,9 @@ await d.getByTestId('bulk-tag').click(); await d.getByTestId('bulk-input').fill(
 await d.waitForTimeout(200)
 await shot(d, 'desktop-bulk.png')
 await d.getByTestId('bulk-close').click(); await d.getByTestId('sel-cancel').click()
+await people(d, (x, sel) => x.locator(sel).first().click())
+await shot(d, 'desktop-people.png')
+await d.getByTestId('view-photos').click()
 await d.getByTestId('theme').click(); await d.getByTestId('theme').click() // auto -> light -> dark
 await d.waitForTimeout(200)
 await shot(d, 'desktop-dark.png')
@@ -72,6 +91,10 @@ await m.locator('[data-testid=photo-tile][data-name="dog.jpg"]').tap()
 await m.locator('[data-testid=photo-tile][data-name="beach.jpg"]').tap()
 await shot(m, 'mobile-select.png')
 await m.getByTestId('sel-cancel').tap()
+await people(m, (x, sel) => x.locator(sel).first().tap())
+await m.evaluate(() => scrollTo(0, 0))
+await shot(m, 'mobile-people.png')
+await m.getByTestId('view-photos').tap()
 await m.getByTestId('theme').tap(); await m.getByTestId('theme').tap()
 await m.waitForTimeout(200)
 await shot(m, 'mobile-dark.png')

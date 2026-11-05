@@ -4,14 +4,16 @@ import { useLibrary } from '../store'
 import { getBlob } from '../db'
 import type { Photo } from '../types'
 import { TagInput } from './TagInput'
+import { usePeople } from '../people'
 
 const fmtSize = (n: number) => (n > 1e6 ? `${(n / 1e6).toFixed(1)} MB` : `${Math.round(n / 1e3)} KB`)
-const SRC_LABEL = { auto: 'Detected in image', manual: 'Added by you', exif: 'From photo metadata', quality: 'Quality check' } as const
+const SRC_LABEL = { person: 'People (from faces)', auto: 'Detected in image', manual: 'Added by you', exif: 'From photo metadata', quality: 'Quality check' } as const
 
 export function Detail({ list, index, onIndex, onClose, allTags }: {
   list: Photo[]; index: number; onIndex: (i: number) => void; onClose: () => void; allTags: string[]
 }) {
   const lib = useLibrary()
+  const ppl = usePeople()
   const p = list[index]
   const url = useViewUrl(p?.id)
 
@@ -62,14 +64,14 @@ export function Detail({ list, index, onIndex, onClose, allTags }: {
         {p.status === 'pending' && <p className="note warn">Not tagged yet. Auto-tags appear once the model has run.</p>}
         <section>
           <h3>Tags</h3>
-          {(['manual', 'auto', 'exif', 'quality'] as const).map((s) => groups[s] && (
+          {(['person', 'manual', 'auto', 'exif', 'quality'] as const).map((s) => groups[s] && (
             <div key={s} className="tag-group">
               <div className="tag-group-label">{SRC_LABEL[s]}</div>
               <div className="chips">
                 {groups[s].map((t) => (
                   <span key={t.name} className={`chip src-${t.source} static`} data-testid="detail-tag" data-tag={t.name}>
                     {t.name}{t.score != null && <small>{Math.round(t.score * 100)}%</small>}
-                    <button aria-label={`Remove tag ${t.name}`} data-testid="remove-tag" onClick={() => lib.removeTags([p.id], [t.name])}>×</button>
+                    <button aria-label={`Remove tag ${t.name}`} data-testid="remove-tag" onClick={() => (t.source === 'person' ? ppl.rejectOnPhotos([p.id], t.name) : lib.removeTags([p.id], [t.name]))}>×</button>
                   </span>
                 ))}
               </div>
@@ -90,6 +92,7 @@ export function Detail({ list, index, onIndex, onClose, allTags }: {
             <dt>Size</dt><dd>{p.width} × {p.height} · {fmtSize(p.size)}</dd>
             <dt>Sharpness</dt><dd>{p.quality.sharpness}{p.quality.blurry ? ' (blurry)' : ''}</dd>
             <dt>Brightness</dt><dd>{Math.round(p.quality.brightness)} / 255{p.quality.dark ? ' (dark)' : p.quality.bright ? ' (bright)' : ''}</dd>
+            <dt>Faces</dt><dd data-testid="face-count">{p.facesScanned ? p.faceCount ?? 0 : 'not checked'}</dd>
             <dt>Source</dt><dd>{p.source === 'dropbox' ? 'Dropbox' : 'This device'}</dd>
           </dl>
         </section>

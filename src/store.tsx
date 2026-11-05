@@ -42,6 +42,8 @@ export interface Library {
   clearEverything(): Promise<void>
   toast(text: string, kind?: Toast['kind']): void
   preloadModel(): Promise<void>
+  /** called after each newly added photo has been tagged (used by face recognition) */
+  setAfterIngest(fn: ((photoId: string) => Promise<void>) | null): void
 }
 
 const Ctx = createContext<Library | null>(null)
@@ -66,6 +68,8 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
   const running = useRef(false)
   const jobRef = useRef<Job | null>(null)
   const modelFailed = useRef(false)
+  const afterIngest = useRef<((photoId: string) => Promise<void>) | null>(null)
+  const setAfterIngest = useCallback((fn: ((photoId: string) => Promise<void>) | null) => { afterIngest.current = fn }, [])
 
   const setPhotosBoth = useCallback((fn: (p: Photo[]) => Photo[]) => {
     photosRef.current = fn(photosRef.current)
@@ -152,6 +156,9 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
               modelFailed.current = true
               toast(`Tagging model unavailable: ${e.message}. Photos were added untagged – use "Retry tagging" when you're online.`, 'error')
             }
+          }
+          if (afterIngest.current) {
+            try { await afterIngest.current(prep.photo.id) } catch (e: any) { toast(`Face detection failed: ${e.message}`, 'error') }
           }
         } catch (e: any) {
           bumpJob({ failed: (jobRef.current?.failed ?? 0) + 1 })
@@ -390,7 +397,8 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
         let p = changes.get(match.id) ?? match
         for (const t of e.tags) {
           if (t.source === 'exif' || t.source === 'quality') continue // those are recomputed from the image itself
-          if (!p.tags.some((x) => x.name === t.name)) p = addTag(p, t.name, t.source, t.score)
+          // person tags come from confirmed faces on this device; imported ones become ordinary tags
+          if (!p.tags.some((x) => x.name === t.name)) p = addTag(p, t.name, t.source === 'person' ? 'manual' : t.source, t.score)
         }
         for (const r of e.rejected ?? []) if (!p.rejected.includes(r)) p = { ...p, rejected: [...p.rejected, r] }
         changes.set(match.id, p)
@@ -426,10 +434,10 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
     dropboxKey,
     addFiles, importFromDropbox, updatePhotos, addTags, removeTags, deletePhotos, retagAll, retagPhoto, retryPending,
     saveSettings, addCustomLabel, removeCustomLabel, toggleLabel, resetVocabulary, exportData, importTags,
-    clearEverything, toast, preloadModel,
+    clearEverything, toast, preloadModel, setAfterIngest,
   }), [ready, photos, settings, custom, job, model, toasts, dropboxKey, addFiles, importFromDropbox, updatePhotos, addTags, removeTags,
     deletePhotos, retagAll, retagPhoto, retryPending, saveSettings, addCustomLabel, removeCustomLabel, toggleLabel, resetVocabulary, exportData,
-    importTags, clearEverything, toast, preloadModel])
+    importTags, clearEverything, toast, preloadModel, setAfterIngest])
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>
 }
