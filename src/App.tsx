@@ -179,7 +179,9 @@ export default function App() {
                   : `${j.done >= j.total ? 'Done' : j.label || 'Working…'} · ${Math.min(j.done, j.total)}/${j.total}${j.failed ? ` · ${j.failed} failed` : ''}`
                 }
               </span>
-              {j.total > 0 && <div className="bar"><i style={{ width: `${Math.min(100, (j.done / j.total) * 100)}%` }} /></div>}
+              {j.total > 0
+                ? <div className="bar" data-testid="job-bar"><i style={{ width: `${Math.min(100, (j.done / j.total) * 100)}%` }} /></div>
+                : <div className="bar indeterminate" data-testid="job-bar"><i /></div>}
               {j.cancellable && (
                 <button type="button" className="btn small" data-testid="job-cancel" aria-label="Cancel remaining Dropbox downloads"
                   onClick={() => setCancelDropboxConfirm(true)}>Cancel</button>

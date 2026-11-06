@@ -115,6 +115,8 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
   const jobRef = useRef<Job | null>(null)
   const dropboxAbortRef = useRef<AbortController | null>(null)
   const modelFailed = useRef(false)
+  /** Face-detection models failed once — toast once, then skip without spamming. */
+  const faceFailed = useRef(false)
   const afterIngest = useRef<((photoId: string) => Promise<void>) | null>(null)
   const setAfterIngest = useCallback((fn: ((photoId: string) => Promise<void>) | null) => { afterIngest.current = fn }, [])
 
@@ -216,8 +218,13 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
         toast(`Tagging model unavailable: ${e.message}. Photos were added untagged – use "Retry tagging" when you're online.`, 'error')
       }
     }
-    if (afterIngest.current) {
-      try { await afterIngest.current(prep.photo.id) } catch (e: any) { toast(`Face detection failed: ${e.message}`, 'error') }
+    if (afterIngest.current && !faceFailed.current) {
+      try {
+        await afterIngest.current(prep.photo.id)
+      } catch (e: any) {
+        faceFailed.current = true
+        toast(`Face detection unavailable: ${e?.message || e}. Photos still import and tag; face naming is skipped until you reload.`, 'error')
+      }
     }
     // optional auto-save to remembered folder
     if (settingsRef.current.autoSaveFolder && folderRef.current) {

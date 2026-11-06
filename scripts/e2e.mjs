@@ -120,6 +120,13 @@ await test('app shell loads, shows empty state, manifest + service worker are pr
   eq([man.start_url, man.scope], ['/photo-tagger/', '/photo-tagger/'], 'manifest start_url/scope')
   eq(await page.evaluate(() => navigator.serviceWorker.ready.then((r) => new URL(r.scope).pathname)), '/photo-tagger/', 'service worker scope')
   ok((await fetch(URL_BASE + 'ort/ort-wasm-simd-threaded.wasm')).ok && (await fetch(URL_BASE + 'ort/ort-wasm-simd-threaded.mjs')).ok, 'wasm under base')
+  for (const n of ['ssd_mobilenetv1_model', 'face_landmark_68_model', 'face_recognition_model']) {
+    const r = await fetch(URL_BASE + `face-models/${n}-weights_manifest.json`)
+    ok(r.ok, `face-models ${n} manifest HTTP`)
+    const body = await r.text()
+    ok(!/^\s*<(!doctype|html)/i.test(body), `face-models ${n} is JSON not HTML`)
+    JSON.parse(body)
+  }
   ok(man.icons.length >= 3, 'icons')
   for (const i of man.icons) ok((await fetch(URL_BASE + i.src)).ok, `icon ${i.src}`)
   ok(await page.evaluate(() => navigator.serviceWorker.ready.then((r) => !!r.active)), 'service worker active')
@@ -308,6 +315,7 @@ await test('Dropbox: without a key the button explains setup; with a key it impo
   await page.getByTestId('add-btn').click(); await page.getByTestId('add-dropbox').click()
   await page.getByTestId('job-label').waitFor()
   ok(/Choose files in the Dropbox window/.test(await page.getByTestId('job-label').textContent()), 'waiting banner')
+  ok(await page.getByTestId('job-bar').count(), 'waiting bar visible')
   await page.waitForFunction(() => !/Choose files in the Dropbox window/.test(document.querySelector('[data-testid=job-label]')?.textContent || ''), null, { timeout: 10_000 })
   ok(!/Choose files in the Dropbox window/.test((await page.getByTestId('job-label').textContent().catch(() => '')) || ''), 'waiting banner cleared on cancel')
 
@@ -356,6 +364,61 @@ await test('Dropbox: choose runs on the click turn without awaiting script load'
   ok(after.stack.includes('sync'), 'choose recorded as synchronous on the click turn')
   // Cancel path still clears the waiting banner
   await page.waitForFunction(() => !/Choose files in the Dropbox window/.test(document.querySelector('[data-testid=job-label]')?.textContent || ''), null, { timeout: 10_000 })
+})
+
+await test('Dropbox: progress banner visible on empty library (waiting + downloading)', async () => {
+  // Fresh profile so the library is empty — does not wipe the main test page
+  const c2 = await browser.newContext({ viewport: { width: 1280, height: 860 } })
+  await c2.route('https://www.dropbox.com/static/api/2/dropins.js', (r) => r.fulfill({
+    contentType: 'text/javascript',
+    body: `window.__dbxKey = document.getElementById('dropboxjs').dataset.appKey;
+           window.__dbxCancel = false;
+           window.__dbxFiles = null;
+           window.Dropbox = { choose(o){
+             setTimeout(() => {
+               if (window.__dbxCancel) { (o.cancel || (() => o.success([])))(); return }
+               o.success(window.__dbxFiles || [])
+             }, 200)
+           } }`,
+  }))
+  await c2.route('https://dl.dropboxusercontent.com/**', async (r) => {
+    const u = r.request().url()
+    const file = u.includes('empty-lib-b') ? 'dropbox-import-h.jpg' : 'dropbox-import-g.jpg'
+    if (u.includes('empty-lib-b')) await new Promise((res) => setTimeout(res, 4_000))
+    return r.fulfill({
+      contentType: 'image/jpeg', headers: { 'access-control-allow-origin': '*' }, body: await fs.readFile(sample(file)),
+    })
+  })
+  const p2 = await c2.newPage()
+  try {
+    await p2.goto(URL_BASE)
+    await p2.getByTestId('empty').waitFor()
+    await p2.getByTestId('open-settings').click()
+    await p2.getByTestId('tab-dropbox').click()
+    await p2.getByTestId('dropbox-key').fill('test_app_key_empty')
+    await p2.getByTestId('dropbox-save').click()
+    await p2.getByTestId('settings-close').click()
+    await p2.waitForFunction(() => !!(window.Dropbox && window.Dropbox.choose), null, { timeout: 15_000 })
+    await p2.evaluate(() => {
+      window.__dbxCancel = false
+      window.__dbxFiles = [
+        { name: 'empty-lib-a.jpg', link: 'https://dl.dropboxusercontent.com/s/test/empty-lib-a.jpg', bytes: 1 },
+        { name: 'empty-lib-b.jpg', link: 'https://dl.dropboxusercontent.com/s/test/empty-lib-b.jpg', bytes: 1 },
+      ]
+    })
+    await p2.getByTestId('empty').getByRole('button', { name: 'From Dropbox' }).click()
+    await p2.getByTestId('banner').waitFor({ timeout: 5_000 })
+    await p2.getByTestId('job-label').waitFor()
+    ok(/Choose files in the Dropbox window|Downloading from Dropbox|Processing /.test(await p2.getByTestId('job-label').textContent()), 'banner text on empty library')
+    ok(await p2.getByTestId('job-bar').count(), 'progress/waiting bar present on empty library')
+    // Empty state can still be on screen while the first files download — banner must remain visible above it
+    ok(await p2.getByTestId('banner').isVisible(), 'banner visible while library still empty')
+    await p2.waitForFunction(() => /Downloading from Dropbox|Processing /.test(document.querySelector('[data-testid=job-label]')?.textContent || ''), null, { timeout: 15_000 })
+    ok(await p2.getByTestId('job-cancel').count(), 'Cancel available during download on empty library')
+    await p2.locator('[data-testid=photo-tile][data-name="empty-lib-a.jpg"]').waitFor({ timeout: 90_000 })
+  } finally {
+    await c2.close()
+  }
 })
 
 await test('Dropbox: streamed ingest — first file appears before the slow second finishes', async () => {
@@ -436,6 +499,39 @@ await test('Dropbox: aborted fetch is retried; no per-file abort toast spam', as
   const toasts = await page.locator('.toast').allTextContents()
   ok(!toasts.some((t) => /operation was aborted/i.test(t)), 'no per-file abort toast: ' + toasts.join(' | '))
 })
+
+
+await test('Face models: HTML response toasts once and does not block photo tagging', async () => {
+  const c3 = await browser.newContext({ viewport: { width: 1280, height: 860 } })
+  // Simulate missing desktop face-models (SPA/asset fallback returns index.html)
+  await c3.route('**/face-models/**', async (route) => {
+    await route.fulfill({ status: 200, contentType: 'text/html', body: '<!doctype html><html><body>index</body></html>' })
+  })
+  const p3 = await c3.newPage()
+  try {
+    await p3.goto(URL_BASE)
+    await p3.getByTestId('empty').waitFor()
+    await p3.getByTestId('file-input').setInputFiles([sample('person.jpg')])
+    await p3.locator('[data-testid=photo-tile][data-name="person.jpg"]').waitFor({ timeout: 180_000 })
+    // Wait for face init failure toast (and ensure it does not multiply)
+    await p3.waitForFunction(() => [...document.querySelectorAll('.toast')].some((n) => /Face detection/i.test(n.textContent || '')), null, { timeout: 60_000 })
+    await p3.waitForTimeout(2_500)
+    const faceToasts = await p3.evaluate(() =>
+      [...document.querySelectorAll('.toast')].map((n) => n.textContent || '').filter((t) => /Face detection/i.test(t)))
+    ok(faceToasts.length === 1, 'exactly one face-detection toast (got ' + faceToasts.length + ': ' + JSON.stringify(faceToasts) + ')')
+    ok(/unavailable|not packaged|HTML|manifest/i.test(faceToasts[0]), 'toast explains the failure')
+    // Import a second photo — must not add another face toast
+    await p3.getByTestId('file-input').setInputFiles([sample('dog.jpg')])
+    await p3.locator('[data-testid=photo-tile][data-name="dog.jpg"]').waitFor({ timeout: 180_000 })
+    await p3.waitForTimeout(2_000)
+    const faceToasts2 = await p3.evaluate(() =>
+      [...document.querySelectorAll('.toast')].map((n) => n.textContent || '').filter((t) => /Face detection/i.test(t)))
+    ok(faceToasts2.length <= 1, 'still at most one face toast after a second photo (got ' + faceToasts2.length + ')')
+  } finally {
+    await c3.close()
+  }
+})
+
 
 await test('duplicate photos are skipped; non-images are ignored', async () => {
   const before = (await names()).length

@@ -46,7 +46,7 @@ It is an installable web app (PWA) – open it on your laptop or phone, then "in
 
 For large libraries, use the **desktop app** (Tauri). Originals stay in a folder you choose; thumbnails, tags, faces and settings live in `<library>/.photo-tagger/` on disk — not in the browser’s IndexedDB quota.
 
-Download from [Releases](https://github.com/cdrjohnson/photo-tagger/releases/tag/desktop-v1.0.1):
+Download from [Releases](https://github.com/cdrjohnson/photo-tagger/releases/tag/desktop-v1.0.2):
 
 | Build | File | When to use |
 | --- | --- | --- |

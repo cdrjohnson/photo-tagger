@@ -108,10 +108,22 @@ export function PeopleProvider({ children }: { children: ReactNode }) {
   const scanPhoto = useCallback(async (photoId: string) => {
     const v = await DB.getBlob('views', photoId)
     if (!v) return
+    // Models already failed this session — skip quietly (one toast comes from the library store)
+    if (faceClient.unavailable) {
+      await libRef.current.updatePhotos([photoId], (p) => ({ ...p, facesScanned: true, faceCount: p.faceCount ?? 0 }))
+      return
+    }
     const bmp = await decodeImage(v)
     const c = scaledCanvas(bmp, Math.min(1, 1024 / Math.max(bmp.width, bmp.height)))
     bmp.close()
-    const det = await faceClient.detect(await createImageBitmap(c), 0.5)
+    let det
+    try {
+      det = await faceClient.detect(await createImageBitmap(c), 0.5)
+    } catch (e) {
+      // Mark scanned so we do not re-queue forever; rethrow so the caller can toast once
+      await libRef.current.updatePhotos([photoId], (p) => ({ ...p, facesScanned: true, faceCount: p.faceCount ?? 0 }))
+      throw e
+    }
     const recs: Face[] = []
     for (const d of det) {
       recs.push({ id: uid(), photoId, box: d.box, score: d.score, descriptor: d.descriptor, thumb: await cropFace(c, d.box), status: 'unknown', rejected: [] })
@@ -139,7 +151,8 @@ export function PeopleProvider({ children }: { children: ReactNode }) {
         setScan({ done: i + 1, total: todo.length })
       }
     } catch (e: any) {
-      libRef.current.toast(`Face detection failed: ${e.message}`, 'error')
+      // One summary toast — same wording as ingest path
+      libRef.current.toast(`Face detection unavailable: ${e?.message || e}. Photos still import and tag; face naming is skipped until you reload.`, 'error')
     } finally {
       setTimeout(() => setScan(null), 800)
     }

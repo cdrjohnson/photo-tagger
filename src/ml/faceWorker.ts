@@ -28,7 +28,18 @@ async function init(base: string) {
   for (const b of ['webgl', 'cpu']) {
     try { if (await tf.setBackend(b)) { await tf.ready(); backend = b; break } } catch { /* try next */ }
   }
-  const uri = `${base}face-models`
+  // Trailing slash so getModelUris joins cleanly; absolute base comes from the main thread.
+  const uri = `${base}face-models/`
+  // Fail fast with a clear message if the bundle is missing models (Tauri used to ship without copy-ort).
+  const probe = new URL('ssd_mobilenetv1_model-weights_manifest.json', uri).href
+  const res = await fetch(probe)
+  const raw = await res.text()
+  if (!res.ok) throw new Error(`Face models missing (${res.status}) at ${probe}`)
+  const head = raw.trimStart().slice(0, 15).toLowerCase()
+  if (head.startsWith('<!doctype') || head.startsWith('<html')) {
+    throw new Error(`Face models not packaged (got HTML instead of JSON from ${probe}). Reinstall the latest desktop build.`)
+  }
+  try { JSON.parse(raw) } catch { throw new Error(`Face model manifest is not JSON at ${probe}`) }
   await Promise.all([
     faceapi.nets.ssdMobilenetv1.loadFromUri(uri),
     faceapi.nets.faceLandmark68Net.loadFromUri(uri),

@@ -61,6 +61,10 @@ input:focus-visible, select:focus-visible, .btn:focus-visible, .chip:focus-visib
 .menu button:hover { background: var(--panel2); }
 
 .banner { padding: 8px 16px; background: var(--accent-soft); border-bottom: 1px solid var(--border); display: grid; gap: 6px; font-size: .9rem; }
+/* Indeterminate pulse while waiting (e.g. Dropbox Chooser open, total still 0) */
+.bar.indeterminate { overflow: hidden; }
+.bar.indeterminate i { width: 40% !important; animation: bar-indeterminate 1.2s ease-in-out infinite; }
+@keyframes bar-indeterminate { 0% { transform: translateX(-120%); } 100% { transform: translateX(320%); } }
 .bar-line { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .bar-line > span { flex: 1 1 260px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bar { flex: 1 1 160px; height: 6px; border-radius: 3px; background: color-mix(in srgb, var(--accent) 22%, transparent); overflow: hidden; }

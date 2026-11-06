@@ -7,6 +7,8 @@ class FaceClient {
   private pending = new Map<number, Pending>()
   private seq = 1
   private initP: Promise<string> | null = null
+  /** Set once init fails; further detect() calls reject immediately without re-fetching models. */
+  private initError: Error | null = null
   backend = ''
 
   private call<T>(msg: Record<string, unknown>, transfer: Transferable[] = []): Promise<T> {
@@ -26,17 +28,30 @@ class FaceClient {
 
   /** Loads the face models (~12 MB, cached by the browser / service worker after the first time). */
   init(): Promise<string> {
+    if (this.initError) return Promise.reject(this.initError)
     if (!this.initP) {
       const base = new URL(import.meta.env.BASE_URL, document.baseURI).href
       this.initP = this.call<{ backend: string }>({ type: 'init', base }).then(
         (m) => (this.backend = m.backend),
-        (e) => { this.initP = null; throw e },
+        (e) => {
+          // Remember failure so every subsequent photo does not re-hit a broken URL / spam toasts
+          this.initError = e instanceof Error ? e : new Error(String(e))
+          this.initP = null
+          throw this.initError
+        },
       )
     }
     return this.initP
   }
 
+  /** True after models failed to load; callers can skip face work without another attempt. */
+  get unavailable(): boolean { return !!this.initError }
+
   async detect(bitmap: ImageBitmap, minConfidence = 0.5): Promise<DetectedFace[]> {
+    if (this.initError) {
+      bitmap.close()
+      throw this.initError
+    }
     await this.init()
     const m = await this.call<{ faces: DetectedFace[] }>({ type: 'detect', bitmap, minConfidence }, [bitmap])
     return m.faces

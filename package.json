@@ -1,6 +1,6 @@
 {
   "name": "photo-tagger",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "private": true,
   "description": "Private, on-device photo tagging: import photos, auto-tag them with CLIP in the browser, and filter by tag. Installable PWA.",
   "license": "MIT",
@@ -20,8 +20,8 @@
     "screenshots": "node scripts/screenshots.mjs",
     "predev": "node scripts/copy-ort.mjs",
     "prebuild": "node scripts/copy-ort.mjs",
-    "dev:tauri": "vite",
-    "build:tauri": "tsc --noEmit && vite build",
+    "dev:tauri": "node scripts/copy-ort.mjs && vite",
+    "build:tauri": "node scripts/copy-ort.mjs && tsc --noEmit && vite build",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
