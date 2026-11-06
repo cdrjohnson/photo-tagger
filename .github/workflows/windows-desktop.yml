@@ -49,8 +49,7 @@ jobs:
           prerelease: false
           includeUpdaterJson: false
           projectPath: .
-          tauriScript: npm run tauri --
-          args: --bundles nsis,msi
+          tauriScript: npm run tauri
       - name: Upload installer artifacts
         uses: actions/upload-artifact@v4
         with:
