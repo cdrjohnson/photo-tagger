@@ -106,7 +106,8 @@ function DropboxTab() {
       </p>
       <ol className="steps">
         <li>Open <a href="https://www.dropbox.com/developers/apps/create" target="_blank" rel="noreferrer noopener">dropbox.com/developers/apps/create</a> and create an app (Scoped access → App folder or Full Dropbox).</li>
-        <li>On the app’s <b>Settings</b> tab, add this site to <b>Chooser / Saver domains</b>: <code data-testid="origin">{location.origin}</code></li>
+        <li>On the app’s <b>Settings</b> tab, add this site to <b>Chooser / Saver / Embedder domains</b>: <code data-testid="origin">{location.hostname}</code>
+          <small> Enter the hostname only — no <code>https://</code>, no path, no port. Dropbox rejects values like <code>https://example.com</code>.</small></li>
         <li>Copy the <b>App key</b> and paste it below.</li>
       </ol>
       <label className="field">

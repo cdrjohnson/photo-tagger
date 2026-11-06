@@ -141,5 +141,5 @@ Once installed and used once online, it works offline. Use **🌓** (top right) 
 | A photo is missing tags it should have | Lower the confidence threshold, or add a custom label for it. |
 | A photo won't import | The browser may not be able to read that format (for example HEIC on desktop Chrome). Convert to JPEG first. |
 | Photos disappeared | Browser data was cleared, or you opened the app in a different browser/profile – each has its own library. Export your tags regularly. |
-| Dropbox pop-up shows an error | Add this site's address to your Dropbox app's *Chooser / Saver domains* ([steps](DROPBOX_SETUP.md)). |
+| Dropbox pop-up shows an error | Add this site's **hostname** (e.g. `cdrjohnson.github.io`, no `https://`) to your Dropbox app's *Chooser / Saver / Embedder domains* ([steps](DROPBOX_SETUP.md)). |
 | Slow tagging on a phone | Keep the screen on and the app open while it works; photos are processed one by one. |

@@ -264,7 +264,7 @@ await test('vocabulary: add a custom label (text model loads on demand) and appl
 await test('Dropbox: without a key the button explains setup; with a key it imports via the Chooser', async () => {
   await page.getByTestId('add-btn').click(); await page.getByTestId('add-dropbox').click()
   await page.getByTestId('settings-note').waitFor()
-  ok((await page.getByTestId('origin').textContent()).startsWith('http://127.0.0.1'), 'shows domain to whitelist')
+  eq(await page.getByTestId('origin').textContent(), '127.0.0.1', 'shows hostname (no https://) to whitelist')
   await page.getByTestId('dropbox-key').fill('test_app_key_123'); await page.getByTestId('dropbox-save').click()
   await closeSettings()
   await page.waitForFunction(() => window.__dbxKey === 'test_app_key_123')

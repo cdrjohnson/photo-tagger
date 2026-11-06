@@ -15,13 +15,13 @@ Photo Tagger never ships a key and never asks you for one anywhere except your o
 
 On the new app's **Settings** tab:
 
-1. Find **Chooser / Saver domains**.
-2. Add the address where you run Photo Tagger, for example:
-   - `http://localhost:5173` (dev server) or `http://127.0.0.1:4174` (preview) – while testing on your computer
-   - `https://cdrjohnson.github.io` – for the live GitHub Pages app (use just the origin, not the `/photo-tagger/` path)
-3. Press Enter after each one. Photo Tagger shows the exact origin to use in **Settings → Dropbox**.
+1. Find **Chooser / Saver / Embedder domains**.
+2. Add each **hostname** where you run Photo Tagger. Dropbox wants the hostname only — **no** `https://`, **no** path, **no** port. Examples:
+   - `localhost` (and `127.0.0.1` if you browse that way) – while testing on your computer
+   - `cdrjohnson.github.io` – for the live GitHub Pages app (not `https://cdrjohnson.github.io`, and not `/photo-tagger/`)
+3. Press Enter after each one. Photo Tagger’s **Settings → Dropbox** shows the hostname to paste.
 
-> Until you add a domain, the Chooser pop-up will show an error instead of your files. A new Dropbox app starts in *development* status, which is fine for your own account – you do not need to apply for production status.
+> Until you add a domain, the Chooser pop-up will show an error instead of your files. If Dropbox says the domain “is not valid” or “is incorrect”, you almost certainly included `https://` or a path — remove them and try again. A new Dropbox app starts in *development* status, which is fine for your own account – you do not need to apply for production status.
 
 ## 3. Give the key to Photo Tagger
 
@@ -41,7 +41,7 @@ The key typed into Settings takes priority over the build-time one.
 | Symptom | Fix |
 | --- | --- |
 | The Dropbox button opens Settings asking for a key | No key saved yet – follow steps 1–3. |
-| Pop-up says the app is not configured for this domain | Add the exact origin from Settings → Dropbox to *Chooser / Saver domains*. |
+| Pop-up says the app is not configured for this domain | Add the hostname from Settings → Dropbox to *Chooser / Saver / Embedder domains* (hostname only, no `https://`). |
 | Pop-up is blocked | Allow pop-ups for the site; it must open from a click. |
 | "Could not load the Dropbox Chooser" | You are offline, or a content blocker blocks `dropbox.com/static`. |
 | Download fails after picking | Links expire after about 4 hours; just pick the files again. |
