@@ -80,6 +80,7 @@ Tap a photo to open it. From here you can:
 - **Remove a tag**: tap the **×** on it. A detected tag you remove will not come back when you re-tag.
 - See the **date, camera, GPS location** (tap the coordinates to open a map), size, sharpness and brightness.
 - Move between photos with ‹ › (or the ← → keys). **Esc** closes.
+- **Zoom** to inspect detail: **＋ / −** buttons, the slider, mouse wheel, or pinch on a touch screen. Drag to pan when zoomed in. **0** or the **100%** button fits the whole photo in the frame again (the default). Large photos always start fitted so nothing is clipped.
 - **Re-run tagging**, **Download** (the original if kept, otherwise the stored copy) or **Delete** (this only removes it from the app).
 
 ## 5. Work on many photos at once
