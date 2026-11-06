@@ -3,7 +3,9 @@ import * as DB from './db'
 import { ml, type ModelProgress, type ModelState } from './ml/client'
 import { applyAutoTags, buildVocab, scoreTags, type VocabEntry } from './tagging'
 import { addTag, exifAndQualityTags, normTag, removeTag } from './tags'
-import { fingerprint, isImageFile, pixelsFromBlob, prepare } from './ingest'
+import { fingerprint, hashesFromBlob, isImageFile, pixelsFromBlob, prepare, type Prepared } from './ingest'
+import { nearestPhash } from './hashes'
+import { buildZip, canPickFolder, clearSavedFolder, downloadBlob, ensurePermission, getSavedFolder, pickFolder, saveOneToFolder, saveToFolder, type DirHandle } from './folderSave'
 import { qualityFlags } from './imageUtils'
 import { chooseFromDropbox, downloadChoice, ENV_DROPBOX_KEY, loadDropbox } from './dropbox'
 import { parseImport, toCSV, toJSON, download } from './exportImport'
@@ -44,6 +46,31 @@ export interface Library {
   preloadModel(): Promise<void>
   /** called after each newly added photo has been tagged (used by face recognition) */
   setAfterIngest(fn: ((photoId: string) => Promise<void>) | null): void
+  /** near-duplicates waiting for the user to keep, skip, or mark */
+  nearDupes: NearDupe[]
+  resolveNearDupe(id: string, action: 'keep' | 'skip' | 'mark'): Promise<void>
+  resolveAllNearDupes(action: 'keep' | 'skip'): Promise<void>
+  findDuplicates(): Promise<number>
+  dismissDupePair(a: string, b: string): Promise<void>
+  /** folder save (Chromium) / zip fallback */
+  folderSupported: boolean
+  folderName: string | null
+  chooseSaveFolder(): Promise<void>
+  clearSaveFolder(): Promise<void>
+  savePhotosToDisk(ids?: string[]): Promise<void>
+  downloadPhotosZip(ids?: string[]): Promise<void>
+}
+
+export interface NearDupe {
+  /** pending ingest: prepared photo not yet saved; library scan: existing photo id */
+  kind: 'ingest' | 'library'
+  id: string
+  name: string
+  matchId: string
+  matchName: string
+  distance: number
+  /** only for kind=ingest */
+  prep?: Prepared
 }
 
 const Ctx = createContext<Library | null>(null)
@@ -59,8 +86,15 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
   const [job, setJob] = useState<Job | null>(null)
   const [model, setModel] = useState<ModelInfo>({ state: 'idle', phase: 'vision', loaded: 0, total: 0, error: '' })
   const [toasts, setToasts] = useState<Toast[]>([])
+  const [nearDupes, setNearDupes] = useState<NearDupe[]>([])
+  const [folderName, setFolderName] = useState<string | null>(null)
 
   const photosRef = useRef<Photo[]>([])
+  const nearRef = useRef<NearDupe[]>([])
+  const ingestPrepRef = useRef<Map<string, Prepared>>(new Map())
+  const resolvingDupes = useRef(new Set<string>())
+  const folderRef = useRef<DirHandle | null>(null)
+  const setNearBoth = (list: NearDupe[]) => { nearRef.current = list; setNearDupes(list) }
   const settingsRef = useRef(settings)
   const customRef = useRef(custom)
   const customEmb = useRef(new Map<string, Float32Array>())
@@ -92,6 +126,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
         DB.kvGet<CustomLabel[]>('custom'),
         DB.kvGet<Record<string, Float32Array>>('customEmb'),
       ])
+      getSavedFolder().then((h) => { folderRef.current = h; setFolderName(h?.name ?? null) }).catch(() => {})
       const merged = { ...DEFAULT_SETTINGS, ...(s ?? {}) }
       settingsRef.current = merged; setSettings(merged)
       customRef.current = c ?? []; setCustom(c ?? [])
@@ -133,33 +168,65 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
   }
   const endJob = () => setTimeout(() => { if (jobRef.current && jobRef.current.done >= jobRef.current.total) setJobBoth(null) }, 1500)
 
+  // ---------- ingest helpers ----------
+  const finishPhoto = useCallback(async (prep: Prepared) => {
+    await DB.savePhotoWithBlobs(prep.photo, prep.blobs)
+    setPhotosBoth((all) => {
+      const i = all.findIndex((p) => p.id === prep.photo.id)
+      if (i >= 0) { const next = all.slice(); next[i] = prep.photo; return next }
+      return [...all, prep.photo]
+    })
+    // let React commit the new tile before CLIP / face work (keeps Keep responsive)
+    await new Promise((r) => requestAnimationFrame(() => r(null)))
+    if (!modelFailed.current) {
+      try {
+        await ensureModel()
+        const emb = await ml.embedImage(prep.rgb, prep.rw, prep.rh)
+        await DB.putEmbedding(prep.photo.id, emb)
+        await tagWithEmbedding(prep.photo, emb)
+      } catch (e: any) {
+        modelFailed.current = true
+        toast(`Tagging model unavailable: ${e.message}. Photos were added untagged – use "Retry tagging" when you're online.`, 'error')
+      }
+    }
+    if (afterIngest.current) {
+      try { await afterIngest.current(prep.photo.id) } catch (e: any) { toast(`Face detection failed: ${e.message}`, 'error') }
+    }
+    // optional auto-save to remembered folder
+    if (settingsRef.current.autoSaveFolder && folderRef.current) {
+      try { await saveOneToFolder(folderRef.current, prep.photo) } catch { /* permission may have lapsed */ }
+    }
+  }, [ensureModel, setPhotosBoth, tagWithEmbedding, toast])
+
   // ---------- ingest ----------
   const run = useCallback(async () => {
     if (running.current) return
     running.current = true
     modelFailed.current = false
+    let exactSkipped = 0
     try {
       while (queue.current.length) {
         const item = queue.current.shift()!
         bumpJob({ label: `Processing ${item.file.name}` })
         try {
           const prep = await prepare(item.file, item.source, settingsRef.current)
-          await DB.savePhotoWithBlobs(prep.photo, prep.blobs)
-          setPhotosBoth((all) => [...all, prep.photo])
-          if (!modelFailed.current) {
-            try {
-              await ensureModel()
-              const emb = await ml.embedImage(prep.rgb, prep.rw, prep.rh)
-              await DB.putEmbedding(prep.photo.id, emb)
-              await tagWithEmbedding(prep.photo, emb)
-            } catch (e: any) {
-              modelFailed.current = true
-              toast(`Tagging model unavailable: ${e.message}. Photos were added untagged – use "Retry tagging" when you're online.`, 'error')
-            }
+          // exact content match (renamed / re-exported same bytes)
+          const same = photosRef.current.find((p) => p.contentHash && p.contentHash === prep.contentHash)
+            ?? nearRef.current.find((n) => n.prep?.contentHash === prep.contentHash)
+          if (same) { exactSkipped++; bumpJob({ done: (jobRef.current?.done ?? 0) + 1 }); continue }
+          // near-duplicate by perceptual hash
+          const near = nearestPhash(prep.photo.phash!, photosRef.current, settingsRef.current.dupeThreshold)
+          if (near) {
+            const match = photosRef.current.find((p) => p.id === near.id)!
+            ingestPrepRef.current.set(prep.photo.id, prep)
+            setNearBoth([...nearRef.current, {
+              kind: 'ingest', id: prep.photo.id, name: prep.photo.name,
+              matchId: match.id, matchName: match.name, distance: near.distance, prep,
+            }])
+            bumpJob({ done: (jobRef.current?.done ?? 0) + 1 })
+            continue
           }
-          if (afterIngest.current) {
-            try { await afterIngest.current(prep.photo.id) } catch (e: any) { toast(`Face detection failed: ${e.message}`, 'error') }
-          }
+          await finishPhoto(prep)
         } catch (e: any) {
           bumpJob({ failed: (jobRef.current?.failed ?? 0) + 1 })
           toast(`Could not read ${item.file.name}: ${e.message || 'unsupported image'}`, 'error')
@@ -169,8 +236,9 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
     } finally {
       running.current = false
       endJob()
+      if (exactSkipped) toast(`${exactSkipped} duplicate photo(s) skipped`)
     }
-  }, [ensureModel, setPhotosBoth, tagWithEmbedding, toast])
+  }, [finishPhoto, toast])
 
   const addFiles = useCallback(async (files: File[], source: Photo['source'] = 'device') => {
     const imgs = files.filter(isImageFile)
@@ -191,6 +259,176 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
     setJobBoth({ label: '', total: (cur?.total ?? 0) + fresh.length, done: cur?.done ?? 0, failed: cur?.failed ?? 0 })
     void run()
   }, [run, toast])
+
+  const patchPhotos = useCallback(async (ids: string[], fn: (p: Photo) => Photo) => {
+    const set = new Set(ids)
+    const next = photosRef.current.filter((p) => set.has(p.id)).map(fn)
+    await Promise.all(next.map((p) => DB.putPhoto(p)))
+    const byId = new Map(next.map((p) => [p.id, p]))
+    setPhotosBoth((all) => all.map((p) => byId.get(p.id) ?? p))
+  }, [setPhotosBoth])
+
+  const resolveNearDupe = useCallback(async (id: string, action: 'keep' | 'skip' | 'mark') => {
+    const item = nearRef.current.find((n) => n.id === id)
+    if (!item) return
+    if (resolvingDupes.current.has(id)) return
+    resolvingDupes.current.add(id)
+    // remove from the review list immediately so Keep all / repeated clicks cannot re-queue it
+    setNearBoth(nearRef.current.filter((n) => n.id !== id))
+    try {
+      if (item.kind === 'ingest') {
+        const base = ingestPrepRef.current.get(id) ?? item.prep
+        if (action === 'skip') { ingestPrepRef.current.delete(id); return }
+        if (!base) { ingestPrepRef.current.delete(id); toast('Could not keep that photo (data was lost)', 'error'); return }
+        const prep = { ...base, photo: action === 'mark' ? { ...base.photo, duplicateOf: item.matchId } : { ...base.photo } }
+        try {
+          await finishPhoto(prep)
+        } catch (e: any) {
+          toast(`Could not keep ${item.name}: ${e.message || e}`, 'error')
+        } finally {
+          ingestPrepRef.current.delete(id)
+        }
+        return
+      }
+      if (action === 'keep') {
+        await patchPhotos([item.id, item.matchId], (p) => {
+          const other = p.id === item.id ? item.matchId : item.id
+          return { ...p, ignoredDupes: [...new Set([...(p.ignoredDupes ?? []), other])] }
+        })
+        return
+      }
+      if (action === 'mark') await patchPhotos([item.id], (p) => ({ ...p, duplicateOf: item.matchId }))
+    } finally {
+      resolvingDupes.current.delete(id)
+    }
+  }, [finishPhoto, patchPhotos, toast])
+
+  const resolveAllNearDupes = useCallback(async (action: 'keep' | 'skip') => {
+    const list = [...nearRef.current]
+    setNearBoth([]) // clear UI immediately; each item is processed from the snapshot below
+    for (const item of list) {
+      if (resolvingDupes.current.has(item.id)) continue
+      resolvingDupes.current.add(item.id)
+      try {
+        if (item.kind === 'ingest') {
+          const base = ingestPrepRef.current.get(item.id) ?? item.prep
+          if (action === 'skip') { ingestPrepRef.current.delete(item.id); continue }
+          if (!base) { ingestPrepRef.current.delete(item.id); continue }
+          const prep = { ...base, photo: { ...base.photo } }
+          try { await finishPhoto(prep) } catch (e: any) { toast(`Could not keep ${item.name}: ${e.message || e}`, 'error') }
+          finally { ingestPrepRef.current.delete(item.id) }
+        } else if (action === 'keep') {
+          await patchPhotos([item.id, item.matchId], (p) => {
+            const other = p.id === item.id ? item.matchId : item.id
+            return { ...p, ignoredDupes: [...new Set([...(p.ignoredDupes ?? []), other])] }
+          })
+        }
+        // library + skip = just dismiss (already cleared from the list)
+      } finally {
+        resolvingDupes.current.delete(item.id)
+      }
+    }
+  }, [finishPhoto, patchPhotos, toast])
+
+  const ensureHashes = useCallback(async () => {
+    const missing = photosRef.current.filter((p) => !p.phash || !p.contentHash)
+    for (const p of missing) {
+      const blob = (p.hasOriginal ? await DB.getBlob('originals', p.id) : null) ?? await DB.getBlob('views', p.id)
+      if (!blob) continue
+      try {
+        const h = await hashesFromBlob(blob)
+        await patchPhotos([p.id], (x) => ({ ...x, contentHash: h.contentHash, phash: h.phash }))
+      } catch { /* skip undecodable */ }
+    }
+  }, [patchPhotos])
+
+  const findDuplicates = useCallback(async () => {
+    toast('Scanning library for near-duplicates…')
+    await ensureHashes()
+    const thr = settingsRef.current.dupeThreshold
+    const list = photosRef.current
+    const seen = new Set<string>()
+    const found: NearDupe[] = []
+    for (const p of list) {
+      if (!p.phash || p.duplicateOf) continue
+      const near = nearestPhash(p.phash, list, thr, p.id)
+      if (!near) continue
+      const key = [p.id, near.id].sort().join('|')
+      if (seen.has(key)) continue
+      seen.add(key)
+      const other = list.find((x) => x.id === near.id)!
+      if (other.duplicateOf === p.id || p.duplicateOf === other.id) continue
+      if (p.ignoredDupes?.includes(other.id) || other.ignoredDupes?.includes(p.id)) continue
+      found.push({ kind: 'library', id: p.id, name: p.name, matchId: other.id, matchName: other.name, distance: near.distance })
+    }
+    setNearBoth([...nearRef.current.filter((n) => n.kind === 'ingest'), ...found])
+    toast(found.length ? `Found ${found.length} near-duplicate pair(s) to review` : 'No near-duplicates found', found.length ? 'info' : 'ok')
+    return found.length
+  }, [ensureHashes, toast])
+
+  const dismissDupePair = useCallback(async (a: string, b: string) => {
+    await patchPhotos([a, b], (p) => {
+      const other = p.id === a ? b : a
+      return { ...p, ignoredDupes: [...new Set([...(p.ignoredDupes ?? []), other])] }
+    })
+    setNearBoth(nearRef.current.filter((n) => !((n.id === a && n.matchId === b) || (n.id === b && n.matchId === a))))
+  }, [patchPhotos])
+
+  // ---------- folder / zip save ----------
+  const chooseSaveFolder = useCallback(async () => {
+    try {
+      const h = await pickFolder()
+      folderRef.current = h
+      setFolderName(h.name)
+      toast(`Save folder set to “${h.name}”`, 'ok')
+    } catch (e: any) {
+      if (e?.name !== 'AbortError') toast(e.message || 'Could not open folder', 'error')
+    }
+  }, [toast])
+
+  const clearSaveFolderFn = useCallback(async () => {
+    await clearSavedFolder()
+    folderRef.current = null
+    setFolderName(null)
+    const next = { ...settingsRef.current, autoSaveFolder: false }
+    settingsRef.current = next; setSettings(next)
+    await DB.kvSet('settings', next)
+    toast('Save folder forgotten')
+  }, [toast])
+
+  const savePhotosToDisk = useCallback(async (ids?: string[]) => {
+    const set = ids ? new Set(ids) : null
+    const list = photosRef.current.filter((p) => !set || set.has(p.id))
+    if (!list.length) { toast('No photos to save'); return }
+    try {
+      let dir = folderRef.current
+      if (!dir || !(await ensurePermission(dir))) {
+        dir = await pickFolder()
+        folderRef.current = dir
+        setFolderName(dir.name)
+      }
+      const r = await saveToFolder(dir, list, settingsRef.current, customRef.current)
+      toast(`Saved ${r.ok} photo(s) to “${r.folderName}”${r.failed ? ` (${r.failed} failed)` : ''}`, r.failed ? 'error' : 'ok')
+    } catch (e: any) {
+      if (e?.name === 'AbortError') return
+      toast(e.message || 'Save failed', 'error')
+    }
+  }, [toast])
+
+  const downloadPhotosZip = useCallback(async (ids?: string[]) => {
+    const set = ids ? new Set(ids) : null
+    const list = photosRef.current.filter((p) => !set || set.has(p.id))
+    if (!list.length) { toast('No photos to save'); return }
+    try {
+      toast(`Building zip of ${list.length} photo(s)…`)
+      const blob = await buildZip(list, settingsRef.current, customRef.current)
+      const stamp = new Date().toISOString().slice(0, 10)
+      downloadBlob(`photo-tagger-${stamp}.zip`, blob)
+      toast(`Downloaded photo-tagger-${stamp}.zip`, 'ok')
+    } catch (e: any) {
+      toast(e.message || 'Zip failed', 'error')
+    }
+  }, [toast])
 
   const importFromDropbox = useCallback(async () => {
     if (!dropboxKey) return 'no-key' as const
@@ -435,9 +673,13 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
     addFiles, importFromDropbox, updatePhotos, addTags, removeTags, deletePhotos, retagAll, retagPhoto, retryPending,
     saveSettings, addCustomLabel, removeCustomLabel, toggleLabel, resetVocabulary, exportData, importTags,
     clearEverything, toast, preloadModel, setAfterIngest,
+    nearDupes, resolveNearDupe, resolveAllNearDupes, findDuplicates, dismissDupePair,
+    folderSupported: canPickFolder, folderName, chooseSaveFolder, clearSaveFolder: clearSaveFolderFn,
+    savePhotosToDisk, downloadPhotosZip,
   }), [ready, photos, settings, custom, job, model, toasts, dropboxKey, addFiles, importFromDropbox, updatePhotos, addTags, removeTags,
     deletePhotos, retagAll, retagPhoto, retryPending, saveSettings, addCustomLabel, removeCustomLabel, toggleLabel, resetVocabulary, exportData,
-    importTags, clearEverything, toast, preloadModel, setAfterIngest])
+    importTags, clearEverything, toast, preloadModel, setAfterIngest, nearDupes, resolveNearDupe, resolveAllNearDupes, findDuplicates,
+    dismissDupePair, folderName, chooseSaveFolder, clearSaveFolderFn, savePhotosToDisk, downloadPhotosZip])
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>
 }

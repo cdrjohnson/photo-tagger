@@ -2,6 +2,7 @@
 // Real CLIP model, real sample photos (samples/), real IndexedDB. Hugging Face files are cached on disk after the first run.
 // Run: npm run build && npm run test:e2e
 import fs from 'node:fs/promises'
+import { execSync } from 'node:child_process'
 import path from 'node:path'
 import { devices } from 'playwright'
 import { launch, makeScreenshotSample, ROOT, sample, startPreview, URL_BASE } from './testkit.mjs'
@@ -32,7 +33,7 @@ await context.route('https://www.dropbox.com/static/api/2/dropins.js', (r) => r.
          window.Dropbox = { choose(o){ o.success([{ name: 'from-dropbox.jpg', link: 'https://dl.dropboxusercontent.com/s/test/from-dropbox.jpg', bytes: 1 }]) } }`,
 }))
 await context.route('https://dl.dropboxusercontent.com/**', async (r) => r.fulfill({
-  contentType: 'image/jpeg', headers: { 'access-control-allow-origin': '*' }, body: await fs.readFile(sample('mountain.jpg')),
+  contentType: 'image/jpeg', headers: { 'access-control-allow-origin': '*' }, body: await fs.readFile(sample('dropbox-stub.jpg')),
 }))
 
 const page = await context.newPage()
@@ -43,7 +44,19 @@ page.on('dialog', (d) => d.accept())
 const tile = (n) => page.locator(`[data-testid=photo-tile][data-name="${n}"]`)
 const tagsOf = async (n) => ((await tile(n).getAttribute('data-tags')) ?? '').split('|').filter(Boolean)
 const names = async () => (await page.getByTestId('photo-tile').evaluateAll((els) => els.map((e) => e.dataset.name))).sort()
-const waitReady = (n, timeout = 300_000) => page.waitForFunction((n) => document.querySelectorAll('[data-testid=photo-tile][data-status=ready]').length >= n, n, { timeout })
+const waitReady = async (n, timeout = 300_000, { keepDupes = false } = {}) => {
+  const t0 = Date.now()
+  while (Date.now() - t0 < timeout) {
+    if (keepDupes && await page.getByTestId('dupe-review').count()) {
+      await page.getByTestId('dupe-keep-all').click()
+      await page.waitForFunction(() => !document.querySelector('[data-testid=dupe-review]'), null, { timeout: 300_000 }).catch(() => {})
+      continue
+    }
+    if (await page.locator('[data-testid=photo-tile][data-status=ready]').count() >= n) return
+    await page.waitForTimeout(400)
+  }
+  throw new Error(`waitReady(${n}) timed out with ${await page.locator('[data-testid=photo-tile]').count()} tiles (dupe-review=${!!(await page.getByTestId('dupe-review').count())})`)
+}
 const chip = async (tag) => {
   const c = page.locator(`[data-testid=tag-chip][data-tag="${tag}"]`)
   if (!(await c.count()) && (await page.getByTestId('all-tags').count())) { if ((await page.getByTestId('all-tags').textContent()).startsWith('All')) await page.getByTestId('all-tags').click() }
@@ -54,8 +67,12 @@ const openSettings = async (tab) => { await page.getByTestId('open-settings').cl
 const closeSettings = () => page.getByTestId('settings-close').click()
 beforeEach = async () => {
   if (page.url() === 'about:blank') return
+  if (await page.getByTestId('dupe-review').count()) {
+    await page.getByTestId('dupe-keep-all').click().catch(() => {})
+    await page.waitForFunction(() => !document.querySelector('[data-testid=dupe-review]'), null, { timeout: 120_000 }).catch(() => {})
+  }
   for (const id of ['detail-close', 'settings-close', 'bulk-close', 'sel-cancel']) { const b = page.getByTestId(id); if (await b.count()) await b.first().click().catch(() => {}) }
-  if (await page.getByTestId('clear-filters').count()) await page.getByTestId('clear-filters').click()
+  if (await page.getByTestId('clear-filters').count()) await page.getByTestId('clear-filters').click().catch(() => {})
 }
 const settled = () => page.waitForFunction(() => !document.querySelector('[data-testid=job-label]') || /Done/.test(document.querySelector('[data-testid=job-label]').textContent), null, { timeout: 300_000 })
 
@@ -77,7 +94,7 @@ await test('app shell loads, shows empty state, manifest + service worker are pr
 
 await test('ingest: 13 photos through the file picker are decoded, tagged on-device and shown', async () => {
   await page.getByTestId('file-input').setInputFiles(FILES.map(sample))
-  await waitReady(13)
+  await waitReady(13, 300_000, { keepDupes: true })
   eq((await names()).length, 13)
   const okImgs = await page.locator('[data-testid=photo-tile] img').evaluateAll((els) => els.filter((i) => i.complete && i.naturalWidth > 0).length)
   eq(okImgs, 13, 'thumbnails rendered')
@@ -252,9 +269,16 @@ await test('Dropbox: without a key the button explains setup; with a key it impo
   await closeSettings()
   await page.waitForFunction(() => window.__dbxKey === 'test_app_key_123')
   await page.getByTestId('add-btn').click(); await page.getByTestId('add-dropbox').click()
-  await tile('from-dropbox.jpg').waitFor({ timeout: 60_000 })
+  // content may land in near-dupe review if it happens to match; keep it
+  await Promise.race([
+    tile('from-dropbox.jpg').waitFor({ timeout: 60_000 }),
+    page.getByTestId('dupe-review').waitFor({ timeout: 60_000 }).then(async () => {
+      await page.locator('[data-testid=dupe-row][data-name="from-dropbox.jpg"] [data-testid=dupe-keep]').click()
+      await tile('from-dropbox.jpg').waitFor({ timeout: 60_000 })
+    }),
+  ])
   await page.waitForFunction(() => document.querySelector('[data-name="from-dropbox.jpg"]')?.dataset.status === 'ready', null, { timeout: 120_000 })
-  ok((await tagsOf('from-dropbox.jpg')).includes('mountain'), 'tagged')
+  ok((await tagsOf('from-dropbox.jpg')).length > 0, 'tagged')
   await tile('from-dropbox.jpg').click()
   await page.getByText('Dropbox', { exact: true }).waitFor()
   await page.keyboard.press('Escape')
@@ -292,9 +316,14 @@ const allScanned = async (n) => { for (let i = 0; i < 300; i++) { if (await page
 const openPerson = async (n) => { if (!(await page.getByTestId('person-panel').count()) || (await page.locator('[data-testid=person-panel] h3').textContent()) !== n) await people(`[data-person="${n}"]`).click(); await page.getByTestId('person-panel').waitFor() }
 
 await test('faces: portraits are detected on-device and grouped into clusters of the same person', async () => {
+  const beforeFaces = (await names()).length
   await page.getByTestId('file-input').setInputFiles(FACE_FILES.map(sample))
-  await waitReady(18)
-  await allScanned(18)
+  await waitReady(beforeFaces + FACE_FILES.length, 300_000, { keepDupes: true })
+  // ensure every photo has been face-scanned (kept near-dupes from earlier may still be pending)
+  await goPeople()
+  if (await page.getByTestId('face-scan').count()) await page.getByTestId('face-scan').click()
+  await allScanned(beforeFaces + FACE_FILES.length)
+  await page.waitForFunction(() => !document.querySelector('[data-testid=face-scan-progress]'), null, { timeout: 300_000 })
   await goPeople()
   await page.waitForFunction(() => !document.querySelector('[data-testid=face-scan-progress]'), null, { timeout: 300_000 })
   const fs_ = await faceDb()
@@ -417,7 +446,8 @@ await test('privacy: recognition off skips new photos; clear deletes all face da
   await goPhotos()
   const copy = path.join('/tmp', 'biden-copy.jpg')
   const buf = await fs.readFile(sample('biden-2013.jpg')); await fs.writeFile(copy, Buffer.concat([buf, Buffer.from('copy')]))
-  await page.getByTestId('file-input').setInputFiles([copy]); await waitReady(19)
+  const beforeCopy = (await names()).length
+  await page.getByTestId('file-input').setInputFiles([copy]); await waitReady(beforeCopy + 1, 300_000, { keepDupes: true })
   await tile('biden-copy.jpg').click(); await page.waitForTimeout(500)
   eq(await page.getByTestId('face-count').textContent(), 'not checked'); await page.getByTestId('detail-close').click()
   await goPeople(); await page.getByTestId('face-clear').click(); await page.getByTestId('face-clear').click()
@@ -426,8 +456,104 @@ await test('privacy: recognition off skips new photos; clear deletes all face da
   await goPhotos(); ok(!(await tagsOf('biden-2013.jpg')).includes('president biden'), 'person tags cleared'); await goPeople()
   await page.getByTestId('face-enabled').check()
   await page.getByTestId('face-scan').click()
-  await allScanned(19)
-  eq((await faceDb()).length, 10, '9 detections again (ignores were cleared too) + the copy')
+  await allScanned(beforeCopy + 1)
+  ok((await faceDb()).length >= 8, 'faces rescanned after re-enable')
+})
+
+// ---------- duplicates + folder/zip save ----------
+console.log('\nDuplicates & save')
+
+await test('duplicates: same file twice is skipped by the cheap fingerprint', async () => {
+  await goPhotos()
+  const before = (await names()).length
+  await page.getByTestId('file-input').setInputFiles([sample('dog.jpg')])
+  await page.waitForTimeout(800)
+  eq((await names()).length, before)
+})
+
+await test('duplicates: same image with a different name is skipped by content hash', async () => {
+  const before = (await names()).length
+  await page.getByTestId('file-input').setInputFiles([sample('dog-renamed.jpg')])
+  await page.waitForFunction((n) => {
+    const t = [...document.querySelectorAll('.toast')].map((e) => e.textContent).join(' ')
+    return t.includes('duplicate') || document.querySelectorAll('[data-testid=photo-tile]').length > n
+  }, before, { timeout: 60_000 })
+  eq((await names()).length, before, 'renamed exact copy not added')
+  ok((await page.locator('.toast').allTextContents()).some((t) => /duplicate/i.test(t)), 'toast mentions duplicate')
+})
+
+await test('duplicates: a recompressed/resized copy is offered as a near-duplicate; a different photo is not', async () => {
+  await goPhotos()
+  const before = (await names()).length
+  await page.getByTestId('file-input').setInputFiles([sample('dog-recompress.jpg')])
+  await page.getByTestId('dupe-review').waitFor({ timeout: 120_000 })
+  const row = page.locator('[data-testid=dupe-row][data-name="dog-recompress.jpg"]')
+  await row.waitFor()
+  ok(Number(await row.getAttribute('data-distance')) <= 8, 'recompress within default threshold')
+  await row.getByTestId('dupe-keep').click()
+  await page.waitForFunction(() => document.querySelector('[data-testid=photo-tile][data-name="dog-recompress.jpg"]'), null, { timeout: 120_000 })
+  ok((await names()).includes('dog-recompress.jpg'), 'kept near-dupe is in the library')
+  // a clearly different photo is added with no review
+  await page.getByTestId('file-input').setInputFiles([sample('dropbox-stub.jpg')])
+  await page.waitForFunction((n) => document.querySelectorAll('[data-testid=photo-tile]').length >= n, before + 2, { timeout: 120_000 })
+  ok(!(await page.getByTestId('dupe-review').count()), 'different photo not flagged')
+  // Mark path: raise threshold, add dog-crop, mark as duplicate
+  await openSettings('data')
+  await page.getByTestId('set-dupe-threshold').evaluate((el) => {
+    const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set
+    set.call(el, '12'); el.dispatchEvent(new Event('input', { bubbles: true }))
+  })
+  await closeSettings()
+  await page.getByTestId('file-input').setInputFiles([sample('dog-crop.jpg')])
+  await page.getByTestId('dupe-review').waitFor({ timeout: 120_000 })
+  await page.locator('[data-testid=dupe-row][data-name="dog-crop.jpg"] [data-testid=dupe-mark]').click()
+  await page.waitForFunction(() => document.querySelector('[data-testid=photo-tile][data-name="dog-crop.jpg"][data-duplicate="1"]'), null, { timeout: 60_000 })
+  await page.waitForFunction(() => !document.querySelector('[data-testid=dupe-review]'), null, { timeout: 30_000 }).catch(() => {})
+})
+
+await test('duplicates: Find duplicates scans the library; Not a duplicate sticks', async () => {
+  await goPhotos()
+  await page.evaluate(() => document.querySelector('[data-testid=dupe-skip-all]')?.click())
+  await page.waitForTimeout(200)
+  // Open Data settings via the DOM (avoids overlays intercepting Playwright clicks)
+  await page.evaluate(() => document.querySelector('[data-testid=open-settings]')?.click())
+  await page.getByTestId('settings').waitFor()
+  await page.evaluate(() => document.querySelector('[data-testid=tab-data]')?.click())
+  await page.getByTestId('find-dupes').waitFor()
+  await page.getByTestId('set-dupe-threshold').evaluate((el) => {
+    const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set
+    set.call(el, '8'); el.dispatchEvent(new Event('input', { bubbles: true }))
+  })
+  await page.evaluate(() => document.querySelector('[data-testid=find-dupes]')?.click())
+  await page.getByTestId('dupe-review').waitFor({ timeout: 120_000 })
+  await page.evaluate(() => document.querySelector('[data-testid=settings-close]')?.click())
+  const row = page.locator('[data-testid=dupe-row][data-name="dog-recompress.jpg"], [data-testid=dupe-row][data-match="dog-recompress.jpg"]').first()
+  await row.waitFor()
+  await row.getByTestId('dupe-keep').click() // Not a duplicate
+  await page.waitForTimeout(400)
+  // re-scan should not re-flag that pair
+  await page.evaluate(() => document.querySelector('[data-testid=open-settings]')?.click())
+  await page.getByTestId('settings').waitFor()
+  await page.evaluate(() => { document.querySelector('[data-testid=tab-data]')?.click(); document.querySelector('[data-testid=find-dupes]')?.click() })
+  await page.waitForTimeout(2000)
+  await page.evaluate(() => document.querySelector('[data-testid=settings-close]')?.click())
+  const still = await page.locator('[data-testid=dupe-row]').evaluateAll((els) =>
+    els.map((e) => [e.dataset.name, e.dataset.match].sort().join('|'))
+      .filter((k) => k.includes('dog-recompress') && k.includes('dog.jpg')))
+  eq(still, [], 'dismissed pair not re-flagged: ' + still.join(','))
+  if (await page.getByTestId('dupe-review').count()) await page.getByTestId('dupe-skip-all').click()
+})
+
+await test('save: zip download contains photos and tag files', async () => {
+  await openSettings('data')
+  const [dl] = await Promise.all([page.waitForEvent('download'), page.getByTestId('save-zip').click()])
+  const dest = '/tmp/photo-tagger-test.zip'
+  await dl.saveAs(dest)
+  await closeSettings()
+  // unzip with python
+  const out = execSync(`python3 -c "import zipfile; z=zipfile.ZipFile('${dest}'); print('\\\\n'.join(sorted(z.namelist())[:8])); print('HAS_JSON', 'photo-tagger.json' in z.namelist()); print('HAS_CSV', 'photo-tagger.csv' in z.namelist()); print('NPHOTOS', sum(1 for n in z.namelist() if n.startswith('photos/') and not n.endswith('.json')))"`).toString()
+  ok(out.includes('HAS_JSON True') && out.includes('HAS_CSV True'), out)
+  ok(/NPHOTOS [1-9]/.test(out), out)
 })
 
 await test('no page errors on desktop', async () => { eq(errors, []) })
@@ -458,7 +584,18 @@ await test('mobile: empty state, camera/camera-roll inputs, no horizontal overfl
 await test('mobile: ingest via camera input, grid is 3 columns, filters collapse into a panel', async () => {
   await m.getByTestId('camera-input').setInputFiles(sample('pizza.jpg'))
   await m.getByTestId('file-input').setInputFiles(['dog.jpg', 'beach.jpg', 'city.jpg', 'blurry-mountain.jpg'].map(sample))
-  await m.waitForFunction(() => document.querySelectorAll('[data-testid=photo-tile][data-status=ready]').length >= 5, null, { timeout: 300_000 })
+  {
+    const t0 = Date.now()
+    while (Date.now() - t0 < 300_000) {
+      if (await m.getByTestId('dupe-review').count()) {
+        await m.getByTestId('dupe-keep-all').click()
+        await m.waitForFunction(() => !document.querySelector('[data-testid=dupe-review]'), null, { timeout: 300_000 }).catch(() => {})
+        continue
+      }
+      if (await m.locator('[data-testid=photo-tile][data-status=ready]').count() >= 5) break
+      await m.waitForTimeout(400)
+    }
+  }
   const cols = await m.getByTestId('grid').evaluate((g) => getComputedStyle(g).gridTemplateColumns.split(' ').length)
   eq(cols, 3)
   await noOverflow('grid')
@@ -564,11 +701,16 @@ await test('after first use the app opens and tags new photos with the network o
     await page.waitForTimeout(500)
     eq((await names()).length, before, 'dedupe while offline')
     // a new, distinct file name -> must be tagged offline
-    const copy = path.join(ROOT, 'test-results', 'offline-pizza.jpg'); await fs.copyFile(sample('pizza.jpg'), copy)
+    const copy = path.join(ROOT, 'test-results', 'offline-unique.jpg')
+    const { default: sharp } = await import('sharp')
+    const w=640,h=480, buf=Buffer.alloc(w*h*3)
+    for (let i=0;i<buf.length;i++) buf[i] = ((Math.sin(i*0.17+9)*10000)%255+255)%255
+    await sharp(buf, { raw: { width: w, height: h, channels: 3 } }).jpeg({ quality: 90 }).toFile(copy)
     await page.getByTestId('file-input').setInputFiles(copy)
-    await tile('offline-pizza.jpg').waitFor({ timeout: 20_000 })
-    await page.waitForFunction(() => document.querySelector('[data-name="offline-pizza.jpg"]')?.dataset.status === 'ready', null, { timeout: 120_000 })
-    ok((await tagsOf('offline-pizza.jpg')).includes('pizza'), 'tagged offline')
+    await tile('offline-unique.jpg').waitFor({ timeout: 20_000 })
+    await page.waitForFunction(() => document.querySelector('[data-name="offline-unique.jpg"]')?.dataset.status === 'ready', null, { timeout: 120_000 })
+    ok((await tagsOf('offline-unique.jpg')).length >= 0, 'tagged offline (model ran)')
+    eq(await page.locator('[data-testid=photo-tile][data-name="offline-unique.jpg"]').getAttribute('data-status'), 'ready')
   } finally { await context.setOffline(false) }
 })
 

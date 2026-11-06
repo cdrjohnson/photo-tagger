@@ -3,6 +3,7 @@ import { Detail } from './components/Detail'
 import { SettingsDialog } from './components/SettingsDialog'
 import { TagInput } from './components/TagInput'
 import { PeopleView } from './components/PeopleView'
+import { DupeReview } from './components/DupeReview'
 import { usePeople } from './people'
 import { filterPhotos, tagStats, photoTime } from './filter'
 import { useInView, useTheme, useThumb } from './hooks'
@@ -258,7 +259,8 @@ export default function App() {
           <button className="btn small" data-testid="sel-all" onClick={() => setSel(new Set(filtered.map((p) => p.id)))}>All {filtered.length}</button>
           <span className="spacer" />
           <button className="btn primary" disabled={!sel.size} data-testid="bulk-tag" onClick={() => setBulk(true)}>Tags…</button>
-          <button className="btn" disabled={!sel.size} data-testid="sel-export" onClick={() => lib.exportData('json', selIds)}>Export</button>
+          <button className="btn" disabled={!sel.size} data-testid="sel-export" onClick={() => lib.exportData('json', selIds)}>Export tags</button>
+          <button className="btn" disabled={!sel.size} data-testid="sel-save" onClick={() => void (lib.folderSupported ? lib.savePhotosToDisk(selIds) : lib.downloadPhotosZip(selIds))}>{lib.folderSupported ? 'Save to folder…' : 'Download zip…'}</button>
           <button className="btn danger" disabled={!sel.size} data-testid="sel-delete" onClick={async () => { if (confirm(`Delete ${sel.size} photo(s) from this app? Originals elsewhere are not affected.`)) { await lib.deletePhotos(selIds); exitSelect() } }}>Delete</button>
         </div>
       )}
@@ -284,6 +286,7 @@ export default function App() {
         <Detail list={filtered} index={Math.min(open, filtered.length - 1)} onIndex={setOpen} onClose={() => setOpen(null)} allTags={everyTag} />
       )}
       {settings && <SettingsDialog initialTab={settings.tab} note={settings.note} onClose={() => setSettings(null)} />}
+      <DupeReview />
       {dragging && <div className="dropzone" data-testid="dropzone"><div>Drop photos to add them</div></div>}
 
       <div className="toasts" aria-live="polite">
@@ -317,6 +320,7 @@ const Tile = memo(function Tile({ p, i, selected, selecting, onTile, onLong, onC
       data-testid="photo-tile"
       data-name={p.name}
       data-status={p.status}
+      data-duplicate={p.duplicateOf ? "1" : "0"}
       data-tags={p.tags.map((t) => t.name).join('|')}
       onClick={(e) => { if (fired.current) { fired.current = false; return } onTile(i, p.id, e) }}
       onKeyDown={(e) => { if (e.key === 'Enter') onTile(i, p.id, e); if (e.key === ' ') { e.preventDefault(); onCheck(i, p.id) } }}
@@ -326,6 +330,7 @@ const Tile = memo(function Tile({ p, i, selected, selecting, onTile, onLong, onC
       {url ? <img src={url} alt="" loading="lazy" draggable={false} /> : <div className="ph" />}
       <button className={`check-box ${selecting ? 'show' : ''}`} aria-label={selected ? 'Deselect' : 'Select'} aria-pressed={selected} data-testid="tile-check" onClick={(e) => { e.stopPropagation(); onCheck(i, p.id) }}>{selected ? '✓' : ''}</button>
       {p.status === 'pending' && <span className="badge pend" title="Tagging…">tagging…</span>}
+      {p.duplicateOf && <span className="badge dupe" data-testid="dupe-badge" title="Marked as a duplicate">duplicate</span>}
       {warn.length > 0 && <span className="badge warn" title={warn.join(', ')}>{warn[0]}</span>}
       <div className="cap">{shown.map((t) => <span key={t.name}>{t.name}</span>)}</div>
       <span className="sr-only">{new Date(photoTime(p)).toDateString()}</span>

@@ -1,4 +1,5 @@
 import { analyseQuality, clipPixels, decodeImage, readExif, scaledCanvas, toBlob } from './imageUtils'
+import { contentHash, dHashFromBitmap } from './hashes'
 import { exifAndQualityTags } from './tags'
 import type { Photo, Settings } from './types'
 
@@ -17,12 +18,16 @@ export interface Prepared {
   rgb: Uint8ClampedArray
   rw: number
   rh: number
+  /** raw file bytes hash (computed while reading) */
+  contentHash: string
 }
 
-/** Decode, thumbnail, read EXIF, run quality checks. Does not run the ML model. */
+/** Decode, thumbnail, read EXIF, run quality checks, compute content + perceptual hashes. Does not run the ML model. */
 export async function prepare(file: File, source: Photo['source'], settings: Settings): Promise<Prepared> {
-  const [exif, bmp] = await Promise.all([readExif(file), decodeImage(file)])
+  const [exif, bmp, bytes] = await Promise.all([readExif(file), decodeImage(file), file.arrayBuffer()])
   try {
+    const ch = await contentHash(bytes)
+    const ph = dHashFromBitmap(bmp)
     const long = Math.max(bmp.width, bmp.height)
     const thumb = await toBlob(scaledCanvas(bmp, Math.min(1, 360 / long)), 0.8)
     const small = long <= 2048 && file.size < 2_500_000 && /image\/(jpeg|png|webp)/.test(file.type)
@@ -34,6 +39,8 @@ export async function prepare(file: File, source: Photo['source'], settings: Set
     const base: Photo = {
       id: uid(),
       fp: fingerprint({ name: file.name, size: file.size, lastModified: source === 'device' ? file.lastModified : 0 }),
+      contentHash: ch,
+      phash: ph,
       name: file.name,
       size: file.size,
       type: file.type || 'image/jpeg',
@@ -56,6 +63,7 @@ export async function prepare(file: File, source: Photo['source'], settings: Set
       photo: base,
       blobs: { thumb, view, original: settings.keepOriginals && !small ? file : undefined },
       rgb, rw, rh,
+      contentHash: ch,
     }
   } finally {
     bmp.close()
@@ -66,4 +74,14 @@ export async function prepare(file: File, source: Photo['source'], settings: Set
 export async function pixelsFromBlob(blob: Blob) {
   const bmp = await decodeImage(blob)
   try { return clipPixels(bmp) } finally { bmp.close() }
+}
+
+/** Recompute contentHash + phash for a photo that is missing them (from its stored view / original). */
+export async function hashesFromBlob(blob: Blob): Promise<{ contentHash: string; phash: string }> {
+  const [bytes, bmp] = await Promise.all([blob.arrayBuffer(), decodeImage(blob)])
+  try {
+    return { contentHash: await contentHash(bytes), phash: dHashFromBitmap(bmp) }
+  } finally {
+    bmp.close()
+  }
 }

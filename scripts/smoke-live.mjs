@@ -21,7 +21,18 @@ log('wasm: HTTP ' + (await page.request.get(URL_LIVE + 'ort/ort-wasm-simd-thread
 log('service worker scope: ' + await page.evaluate(() => navigator.serviceWorker.ready.then((r) => r.scope)))
 const t1 = Date.now()
 await page.getByTestId('file-input').setInputFiles([sample('dog.jpg'), sample('pizza.jpg'), sample('geotagged-cat.jpg')])
-await page.waitForFunction(() => document.querySelectorAll('[data-testid=photo-tile][data-status=ready]').length >= 3, null, { timeout: 420_000 })
+{
+  const t = Date.now()
+  while (Date.now() - t < 420_000) {
+    if (await page.getByTestId('dupe-review').count()) {
+      await page.getByTestId('dupe-keep-all').click()
+      await page.waitForFunction(() => !document.querySelector('[data-testid=dupe-review]')).catch(() => {})
+      continue
+    }
+    if (await page.locator('[data-testid=photo-tile][data-status=ready]').count() >= 3) break
+    await page.waitForTimeout(400)
+  }
+}
 log(`tagged 3 photos in ${((Date.now() - t1) / 1000).toFixed(1)}s (includes real model download)`)
 const tags = {}
 for (const t of await page.getByTestId('photo-tile').all()) tags[await t.getAttribute('data-name')] = await t.getAttribute('data-tags')
@@ -41,10 +52,30 @@ await fc.getByTestId('cluster-name').fill('Joe Biden'); await fc.getByTestId('cl
 await page.locator('[data-testid=person-card][data-person="Joe Biden"]').waitFor()
 const faceOk = await page.waitForFunction(() => document.querySelector('[data-testid=person-card][data-person="Joe Biden"] small')?.textContent.startsWith('2 photos'), null, { timeout: 15_000 }).then(() => true, async () => { log('card: ' + await page.locator('[data-testid=person-card] small').first().textContent()); return false })
 log('faces ok: ' + faceOk)
+// duplicates: recompressed dog should open near-dupe review
+await page.getByTestId('view-photos').click()
+await page.getByTestId('grid').waitFor()
+await page.getByTestId('file-input').setInputFiles([sample('dog-recompress.jpg')])
+await page.getByTestId('dupe-review').waitFor({ timeout: 120_000 })
+const dist = Number(await page.locator('[data-testid=dupe-row][data-name="dog-recompress.jpg"]').getAttribute('data-distance'))
+log(`near-dupe review opened (distance ${dist})`)
+await page.getByTestId('dupe-keep').click()
+await page.waitForFunction(() => document.querySelector('[data-name="dog-recompress.jpg"]'), null, { timeout: 60_000 })
+const dupeOk = dist <= 8 && !!(await page.locator('[data-name="dog-recompress.jpg"]').count())
+log('dupes ok: ' + dupeOk)
+// zip fallback
+await page.getByTestId('open-settings').click()
+await page.getByTestId('tab-data').click()
+const [dl] = await Promise.all([page.waitForEvent('download'), page.getByTestId('save-zip').click()])
+const zipPath = await dl.path()
+log('zip download: ' + dl.suggestedFilename() + ' (' + (zipPath ? 'saved' : 'no path') + ')')
+await page.getByTestId('settings-close').click()
+const zipOk = !!dl.suggestedFilename()?.endsWith('.zip')
+log('zip ok: ' + zipOk)
 await page.screenshot({ path: 'docs/images/live-smoke.png' })
 log('model requests: ' + [...new Set(hf)].join(' | '))
 log('page errors: ' + JSON.stringify(errors) + ' | failed requests: ' + JSON.stringify(failed))
 await browser.close()
-ok = ok && faceOk
+ok = ok && faceOk && dupeOk && zipOk
 console.log(ok && !errors.length ? `LIVE SMOKE TEST PASSED (${((Date.now() - t0) / 1000).toFixed(0)}s)` : 'LIVE SMOKE TEST FAILED')
 process.exit(ok && !errors.length ? 0 : 1)

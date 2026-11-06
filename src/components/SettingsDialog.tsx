@@ -185,9 +185,53 @@ function Data() {
   const lib = useLibrary()
   const fileRef = useRef<HTMLInputElement>(null)
   const [armed, setArmed] = useState(false)
+  const [scanning, setScanning] = useState(false)
+  const [saving, setSaving] = useState(false)
   return (
     <>
-      <h3>Export tags</h3>
+      <h3>Duplicates</h3>
+      <p className="muted">Exact copies (same file bytes, even with a different name) are skipped automatically when you add photos. Near-duplicates — burst shots, recompressed JPEGs, slight crops — are offered for review instead of being dropped.</p>
+      <Slider
+        label="Near-duplicate sensitivity"
+        hint="Maximum perceptual-hash distance (0 = identical, 64 = unrelated). Lower = stricter. Default 8 catches recompress/resize; raise it to catch crops and burst shots, then review carefully."
+        value={lib.settings.dupeThreshold} min={0} max={20} step={1}
+        onChange={(v) => void lib.saveSettings({ dupeThreshold: v })} testId="set-dupe-threshold"
+      />
+      <button className="btn" data-testid="find-dupes" disabled={scanning || !lib.photos.length} onClick={async () => {
+        setScanning(true)
+        try { await lib.findDuplicates() } finally { setScanning(false) }
+      }}>{scanning ? 'Scanning…' : 'Find duplicates in library'}</button>
+
+      <h3>Save photos to a drive</h3>
+      <p className="muted">
+        Copies the photos (original if kept, otherwise the 2048&nbsp;px version) plus tags onto a folder you choose.
+        The in-browser library stays the working copy — this is a backup/export, not two-way sync.
+        {lib.folderSupported
+          ? ' This browser can write to a live folder (Chrome / Edge on desktop).'
+          : ' This browser can’t pick a live folder (Safari, Firefox, phones) — download a zip instead.'}
+      </p>
+      {lib.folderSupported ? (
+        <>
+          <div className="row wrap">
+            <button className="btn primary" data-testid="save-folder" disabled={saving || !lib.photos.length} onClick={async () => {
+              setSaving(true); try { await lib.savePhotosToDisk() } finally { setSaving(false) }
+            }}>{saving ? 'Saving…' : lib.folderName ? `Save library to “${lib.folderName}”` : 'Choose folder & save…'}</button>
+            {lib.folderName && <button className="btn" data-testid="save-folder-change" onClick={() => void lib.chooseSaveFolder()}>Change folder…</button>}
+            {lib.folderName && <button className="btn" data-testid="save-folder-clear" onClick={() => void lib.clearSaveFolder()}>Forget folder</button>}
+          </div>
+          <label className="check">
+            <input type="checkbox" checked={lib.settings.autoSaveFolder} disabled={!lib.folderName} data-testid="set-auto-save"
+              onChange={(e) => void lib.saveSettings({ autoSaveFolder: e.target.checked })} />
+            <span>Auto-save newly tagged photos to that folder <small>Needs the folder permission still granted.</small></span>
+          </label>
+          <button className="btn" data-testid="save-zip" disabled={!lib.photos.length} onClick={() => void lib.downloadPhotosZip()}>Or download a zip…</button>
+        </>
+      ) : (
+        <button className="btn primary" data-testid="save-zip" disabled={!lib.photos.length} onClick={() => void lib.downloadPhotosZip()}>Download library as zip…</button>
+      )}
+      <p className="muted">Each save writes a <code>photos/</code> folder (image + <code>.json</code> sidecar per photo) plus <code>photo-tagger.json</code> and <code>photo-tagger.csv</code>. Person tags are included. Use Select to save only the current selection.</p>
+
+      <h3>Export tags only</h3>
       <p className="muted">Exports tags and metadata only (not the images). JSON keeps everything including your custom labels; CSV is handy for spreadsheets.</p>
       <div className="row wrap">
         <button className="btn" data-testid="export-json" onClick={() => lib.exportData('json')}>Export JSON</button>

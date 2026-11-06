@@ -110,6 +110,14 @@ The photos are matched against a list of labels. You can:
 - **Reset labels** puts the built-in list back.
 
 ### Data
+
+- **Duplicates** – exact copies (same bytes, even renamed) are skipped when you add photos. Near-duplicates open a review: **Skip new**, **Keep both**, or **Mark as duplicate**. **Find duplicates in library** scans what you already have. The **Near-duplicate sensitivity** slider (0–20, default 8) is the maximum dHash distance; lower = stricter.
+- **Save photos to a drive** – copies the photos (original if kept, otherwise the 2048 px version) plus tags onto disk. On Chrome/Edge desktop you pick a folder (remembered for next time; optional auto-save of newly tagged photos). On Safari, Firefox and phones you get a **zip** download instead. Layout: `photos/` with each image and a `.json` sidecar, plus `photo-tagger.json` and `photo-tagger.csv`. The in-browser library remains the working copy — this is backup/export, not two-way sync. Use **Select** to save only the current selection.
+- **Export tags** – JSON or CSV of tags and metadata only (not the images). JSON keeps custom labels; CSV is handy for spreadsheets.
+- **Import tags** – matches photos by file name (and size). Add the photos first, then import.
+- **Delete all local data** – wipes this app’s IndexedDB in this browser (your originals elsewhere are untouched).
+
+
 - **Export JSON / CSV** – saves every photo's tags and metadata (not the images). JSON also keeps your custom labels.
 - **Import JSON or CSV** – add the photos to the app first, then import. Photos are matched by file name (and size); tags are merged with the ones already there. CSV needs `name` and `tags` columns, tags separated by `;`.
 - **Delete all local data** – wipes this app's photos, tags and settings from this browser (asks you to click twice).

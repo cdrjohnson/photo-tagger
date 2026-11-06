@@ -19,8 +19,16 @@ export type PhotoStatus = 'pending' | 'ready' | 'error'
 
 export interface Photo {
   id: string
-  /** duplicate-detection fingerprint: name|size|lastModified */
+  /** cheap fingerprint: name|size|lastModified (first-pass skip) */
   fp: string
+  /** SHA-256 of the original file bytes (exact byte-identical copies) */
+  contentHash?: string
+  /** 64-bit dHash hex (near-duplicate / perceptual) */
+  phash?: string
+  /** id of the photo this is marked as a duplicate of */
+  duplicateOf?: string
+  /** photo ids the user said are NOT duplicates of this one */
+  ignoredDupes?: string[]
   name: string
   size: number
   type: string
@@ -57,6 +65,10 @@ export interface Settings {
   faceEnabled: boolean
   /** max face-descriptor distance for a suggested match (lower = stricter) */
   faceThreshold: number
+  /** max dHash Hamming distance (0–64) to treat two photos as near-duplicates */
+  dupeThreshold: number
+  /** when a save-folder is remembered and permission is still granted, write each newly tagged photo there */
+  autoSaveFolder: boolean
 }
 
 export interface CustomLabel {
@@ -78,6 +90,8 @@ export const DEFAULT_SETTINGS: Settings = {
   disabledLabels: [],
   faceEnabled: true,
   faceThreshold: 0.5,
+  dupeThreshold: 8,
+  autoSaveFolder: false,
 }
 
 export type FilterMode = 'and' | 'or'

@@ -20,6 +20,10 @@ It is an installable web app (PWA) – open it on your laptop or phone, then "in
 
 ![People view: named people, suggestions to confirm, unnamed faces](docs/images/desktop-people.png)
 
+![Near-duplicate review](docs/images/desktop-dupes.png)
+
+![Settings → Data: duplicates and save to drive](docs/images/desktop-data.png)
+
 ## Features
 
 - **Ingest**: file picker, drag-and-drop, paste, whole folders (desktop), camera roll **or camera** (phones), and **Dropbox** (Dropbox Chooser, needs your own free app key – see [docs/DROPBOX_SETUP.md](docs/DROPBOX_SETUP.md)).
@@ -31,6 +35,8 @@ It is an installable web app (PWA) – open it on your laptop or phone, then "in
 - **Filter**: tag chips with counts, **AND / OR**, search box, date range, quality filter, sort. Counts update live as other filters change.
 - **Multi-select** (checkbox, shift-click, long-press on phones) with bulk tag/untag, bulk export and bulk delete.
 - **Face naming (People view)**, on-device: faces are found and fingerprinted in the browser, unnamed faces are **grouped into clusters**, and you **name a face or a whole cluster**. Photo Tagger then **suggests the same person in other photos**, with a **match-strictness slider**. **Confirm or reject** each suggestion (or *Yes to all*); a rejection is remembered and never re-suggested. **Merge, rename and delete** people. Names become **person tags** (their own chip group, listed first) that you can **filter with AND / OR**, search, and that are included in exports. A **privacy toggle** turns recognition off, and **Clear all face data** deletes every face crop, fingerprint and name.
+- **Duplicate detection**: a cheap `name|size|date` check first, then a **SHA-256 content hash** (exact copies with different names are skipped automatically) and a **64-bit dHash** perceptual hash. Near-duplicates (recompress, slight resize/crop, burst shots) open a **review** — skip, keep both, or mark as a duplicate — instead of being dropped silently. **Find duplicates** in Settings rescans the library; a **sensitivity slider** (default Hamming distance **8**) sets how close two photos must be.
+- **Save photos to a drive**: on Chromium desktop, pick a folder with the File System Access API and write photos + `.json` sidecars + `photo-tagger.json` / `.csv` (person tags included). The folder handle can be remembered for **Save again** / optional auto-save. Elsewhere (Safari, Firefox, phones) download a **zip** of the same layout. This is a backup/export — the in-browser library stays the working copy.
 - **Export / import tags** as **JSON** (everything, including custom labels) or **CSV**.
 - **Storage** in IndexedDB: thumbnail + a 2048 px copy per photo (optionally the full original). Nothing is uploaded.
 - **Responsive**, touch-friendly, **dark mode** (auto / light / dark), keyboard shortcuts in the detail view (←, →, Esc).
@@ -58,7 +64,7 @@ The first time you add a photo the app downloads the tagging model (~64 MB) from
 ```bash
 npx playwright install chromium     # once
 npm run build
-npm run test:e2e                    # 36 end-to-end tests in Chromium (incl. 9 for faces)
+npm run test:e2e                    # 41 end-to-end tests in Chromium (incl. 9 for faces)
 npm run screenshots                 # regenerates docs/images/*.png
 node scripts/smoke-live.mjs         # smoke-test the deployed site (real network)
 ```
@@ -88,6 +94,8 @@ Your library lives **per browser and per device** (it is stored in that browser'
 | Zero-shot labels | Each label has a few text prompts ("a photo of a dog"…). Their text embeddings are **pre-computed at build time** (`npm run labels:embed`), so only the image tower is downloaded. A photo's image embedding is compared to every label, a softmax gives confidences, and labels above the threshold become tags |
 | Re-tagging | Image embeddings are stored, so changing labels or the threshold re-tags the library instantly without re-running the model |
 | Storage | IndexedDB (via `idb`): photos, thumbnails, 2048 px copies, embeddings, settings |
+| Duplicates | Cheap fingerprint → SHA-256 of file bytes (exact) → **dHash** (9×8 greyscale, 64-bit) compared by Hamming distance (default ≤ 8). Near matches are queued for review; rejected “not a duplicate” pairs are remembered |
+| Save to disk | File System Access API (`showDirectoryPicker`) when available; otherwise a store-method ZIP download. Writes `photos/<name>`, `photos/<name>.json`, `photo-tagger.json`, `photo-tagger.csv` |
 | Faces | [`@vladmandic/face-api`](https://github.com/vladmandic/face-api) (MIT) on TensorFlow.js (WebGL, CPU fallback) in a Web Worker: SSD MobileNet v1 detector → 68-point landmarks → 128-number face descriptor. Faces are compared by Euclidean distance; unnamed faces are clustered (leader/centroid, 0.5) and each unknown face is suggested as the nearest confirmed person within the strictness threshold (default 0.5), skipping people you rejected for that face and people already confirmed in the same photo |
 | PWA | `vite-plugin-pwa` (Workbox) precaches the app; ONNX Runtime wasm is served from the app's own origin and cached |
 
@@ -106,6 +114,7 @@ Your library lives **per browser and per device** (it is stored in that browser'
 - **CLIP is a general-purpose model**: it is great at scenes and common objects, weaker on fine detail (breeds, small text) and sometimes picks a plausible-but-wrong neighbour. Adjust the confidence slider, edit tags by hand, or add custom labels.
 - **Browser storage**: browsers limit how much a site may store. By default only a 2048 px copy + thumbnail is kept per photo (≈0.3–1 MB each); turn on *Keep full-size originals* if you need them. Clearing site data erases the library.
 - **HEIC** photos are only readable where the browser can decode them (Safari/iOS convert them to JPEG when you pick from the camera roll; desktop Chrome cannot decode HEIC).
+- **Near-duplicate detection is perceptual, not perfect.** Default distance 8 catches recompressed/resized copies of the same shot; crops and burst frames often need 10–12. Unrelated photos in this project’s samples scored ≥ 24 apart. Flat UI screenshots can look alike at 9×8 — raise caution when reviewing those.
 - **Face recognition is good, not perfect.** On the test portraits, the same person scored 0.30–0.47 apart and different people ≥ 0.73, so the 0.5 default separated them cleanly. But candid shots with a turned head, profile, strong lighting or many years' difference scored 0.61–0.77 for the same person (so they are *not* suggested at 0.5 – name them by hand or move the slider right and review). The detector also sometimes finds a "face" on a pet (it found the cat in the samples); tap **×** to ignore it. Small faces in group photos (< ~40 px) may be missed. Face scanning adds roughly **2–3 s per photo** in headless Chromium (CPU); clustering compares every face with every cluster, so very large libraries (many thousands of faces) will make the People view slower.
 - Single-threaded WebAssembly is used (static hosts such as GitHub Pages cannot send the headers that multi-threading needs). WebGPU is not used yet.
 

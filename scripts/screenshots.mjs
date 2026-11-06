@@ -11,7 +11,19 @@ const srv = await startPreview()
 const { browser, context } = await launch({ viewport: { width: 1440, height: 900 } })
 await makeScreenshotSample(browser)
 const shot = (p, name) => p.screenshot({ path: path.join(OUT, name) }).then(() => console.log('wrote', name))
-const ready = (p, n) => p.waitForFunction((n) => document.querySelectorAll('[data-testid=photo-tile][data-status=ready]').length >= n, n, { timeout: 300_000 })
+const ready = async (p, n) => {
+  const t0 = Date.now()
+  while (Date.now() - t0 < 300_000) {
+    if (await p.getByTestId('dupe-review').count()) {
+      await p.getByTestId('dupe-keep-all').click()
+      await p.waitForFunction(() => !document.querySelector('[data-testid=dupe-review]')).catch(() => {})
+      continue
+    }
+    if (await p.locator('[data-testid=photo-tile][data-status=ready]').count() >= n) return
+    await p.waitForTimeout(400)
+  }
+  throw new Error(`ready(${n}) timed out`)
+}
 const idle = (p) => p.waitForFunction(() => !document.querySelector('[data-testid=banner]'), null, { timeout: 30_000 }).catch(() => {})
 
 const FACES = ['biden-2013.jpg', 'biden-2021.jpg', 'biden-2009.jpg', 'obama-biden-2009.jpg', 'obama-portrait.jpg']
@@ -63,6 +75,17 @@ await d.getByTestId('bulk-close').click(); await d.getByTestId('sel-cancel').cli
 await people(d, (x, sel) => x.locator(sel).first().click())
 await shot(d, 'desktop-people.png')
 await d.getByTestId('view-photos').click()
+// duplicates + save-to-disk UI
+await d.getByTestId('file-input').setInputFiles([sample('dog-recompress.jpg')])
+await d.getByTestId('dupe-review').waitFor({ timeout: 120_000 })
+await d.waitForTimeout(400)
+await shot(d, 'desktop-dupes.png')
+await d.getByTestId('dupe-keep').click()
+await d.waitForFunction(() => !document.querySelector('[data-testid=dupe-review]'))
+await d.getByTestId('open-settings').click(); await d.getByTestId('tab-data').click(); await d.waitForTimeout(200)
+await shot(d, 'desktop-data.png')
+await d.getByTestId('settings-close').click()
+await d.getByTestId('view-photos').click()
 await d.getByTestId('theme').click(); await d.getByTestId('theme').click() // auto -> light -> dark
 await d.waitForTimeout(200)
 await shot(d, 'desktop-dark.png')
@@ -95,6 +118,9 @@ await people(m, (x, sel) => x.locator(sel).first().tap())
 await m.evaluate(() => scrollTo(0, 0))
 await shot(m, 'mobile-people.png')
 await m.getByTestId('view-photos').tap()
+await m.getByTestId('open-settings').tap(); await m.getByTestId('tab-data').tap(); await m.waitForTimeout(200)
+await shot(m, 'mobile-data.png')
+await m.getByTestId('settings-close').tap()
 await m.getByTestId('theme').tap(); await m.getByTestId('theme').tap()
 await m.waitForTimeout(200)
 await shot(m, 'mobile-dark.png')
