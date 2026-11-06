@@ -253,10 +253,21 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
       have.add(fp); fresh.push(f)
     }
     if (dupes) toast(`${dupes} duplicate photo(s) skipped`)
-    if (!fresh.length) return
+    if (!fresh.length) {
+      // finish a preceding Dropbox download job that had nothing left to process
+      if (jobRef.current && jobRef.current.done >= jobRef.current.total && jobRef.current.total > 0) endJob()
+      return
+    }
     queue.current.push(...fresh.map((file) => ({ file, source })))
     const cur = jobRef.current
-    setJobBoth({ label: '', total: (cur?.total ?? 0) + fresh.length, done: cur?.done ?? 0, failed: cur?.failed ?? 0 })
+    // Continue a Dropbox download job into tagging (one continuous bar), else start/extend as before
+    const continuing = !!(cur && cur.total > 0 && cur.done >= cur.total && /Dropbox|Downloading/i.test(cur.label))
+    setJobBoth({
+      label: '',
+      total: continuing ? cur!.done + fresh.length : (cur?.total ?? 0) + fresh.length,
+      done: continuing ? cur!.done : (cur?.done ?? 0),
+      failed: cur?.failed ?? 0,
+    })
     void run()
   }, [run, toast])
 
@@ -434,15 +445,44 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
     if (!dropboxKey) return 'no-key' as const
     try {
       await loadDropbox(dropboxKey)
+      // Visible while Dropbox's own dialog is open (we cannot put a spinner inside it)
+      setJobBoth({ label: 'Choose files in the Dropbox window…', total: 0, done: 0, failed: 0 })
       const chosen = await chooseFromDropbox()
-      if (!chosen.length) return 'ok' as const
-      toast(`Downloading ${chosen.length} photo(s) from Dropbox…`)
-      const files: File[] = []
-      for (const c of chosen) {
-        try { files.push(await downloadChoice(c)) } catch (e: any) { toast(`${c.name}: ${e.message}`, 'error') }
+      if (!chosen.length) {
+        setJobBoth(null)
+        return 'ok' as const
       }
-      await addFiles(files, 'dropbox')
+      setJobBoth({ label: 'Downloading from Dropbox…', total: chosen.length, done: 0, failed: 0 })
+      const files: (File | null)[] = Array(chosen.length).fill(null)
+      let next = 0
+      let done = 0
+      let failed = 0
+      const concurrency = Math.min(3, chosen.length)
+      const worker = async () => {
+        while (true) {
+          const i = next++
+          if (i >= chosen.length) return
+          const c = chosen[i]
+          bumpJob({ label: `Downloading from Dropbox · ${c.name}`, done, failed })
+          try {
+            files[i] = await downloadChoice(c)
+            done++
+            bumpJob({ label: `Downloading from Dropbox · ${c.name}`, done, failed })
+          } catch (e: any) {
+            failed++
+            bumpJob({ label: `Downloading from Dropbox · ${c.name}`, done, failed })
+            toast(`${c.name}: ${e.message}`, 'error')
+          }
+        }
+      }
+      await Promise.all(Array.from({ length: concurrency }, () => worker()))
+      const got = files.filter((f): f is File => !!f)
+      // Hand off to tagging: mark download phase complete so addFiles extends the same job bar
+      setJobBoth({ label: 'Downloading from Dropbox…', total: chosen.length, done: chosen.length, failed })
+      if (!got.length) { endJob(); return 'ok' as const }
+      await addFiles(got, 'dropbox')
     } catch (e: any) {
+      setJobBoth(null)
       toast(e.message || 'Dropbox import failed', 'error')
     }
     return 'ok' as const

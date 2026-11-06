@@ -169,8 +169,12 @@ export default function App() {
           )}
           {j && (
             <div className="bar-line">
-              <span data-testid="job-label">{j.done >= j.total ? 'Done' : j.label || 'Working…'} · {Math.min(j.done, j.total)}/{j.total}{j.failed ? ` · ${j.failed} failed` : ''}</span>
-              <div className="bar"><i style={{ width: `${(j.done / j.total) * 100}%` }} /></div>
+              <span data-testid="job-label">{
+                j.total === 0
+                  ? (j.label || 'Working…')
+                  : `${j.done >= j.total ? 'Done' : j.label || 'Working…'} · ${Math.min(j.done, j.total)}/${j.total}${j.failed ? ` · ${j.failed} failed` : ''}`
+              }</span>
+              {j.total > 0 && <div className="bar"><i style={{ width: `${Math.min(100, (j.done / j.total) * 100)}%` }} /></div>}
             </div>
           )}
           {!j && !modelBusy && lib.pendingCount > 0 && (

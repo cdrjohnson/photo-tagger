@@ -11,7 +11,7 @@ Tap **＋ Add photos** (top right):
 | **Choose photos** | Opens your camera roll / gallery (on a phone) or a file picker (on a computer). Select as many as you like. |
 | **Take a photo** | Phones: opens the camera and adds the shot. |
 | **Add a folder** | Computers: adds every image inside a folder. |
-| **From Dropbox** | Opens the Dropbox picker. Needs a one-time setup: see [Dropbox setup](DROPBOX_SETUP.md). |
+| **From Dropbox** | Opens the Dropbox picker. Needs a one-time setup: see [Dropbox setup](DROPBOX_SETUP.md). After you click **Choose**, Dropbox may sit quietly while it prepares links (their dialog has no spinner). Photo Tagger then shows a progress banner: downloading each file, then tagging. |
 
 On a computer you can also **drag and drop** images anywhere on the page, or paste an image from the clipboard.
 
@@ -99,6 +99,8 @@ Changes to tagging settings are applied to your whole library when you close Set
 
 ### Dropbox
 Paste your Dropbox **app key** here. See [Dropbox setup](DROPBOX_SETUP.md).
+
+When you import many photos, watch the **banner under the header**: first “Choose files in the Dropbox window…”, then “Downloading from Dropbox · n/N”, then the usual tagging progress. The Dropbox dialog itself will not show our progress.
 
 ### Labels (the vocabulary)
 ![Labels](images/desktop-labels.png)

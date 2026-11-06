@@ -30,11 +30,25 @@ const FILES = ['dog.jpg', 'cat.jpg', 'beach.jpg', 'city.jpg', 'pizza.jpg', 'moun
 await context.route('https://www.dropbox.com/static/api/2/dropins.js', (r) => r.fulfill({
   contentType: 'text/javascript',
   body: `window.__dbxKey = document.getElementById('dropboxjs').dataset.appKey;
-         window.Dropbox = { choose(o){ o.success([{ name: 'from-dropbox.jpg', link: 'https://dl.dropboxusercontent.com/s/test/from-dropbox.jpg', bytes: 1 }]) } }`,
+         window.__dbxCancel = false;
+         window.Dropbox = { choose(o){
+           // brief delay so the "Choose files…" banner is observable; cancel path resolves empty
+           setTimeout(() => {
+             if (window.__dbxCancel) { (o.cancel || (() => o.success([])))(); return }
+             o.success([
+               { name: 'from-dropbox.jpg', link: 'https://dl.dropboxusercontent.com/s/test/from-dropbox.jpg', bytes: 1 },
+               { name: 'from-dropbox-2.jpg', link: 'https://dl.dropboxusercontent.com/s/test/from-dropbox-2.jpg', bytes: 1 },
+             ])
+           }, 200)
+         } }`,
 }))
-await context.route('https://dl.dropboxusercontent.com/**', async (r) => r.fulfill({
-  contentType: 'image/jpeg', headers: { 'access-control-allow-origin': '*' }, body: await fs.readFile(sample('dropbox-stub.jpg')),
-}))
+await context.route('https://dl.dropboxusercontent.com/**', async (r) => {
+  const u = r.request().url()
+  const file = u.includes('from-dropbox-2') ? 'dropbox-import-b.jpg' : 'dropbox-import-a.jpg'
+  return r.fulfill({
+    contentType: 'image/jpeg', headers: { 'access-control-allow-origin': '*' }, body: await fs.readFile(sample(file)),
+  })
+})
 
 const page = await context.newPage()
 const errors = []
@@ -268,12 +282,29 @@ await test('Dropbox: without a key the button explains setup; with a key it impo
   await page.getByTestId('dropbox-key').fill('test_app_key_123'); await page.getByTestId('dropbox-save').click()
   await closeSettings()
   await page.waitForFunction(() => window.__dbxKey === 'test_app_key_123')
+
+  // Cancel path: waiting banner appears, then clears
+  await page.evaluate(() => { window.__dbxCancel = true })
   await page.getByTestId('add-btn').click(); await page.getByTestId('add-dropbox').click()
-  // content may land in near-dupe review if it happens to match; keep it
+  await page.getByTestId('job-label').waitFor()
+  ok(/Choose files in the Dropbox window/.test(await page.getByTestId('job-label').textContent()), 'waiting banner')
+  await page.waitForFunction(() => !/Choose files in the Dropbox window/.test(document.querySelector('[data-testid=job-label]')?.textContent || ''), null, { timeout: 10_000 })
+  ok(!/Choose files in the Dropbox window/.test((await page.getByTestId('job-label').textContent().catch(() => '')) || ''), 'waiting banner cleared on cancel')
+
+  // Successful import: waiting → downloading → tagging banners
+  await page.evaluate(() => { window.__dbxCancel = false })
+  await page.getByTestId('add-btn').click(); await page.getByTestId('add-dropbox').click()
+  await page.getByTestId('job-label').waitFor()
+  ok(/Choose files in the Dropbox window|Downloading from Dropbox|Processing /.test(await page.getByTestId('job-label').textContent()), 'progress banner during import')
+  await page.waitForFunction(() => /Downloading from Dropbox|Processing /.test(document.querySelector('[data-testid=job-label]')?.textContent || ''), null, { timeout: 15_000 })
+  // content may land in near-dupe review if it happens to match; keep any dropbox rows
   await Promise.race([
     tile('from-dropbox.jpg').waitFor({ timeout: 60_000 }),
     page.getByTestId('dupe-review').waitFor({ timeout: 60_000 }).then(async () => {
-      await page.locator('[data-testid=dupe-row][data-name="from-dropbox.jpg"] [data-testid=dupe-keep]').click()
+      while (await page.getByTestId('dupe-review').count()) {
+        await page.getByTestId('dupe-keep-all').click()
+        await page.waitForTimeout(200)
+      }
       await tile('from-dropbox.jpg').waitFor({ timeout: 60_000 })
     }),
   ])
