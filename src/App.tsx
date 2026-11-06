@@ -26,6 +26,10 @@ export default function App() {
   const [moreFilters, setMoreFilters] = useState(false)
   const [bulk, setBulk] = useState(false)
   const [dragging, setDragging] = useState(false)
+  const [cancelDropboxConfirm, setCancelDropboxConfirm] = useState(false)
+  useEffect(() => {
+    if (cancelDropboxConfirm && !lib.job?.cancellable) setCancelDropboxConfirm(false)
+  }, [cancelDropboxConfirm, lib.job?.cancellable])
   const [theme, cycleTheme] = useTheme()
   const fileRef = useRef<HTMLInputElement>(null)
   const camRef = useRef<HTMLInputElement>(null)
@@ -169,12 +173,17 @@ export default function App() {
           )}
           {j && (
             <div className="bar-line">
-              <span data-testid="job-label">{
-                j.total === 0
+              <span data-testid="job-label">
+                {j.total === 0
                   ? (j.label || 'Working…')
                   : `${j.done >= j.total ? 'Done' : j.label || 'Working…'} · ${Math.min(j.done, j.total)}/${j.total}${j.failed ? ` · ${j.failed} failed` : ''}`
-              }</span>
+                }
+              </span>
               {j.total > 0 && <div className="bar"><i style={{ width: `${Math.min(100, (j.done / j.total) * 100)}%` }} /></div>}
+              {j.cancellable && (
+                <button type="button" className="btn small" data-testid="job-cancel" aria-label="Cancel remaining Dropbox downloads"
+                  onClick={() => setCancelDropboxConfirm(true)}>Cancel</button>
+              )}
             </div>
           )}
           {!j && !modelBusy && lib.pendingCount > 0 && (
@@ -290,6 +299,26 @@ export default function App() {
         <Detail list={filtered} index={Math.min(open, filtered.length - 1)} onIndex={setOpen} onClose={() => setOpen(null)} allTags={everyTag} />
       )}
       {settings && <SettingsDialog initialTab={settings.tab} note={settings.note} onClose={() => setSettings(null)} />}
+      
+      {cancelDropboxConfirm && (
+        <div className="modal sheet" role="dialog" aria-modal="true" aria-labelledby="cancel-dropbox-title" data-testid="cancel-dropbox-confirm">
+          <div className="sheet-card">
+            <div className="settings-head">
+              <h2 id="cancel-dropbox-title">Cancel Dropbox download?</h2>
+              <button className="btn icon" aria-label="Close" data-testid="cancel-dropbox-dismiss" onClick={() => setCancelDropboxConfirm(false)}>✕</button>
+            </div>
+            <p>Remaining downloads will stop. Photos <b>already added</b> to your library stay there and keep tagging if needed. In-progress downloads will not be kept.</p>
+            <div className="row wrap" style={{ justifyContent: 'flex-end', gap: 8 }}>
+              <button type="button" className="btn" data-testid="cancel-dropbox-keep" onClick={() => setCancelDropboxConfirm(false)}>Keep downloading</button>
+              <button type="button" className="btn danger" data-testid="cancel-dropbox-confirm-btn" onClick={() => {
+                setCancelDropboxConfirm(false)
+                lib.cancelDropboxDownload()
+              }}>Cancel download</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <DupeReview />
       {dragging && <div className="dropzone" data-testid="dropzone"><div>Drop photos to add them</div></div>}
 

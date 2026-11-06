@@ -31,20 +31,35 @@ await context.route('https://www.dropbox.com/static/api/2/dropins.js', (r) => r.
   contentType: 'text/javascript',
   body: `window.__dbxKey = document.getElementById('dropboxjs').dataset.appKey;
          window.__dbxCancel = false;
+         window.__dbxFiles = null;
          window.Dropbox = { choose(o){
            // brief delay so the "Choose files…" banner is observable; cancel path resolves empty
            setTimeout(() => {
              if (window.__dbxCancel) { (o.cancel || (() => o.success([])))(); return }
-             o.success([
+             o.success(window.__dbxFiles || [
                { name: 'from-dropbox.jpg', link: 'https://dl.dropboxusercontent.com/s/test/from-dropbox.jpg', bytes: 1 },
                { name: 'from-dropbox-2.jpg', link: 'https://dl.dropboxusercontent.com/s/test/from-dropbox-2.jpg', bytes: 1 },
              ])
            }, 200)
          } }`,
 }))
+const dropboxFlaky = { n: 0 }
 await context.route('https://dl.dropboxusercontent.com/**', async (r) => {
   const u = r.request().url()
-  const file = u.includes('from-dropbox-2') ? 'dropbox-import-b.jpg' : 'dropbox-import-a.jpg'
+  if (/flaky-retry/.test(u)) {
+    dropboxFlaky.n++
+    if (dropboxFlaky.n === 1) return r.abort('failed') // transient — app should retry
+  }
+  if (/from-dropbox-2|cancel-.*-b|stream-b|slow/.test(u)) await new Promise((res) => setTimeout(res, 8_000))
+  let file = 'dropbox-import-a.jpg'
+  if (u.includes('from-dropbox-2')) file = 'dropbox-import-b.jpg'
+  else if (u.includes('cancel-keep-a')) file = 'dropbox-import-c.jpg'
+  else if (u.includes('cancel-keep-b')) file = 'dropbox-import-d.jpg'
+  else if (u.includes('cancel-stop-a')) file = 'dropbox-import-e.jpg'
+  else if (u.includes('cancel-stop-b')) file = 'dropbox-import-f.jpg'
+  else if (u.includes('stream-a')) file = 'dropbox-import-g.jpg'
+  else if (u.includes('stream-b')) file = 'dropbox-import-h.jpg'
+  else if (u.includes('flaky-retry')) file = 'dropbox-import-i.jpg'
   return r.fulfill({
     contentType: 'image/jpeg', headers: { 'access-control-allow-origin': '*' }, body: await fs.readFile(sample(file)),
   })
@@ -309,10 +324,97 @@ await test('Dropbox: without a key the button explains setup; with a key it impo
     }),
   ])
   await page.waitForFunction(() => document.querySelector('[data-name="from-dropbox.jpg"]')?.dataset.status === 'ready', null, { timeout: 120_000 })
+  await tile('from-dropbox-2.jpg').waitFor({ timeout: 120_000 })
+  await page.waitForFunction(() => document.querySelector('[data-name="from-dropbox-2.jpg"]')?.dataset.status === 'ready', null, { timeout: 180_000 })
+  await settled()
+  if (await page.getByTestId('dupe-review').count()) {
+    await page.getByTestId('dupe-keep-all').click()
+    await page.waitForFunction(() => !document.querySelector('[data-testid=dupe-review]')).catch(() => {})
+  }
   ok((await tagsOf('from-dropbox.jpg')).length > 0, 'tagged')
   await tile('from-dropbox.jpg').click()
   await page.getByText('Dropbox', { exact: true }).waitFor()
   await page.keyboard.press('Escape')
+})
+
+
+await test('Dropbox: streamed ingest — first file appears before the slow second finishes', async () => {
+  await page.evaluate(() => {
+    window.__dbxCancel = false
+    window.__dbxFiles = [
+      { name: 'stream-a.jpg', link: 'https://dl.dropboxusercontent.com/s/test/stream-a.jpg', bytes: 1 },
+      { name: 'stream-b.jpg', link: 'https://dl.dropboxusercontent.com/s/test/stream-b.jpg', bytes: 1 },
+    ]
+  })
+  await page.getByTestId('add-btn').click(); await page.getByTestId('add-dropbox').click()
+  await page.waitForFunction(() => /Downloading from Dropbox|Processing /.test(document.querySelector('[data-testid=job-label]')?.textContent || ''), null, { timeout: 15_000 })
+  // First (fast) file must land while the slow second is still going
+  await tile('stream-a.jpg').waitFor({ timeout: 60_000 })
+  // Slow b is still downloading — a already in the library proves stream ingest (not download-all-then-add)
+  ok(await tile('stream-a.jpg').count(), 'streamed: first photo in library before batch ends')
+  eq(await tile('stream-b.jpg').count(), 0, 'second (slow) file not yet present when first lands')
+  await tile('stream-b.jpg').waitFor({ timeout: 120_000 })
+  await settled()
+})
+
+await test('Dropbox: Cancel confirm dismiss keeps downloading', async () => {
+  await page.evaluate(() => {
+    window.__dbxCancel = false
+    window.__dbxFiles = [
+      { name: 'cancel-keep-a.jpg', link: 'https://dl.dropboxusercontent.com/s/test/cancel-keep-a.jpg', bytes: 1 },
+      { name: 'cancel-keep-b.jpg', link: 'https://dl.dropboxusercontent.com/s/test/cancel-keep-b.jpg', bytes: 1 },
+    ]
+  })
+  await page.getByTestId('add-btn').click(); await page.getByTestId('add-dropbox').click()
+  await page.waitForFunction(() => /Downloading from Dropbox|Processing /.test(document.querySelector('[data-testid=job-label]')?.textContent || ''), null, { timeout: 15_000 })
+  await page.getByTestId('job-cancel').click()
+  await page.getByTestId('cancel-dropbox-confirm').waitFor()
+  ok(/already added|library stay|Remaining downloads will stop/i.test(await page.getByTestId('cancel-dropbox-confirm').textContent()), 'explains cancel')
+  await page.getByTestId('cancel-dropbox-keep').click()
+  await page.getByTestId('cancel-dropbox-confirm').waitFor({ state: 'detached' })
+  ok(await page.getByTestId('job-cancel').count(), 'still cancellable — download continues')
+  await tile('cancel-keep-a.jpg').waitFor({ timeout: 120_000 })
+  await tile('cancel-keep-b.jpg').waitFor({ timeout: 120_000 })
+  await settled()
+})
+
+await test('Dropbox: Cancel download stops remaining; already-ingested stay', async () => {
+  await page.evaluate(() => {
+    window.__dbxCancel = false
+    window.__dbxFiles = [
+      { name: 'cancel-stop-a.jpg', link: 'https://dl.dropboxusercontent.com/s/test/cancel-stop-a.jpg', bytes: 1 },
+      { name: 'cancel-stop-b.jpg', link: 'https://dl.dropboxusercontent.com/s/test/cancel-stop-b.jpg', bytes: 1 },
+    ]
+  })
+  await page.getByTestId('add-btn').click(); await page.getByTestId('add-dropbox').click()
+  await page.waitForFunction(() => /Downloading from Dropbox|Processing /.test(document.querySelector('[data-testid=job-label]')?.textContent || ''), null, { timeout: 15_000 })
+  // Wait until first file is in the library (streamed) — proves cancel keeps what arrived
+  await tile('cancel-stop-a.jpg').waitFor({ timeout: 60_000 })
+  await page.getByTestId('job-cancel').click()
+  await page.getByTestId('cancel-dropbox-confirm').waitFor()
+  await page.getByTestId('cancel-dropbox-confirm-btn').click()
+  await page.getByTestId('cancel-dropbox-confirm').waitFor({ state: 'detached' })
+  await page.waitForTimeout(2500)
+  ok(await tile('cancel-stop-a.jpg').count(), 'already-ingested photo remains')
+  eq(await tile('cancel-stop-b.jpg').count(), 0, 'aborted slow file not ingested')
+})
+
+await test('Dropbox: aborted fetch is retried; no per-file abort toast spam', async () => {
+  dropboxFlaky.n = 0
+  await page.evaluate(() => {
+    window.__dbxCancel = false
+    window.__dbxFiles = [
+      { name: 'flaky-retry.jpg', link: 'https://dl.dropboxusercontent.com/s/test/flaky-retry.jpg', bytes: 1 },
+    ]
+  })
+  const abortToasts = []
+  page.on('console', () => {})
+  await page.getByTestId('add-btn').click(); await page.getByTestId('add-dropbox').click()
+  await tile('flaky-retry.jpg').waitFor({ timeout: 60_000 })
+  await settled()
+  ok(dropboxFlaky.n >= 2, 'retried after first abort (attempts=' + dropboxFlaky.n + ')')
+  const toasts = await page.locator('.toast').allTextContents()
+  ok(!toasts.some((t) => /operation was aborted/i.test(t)), 'no per-file abort toast: ' + toasts.join(' | '))
 })
 
 await test('duplicate photos are skipped; non-images are ignored', async () => {
@@ -324,7 +426,10 @@ await test('duplicate photos are skipped; non-images are ignored', async () => {
 
 await test('delete a photo from the detail view', async () => {
   const before = (await names()).length
-  await tile('from-dropbox.jpg').click()
+  const target = (await tile('from-dropbox.jpg').count()) ? 'from-dropbox.jpg'
+    : (await tile('from-dropbox-2.jpg').count()) ? 'from-dropbox-2.jpg'
+    : (await names())[0]
+  await tile(target).click()
   await page.getByTestId('delete-photo').click()
   await page.waitForFunction((n) => document.querySelectorAll('[data-testid=photo-tile]').length === n, before - 1)
 })

@@ -30,4 +30,7 @@ Derived from the public-domain `dog.jpg` above; no new third-party content.
 - `dog-recompress.jpg` – resized to 900 px wide, JPEG quality 55
 - `dog-crop.jpg` – 10 px crop on each side, JPEG quality 85
 - `dropbox-stub.jpg` – synthetic high-frequency noise JPEG (Dropbox Chooser stub in tests; deliberately unlike other samples so it is not a near-duplicate)
-- `dropbox-import-a.jpg` / `dropbox-import-b.jpg` – synthetic noise JPEGs for the Dropbox Chooser stub (unique so they are not near-duplicates of other samples)
+- `dropbox-import-a.jpg` / `dropbox-import-b.jpg` / `dropbox-import-c.jpg` / `dropbox-import-d.jpg` – synthetic noise JPEGs for the Dropbox Chooser stub (unique so they are not near-duplicates of other samples)
+
+
+Dropbox import e2e fixtures `dropbox-import-a.jpg` … `dropbox-import-i.jpg` are unique byte variants of `dog.jpg` (CC0) used so content-hash skips do not collide across Dropbox tests.

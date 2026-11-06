@@ -11,7 +11,7 @@ Tap **＋ Add photos** (top right):
 | **Choose photos** | Opens your camera roll / gallery (on a phone) or a file picker (on a computer). Select as many as you like. |
 | **Take a photo** | Phones: opens the camera and adds the shot. |
 | **Add a folder** | Computers: adds every image inside a folder. |
-| **From Dropbox** | Opens the Dropbox picker. Needs a one-time setup: see [Dropbox setup](DROPBOX_SETUP.md). After you click **Choose**, Dropbox may sit quietly while it prepares links (their dialog has no spinner). Photo Tagger then shows a progress banner: downloading each file, then tagging. |
+| **From Dropbox** | Opens the Dropbox picker. Needs a one-time setup: see [Dropbox setup](DROPBOX_SETUP.md). After you click **Choose**, Dropbox may sit quietly while it prepares links (their dialog has no spinner). Photo Tagger then shows a progress banner and tags each file as soon as it downloads (Cancel confirms first; already-added photos stay in the library). |
 
 On a computer you can also **drag and drop** images anywhere on the page, or paste an image from the clipboard.
 
@@ -100,7 +100,7 @@ Changes to tagging settings are applied to your whole library when you close Set
 ### Dropbox
 Paste your Dropbox **app key** here. See [Dropbox setup](DROPBOX_SETUP.md).
 
-When you import many photos, watch the **banner under the header**: first “Choose files in the Dropbox window…”, then “Downloading from Dropbox · n/N”, then the usual tagging progress. The Dropbox dialog itself will not show our progress.
+When you import many photos, watch the **banner under the header**: first “Choose files in the Dropbox window…”, then “Downloading from Dropbox · n/N” (with a **Cancel** button). Each photo is tagged as soon as it finishes downloading, so it appears in your library during the import — Photo Tagger does not wait for the whole batch (that kept thousands of files in memory and could abort in Firefox). Failed downloads are retried a couple of times; any that still fail are summarised in one toast at the end, not a stack of red errors. If you hit **Cancel**, you get a confirm dialog: remaining downloads stop; photos already in your library stay. Choose **Keep downloading** if you tapped Cancel by mistake.
 
 ### Labels (the vocabulary)
 ![Labels](images/desktop-labels.png)

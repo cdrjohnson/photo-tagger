@@ -11,7 +11,7 @@ import { chooseFromDropbox, downloadChoice, ENV_DROPBOX_KEY, loadDropbox } from 
 import { parseImport, toCSV, toJSON, download } from './exportImport'
 import { DEFAULT_SETTINGS, type CustomLabel, type Photo, type Settings, type Tag } from './types'
 
-export interface Job { label: string; total: number; done: number; failed: number }
+export interface Job { label: string; total: number; done: number; failed: number; /** true only while Dropbox files are downloading */ cancellable?: boolean }
 export interface Toast { id: number; text: string; kind: 'info' | 'error' | 'ok' }
 export interface ModelInfo { state: ModelState; phase: ModelProgress['phase']; loaded: number; total: number; error: string }
 
@@ -27,6 +27,8 @@ export interface Library {
   dropboxKey: string
   addFiles(files: File[], source?: Photo['source']): Promise<void>
   importFromDropbox(): Promise<'no-key' | 'ok'>
+  /** Abort remaining Dropbox downloads; already-finished files are still tagged. */
+  cancelDropboxDownload(): void
   updatePhotos(ids: string[], fn: (p: Photo) => Photo): Promise<void>
   addTags(ids: string[], names: string[]): Promise<void>
   removeTags(ids: string[], names: string[]): Promise<void>
@@ -101,6 +103,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
   const queue = useRef<{ file: File; source: Photo['source'] }[]>([])
   const running = useRef(false)
   const jobRef = useRef<Job | null>(null)
+  const dropboxAbortRef = useRef<AbortController | null>(null)
   const modelFailed = useRef(false)
   const afterIngest = useRef<((photoId: string) => Promise<void>) | null>(null)
   const setAfterIngest = useCallback((fn: ((photoId: string) => Promise<void>) | null) => { afterIngest.current = fn }, [])
@@ -441,6 +444,59 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
     }
   }, [toast])
 
+  const cancelDropboxDownload = useCallback(() => {
+    dropboxAbortRef.current?.abort()
+  }, [])
+
+  /** Ingest one file (same rules as the queue runner) without touching the job done counter. */
+  const ingestOneFile = useCallback(async (file: File, source: Photo['source']) => {
+    bumpJob({ label: `Processing ${file.name}` })
+    try {
+      const prep = await prepare(file, source, settingsRef.current)
+      const same = photosRef.current.find((p) => p.contentHash && p.contentHash === prep.contentHash)
+        ?? nearRef.current.find((n) => n.prep?.contentHash === prep.contentHash)
+      if (same) return 'duplicate' as const
+      const near = nearestPhash(prep.photo.phash!, photosRef.current, settingsRef.current.dupeThreshold)
+      if (near) {
+        const match = photosRef.current.find((p) => p.id === near.id)!
+        ingestPrepRef.current.set(prep.photo.id, prep)
+        setNearBoth([...nearRef.current, {
+          kind: 'ingest', id: prep.photo.id, name: prep.photo.name,
+          matchId: match.id, matchName: match.name, distance: near.distance, prep,
+        }])
+        return 'near' as const
+      }
+      await finishPhoto(prep)
+      return 'added' as const
+    } catch (e: any) {
+      toast(`Could not read ${file.name}: ${e.message || 'unsupported image'}`, 'error')
+      return 'error' as const
+    }
+  }, [finishPhoto, toast])
+
+  const downloadChoiceWithRetry = async (c: { name: string; link: string; bytes: number }, signal: AbortSignal, attempts = 3) => {
+    let last: unknown
+    for (let n = 1; n <= attempts; n++) {
+      // User cancel — never retry
+      if (signal.aborted) throw new DOMException('Aborted', 'AbortError')
+      try {
+        return await downloadChoice(c, signal)
+      } catch (e: any) {
+        last = e
+        // Abort from our Cancel button — stop. AbortError without user cancel (e.g. Firefox) is transient.
+        if (signal.aborted) throw e
+        const msg = String(e?.message || e)
+        const status = Number(/Dropbox download failed \((\d+)\)/.exec(msg)?.[1] || 0)
+        const transient = e?.name === 'AbortError' || e?.name === 'TypeError'
+          || /failed to fetch|network|aborted|abort/i.test(msg)
+          || status === 429 || status >= 500
+        if (!transient || n === attempts) throw e
+        await new Promise((r) => setTimeout(r, 400 * n))
+      }
+    }
+    throw last
+  }
+
   const importFromDropbox = useCallback(async () => {
     if (!dropboxKey) return 'no-key' as const
     try {
@@ -452,41 +508,57 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
         setJobBoth(null)
         return 'ok' as const
       }
-      setJobBoth({ label: 'Downloading from Dropbox…', total: chosen.length, done: 0, failed: 0 })
-      const files: (File | null)[] = Array(chosen.length).fill(null)
+      const ac = new AbortController()
+      dropboxAbortRef.current = ac
+      setJobBoth({ label: 'Downloading from Dropbox…', total: chosen.length, done: 0, failed: 0, cancellable: true })
       let next = 0
       let done = 0
       let failed = 0
+      let imported = 0
       const concurrency = Math.min(3, chosen.length)
       const worker = async () => {
         while (true) {
+          if (ac.signal.aborted) return
           const i = next++
           if (i >= chosen.length) return
           const c = chosen[i]
           bumpJob({ label: `Downloading from Dropbox · ${c.name}`, done, failed })
           try {
-            files[i] = await downloadChoice(c)
+            // Download then immediately ingest — backpressure: only ~concurrency blobs in flight
+            const file = await downloadChoiceWithRetry(c, ac.signal)
+            // A completed download is always ingested (Cancel only stops remaining / in-flight fetches)
+            bumpJob({ label: `Processing ${c.name}`, done, failed })
+            const result = await ingestOneFile(file, 'dropbox')
+            if (result === 'added' || result === 'near' || result === 'duplicate') imported++
             done++
             bumpJob({ label: `Downloading from Dropbox · ${c.name}`, done, failed })
           } catch (e: any) {
+            if (e?.name === 'AbortError' || ac.signal.aborted) return
             failed++
-            bumpJob({ label: `Downloading from Dropbox · ${c.name}`, done, failed })
-            toast(`${c.name}: ${e.message}`, 'error')
+            done++
+            bumpJob({ label: `Downloading from Dropbox…`, done, failed })
+            // no per-file toast — summary at the end
           }
         }
       }
       await Promise.all(Array.from({ length: concurrency }, () => worker()))
-      const got = files.filter((f): f is File => !!f)
-      // Hand off to tagging: mark download phase complete so addFiles extends the same job bar
-      setJobBoth({ label: 'Downloading from Dropbox…', total: chosen.length, done: chosen.length, failed })
-      if (!got.length) { endJob(); return 'ok' as const }
-      await addFiles(got, 'dropbox')
+      dropboxAbortRef.current = null
+      const cancelled = ac.signal.aborted
+      setJobBoth({ label: cancelled ? 'Import cancelled' : 'Done', total: chosen.length, done, failed, cancellable: false })
+      if (cancelled) {
+        if (!imported) toast('Import cancelled — nothing had finished downloading yet')
+        else toast(`Import cancelled — ${imported} photo(s) kept in your library`, 'ok')
+      } else if (failed > 0) {
+        toast(`Imported ${imported} photo(s) from Dropbox · ${failed} download(s) failed`, imported ? 'info' : 'error')
+      }
+      endJob()
     } catch (e: any) {
+      dropboxAbortRef.current = null
       setJobBoth(null)
       toast(e.message || 'Dropbox import failed', 'error')
     }
     return 'ok' as const
-  }, [addFiles, dropboxKey, toast])
+  }, [dropboxKey, ingestOneFile, toast])
 
   // ---------- editing ----------
   const updatePhotos = useCallback(async (ids: string[], fn: (p: Photo) => Photo) => {
@@ -710,13 +782,13 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
     ready, photos, settings, custom, job, model, toasts,
     pendingCount: photos.filter((p) => p.status === 'pending').length,
     dropboxKey,
-    addFiles, importFromDropbox, updatePhotos, addTags, removeTags, deletePhotos, retagAll, retagPhoto, retryPending,
+    addFiles, importFromDropbox, cancelDropboxDownload, updatePhotos, addTags, removeTags, deletePhotos, retagAll, retagPhoto, retryPending,
     saveSettings, addCustomLabel, removeCustomLabel, toggleLabel, resetVocabulary, exportData, importTags,
     clearEverything, toast, preloadModel, setAfterIngest,
     nearDupes, resolveNearDupe, resolveAllNearDupes, findDuplicates, dismissDupePair,
     folderSupported: canPickFolder, folderName, chooseSaveFolder, clearSaveFolder: clearSaveFolderFn,
     savePhotosToDisk, downloadPhotosZip,
-  }), [ready, photos, settings, custom, job, model, toasts, dropboxKey, addFiles, importFromDropbox, updatePhotos, addTags, removeTags,
+  }), [ready, photos, settings, custom, job, model, toasts, dropboxKey, addFiles, importFromDropbox, cancelDropboxDownload, updatePhotos, addTags, removeTags,
     deletePhotos, retagAll, retagPhoto, retryPending, saveSettings, addCustomLabel, removeCustomLabel, toggleLabel, resetVocabulary, exportData,
     importTags, clearEverything, toast, preloadModel, setAfterIngest, nearDupes, resolveNearDupe, resolveAllNearDupes, findDuplicates,
     dismissDupePair, folderName, chooseSaveFolder, clearSaveFolderFn, savePhotosToDisk, downloadPhotosZip])

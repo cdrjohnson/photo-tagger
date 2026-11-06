@@ -53,8 +53,8 @@ export function chooseFromDropbox(): Promise<DropboxChoice[]> {
   })
 }
 
-export async function downloadChoice(c: DropboxChoice): Promise<File> {
-  const r = await fetch(c.link)
+export async function downloadChoice(c: DropboxChoice, signal?: AbortSignal): Promise<File> {
+  const r = await fetch(c.link, signal ? { signal } : undefined)
   if (!r.ok) throw new Error(`Dropbox download failed (${r.status})`)
   const blob = await r.blob()
   const type = blob.type && blob.type.startsWith('image/') ? blob.type : guessType(c.name)
