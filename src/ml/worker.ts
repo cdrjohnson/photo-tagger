@@ -38,9 +38,15 @@ async function init(r: Extract<Req, { type: 'init' }>) {
   modelId = r.modelId
   env.allowLocalModels = false
   env.remoteHost = r.host.endsWith('/') ? r.host : r.host + '/'
-  // Serve the ONNX Runtime wasm from our own origin (no CDN).
+  // These assets ship with the app. Do NOT let Transformers' persistent model cache
+  // serve them: older desktop builds cached the SPA's HTML fallback at these URLs,
+  // and an upgrade otherwise keeps importing that HTML as JavaScript forever.
+  // Model downloads still use their normal persistent cache. The web service worker
+  // caches these local runtime files separately for offline use.
+  env.useWasmCache = false
+  // Serve a matching factory/binary pair, versioned to avoid stale HTTP/SW caches.
   const o = env.backends.onnx as any
-  o.wasm.wasmPaths = { mjs: `${r.base}ort/ort-wasm-simd-threaded.mjs`, wasm: `${r.base}ort/ort-wasm-simd-threaded.wasm` }
+  o.wasm.wasmPaths = { mjs: `${r.base}ort/ort-wasm-simd-threaded.mjs?v=${__ORT_VERSION__}`, wasm: `${r.base}ort/ort-wasm-simd-threaded.wasm?v=${__ORT_VERSION__}` }
   o.wasm.numThreads = 1
   if (vision) return
   phase = 'vision'

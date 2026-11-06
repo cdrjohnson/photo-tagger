@@ -5,7 +5,7 @@ import fs from 'node:fs/promises'
 import { execSync } from 'node:child_process'
 import path from 'node:path'
 import { devices } from 'playwright'
-import { launch, makeScreenshotSample, ROOT, sample, startPreview, URL_BASE } from './testkit.mjs'
+import { launch, makeScreenshotSample, ROOT, sample, startPreview, URL_BASE, routeModel } from './testkit.mjs'
 
 const results = []
 let current = ''
@@ -539,6 +539,47 @@ await test('Dropbox: aborted fetch is retried; no per-file abort toast spam', as
 })
 
 
+await test('Tagging backend: one summary across imports, pending photos survive, Retry starts a fresh worker', async () => {
+  const c = await browser.newContext({ viewport: { width: 1280, height: 860 }, serviceWorkers: 'block' })
+  await routeModel(c)
+  let broken = true
+  let attempts = 0
+  await c.route('**/ort/**', async route => {
+    attempts++
+    if (broken) return route.fulfill({ status: 200, contentType: 'text/javascript', body: '<!doctype html><html>missing runtime</html>' })
+    return route.continue()
+  })
+  const p = await c.newPage()
+  try {
+    await p.goto(URL_BASE)
+    await p.getByTestId('empty').waitFor()
+    await p.evaluate(() => {
+      window.__taggingNotices = []
+      new MutationObserver(records => {
+        for (const record of records) for (const node of record.addedNodes) {
+          if (node instanceof Element && node.matches('.toast') && /Tagging model unavailable/.test(node.textContent || '')) window.__taggingNotices.push(node.textContent)
+        }
+      }).observe(document.body, { childList: true, subtree: true })
+    })
+    await p.getByTestId('file-input').setInputFiles([sample('dog.jpg')])
+    await p.waitForFunction(() => window.__taggingNotices.length === 1, null, { timeout: 90_000 })
+    const firstAttempts = attempts
+    // A separate streamed batch must not initialize the failed backend again.
+    await p.waitForTimeout(2000)
+    await p.getByTestId('file-input').setInputFiles([sample('cat.jpg')])
+    await p.locator('[data-testid=photo-tile][data-name="cat.jpg"]').waitFor()
+    await p.waitForTimeout(1500)
+    eq(await p.evaluate(() => window.__taggingNotices.length), 1, 'one summary, no per-file spam')
+    eq(attempts, firstAttempts, 'failed backend paused across batches')
+    eq(await p.locator('[data-testid=photo-tile][data-status=pending]').count(), 2, 'photos retained for retry')
+    broken = false
+    await p.getByRole('button', { name: 'Retry tagging' }).click()
+    await p.waitForFunction(() => document.querySelectorAll('[data-testid=photo-tile][data-status=ready]').length === 2, null, { timeout: 180_000 })
+    ok(attempts > firstAttempts, 'Retry loads runtime in a fresh worker')
+    eq(await p.evaluate(() => window.__taggingNotices.length), 1, 'successful retry has no error')
+  } finally { await c.close() }
+})
+
 await test('Face models: HTML response toasts once and does not block photo tagging', async () => {
   const c3 = await browser.newContext({ viewport: { width: 1280, height: 860 } })
   // Simulate missing desktop face-models (SPA/asset fallback returns index.html)
@@ -852,7 +893,6 @@ await test('no page errors on desktop', async () => { eq(errors, []) })
 console.log('\nMobile (iPhone 13 viewport, touch)')
 const iphone = devices['iPhone 13']
 const mctx = await browser.newContext({ viewport: iphone.viewport, userAgent: iphone.userAgent, deviceScaleFactor: iphone.deviceScaleFactor, isMobile: true, hasTouch: true, acceptDownloads: true })
-const { routeModel } = await import('./testkit.mjs')
 await routeModel(mctx)
 const m = await mctx.newPage()
 const merrors = []

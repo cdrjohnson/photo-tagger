@@ -48,6 +48,18 @@ export class MLClient {
     })
   }
 
+  /** ORT memoizes backend failures inside the worker; retry needs a fresh runtime. */
+  resetFailed() {
+    if (this.state !== 'error') return
+    this.worker?.terminate()
+    this.worker = null
+    for (const p of this.pending.values()) p.reject(new Error('Tagging worker restarted'))
+    this.pending.clear()
+    this.initPromise = null
+    this.error = ''
+    this.setState('idle')
+  }
+
   /** Load the vision model (downloads ~64 MB on first use, then served from the browser cache). */
   init(host: string): Promise<void> {
     if (this.initPromise) return this.initPromise
@@ -55,7 +67,7 @@ export class MLClient {
     const base = new URL(import.meta.env.BASE_URL, document.baseURI).href
     this.initPromise = this.call({ type: 'init', modelId: MODEL_ID, host, base }).then(
       () => this.setState('ready'),
-      (e) => { this.error = e.message; this.initPromise = null; this.setState('error'); throw e },
+      (e) => { this.error = e.message; this.setState('error'); throw e },
     )
     return this.initPromise
   }

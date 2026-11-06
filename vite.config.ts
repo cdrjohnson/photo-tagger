@@ -1,27 +1,21 @@
-import { defineConfig, type Plugin } from 'vite'
+import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
+import { readFileSync } from 'node:fs'
 
 // Web/PWA (GitHub Pages): /photo-tagger/
 // Tauri desktop: ./ (relative) — set BASE_PATH=./ and VITE_TAURI=1
 const isTauri = process.env.TAURI_ENV_PLATFORM != null || process.env.VITE_TAURI === '1'
 const base = process.env.BASE_PATH || (isTauri ? './' : '/photo-tagger/')
 
-const dropUnusedWasm = (): Plugin => ({
-  name: 'drop-unused-ort-wasm',
-  generateBundle(_o, bundle) {
-    for (const k of Object.keys(bundle)) if (/ort-wasm-simd-threaded\.(asyncify|jsep|jspi).*\.wasm$/.test(k)) delete bundle[k]
-  },
-})
-
 const host = process.env.TAURI_DEV_HOST
 
 export default defineConfig({
   base,
   clearScreen: false,
+  define: { __ORT_VERSION__: JSON.stringify(JSON.parse(readFileSync(new URL('./node_modules/onnxruntime-web/package.json', import.meta.url), 'utf8')).version) },
   plugins: [
     react(),
-    dropUnusedWasm(),
     // Never register a service worker inside the Tauri webview
     ...(!isTauri
       ? [

@@ -46,7 +46,7 @@ It is an installable web app (PWA) – open it on your laptop or phone, then "in
 
 For large libraries, use the **desktop app** (Tauri). Originals stay in a folder you choose; thumbnails, tags, faces and settings live in `<library>/.photo-tagger/` on disk — not in the browser’s IndexedDB quota.
 
-Download from [Releases](https://github.com/cdrjohnson/photo-tagger/releases/tag/desktop-v1.0.2):
+Download from [Releases](https://github.com/cdrjohnson/photo-tagger/releases/tag/desktop-v1.0.3):
 
 | Build | File | When to use |
 | --- | --- | --- |
@@ -167,3 +167,22 @@ To change the built-in labels: edit `src/labels.ts`, run `npm run labels:embed` 
 ## License
 
 [MIT](LICENSE) © 2026 cdrjohnson. Third-party components and the CLIP model are listed in [NOTICE](NOTICE).
+
+### Runtime packaging regression checks
+
+Both production build commands validate the copied ONNX module's complete local
+import/binary graph against the installed runtime, reject HTML or invalid WASM,
+and check bundled fallback WASM references. Do not prune Vite-emitted runtime assets.
+
+```sh
+VITE_TAURI=1 TAURI_ENV_PLATFORM=windows npm run build:tauri
+npm run test:ort                  # real CLIP worker, clean + poisoned old runtime cache
+npm run build
+node scripts/test-ort.mjs --web    # same inference tests under /photo-tagger/
+npm run test:e2e                  # includes failed import + fresh-worker Retry tagging
+```
+
+The local runtime bypasses Transformers' persistent WASM cache (AI model caching
+is unchanged). This repairs upgrades from builds which cached an HTML fallback
+as `ort-wasm-simd-threaded.mjs` / `.wasm`. Only runtime assets get an ORT-version
+query key, so stale HTTP/service-worker caches cannot shadow an updated runtime.

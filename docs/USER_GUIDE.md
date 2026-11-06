@@ -1,7 +1,7 @@
 
 ## Windows desktop app
 
-Use the desktop build when your library is too large for a browser tab. Both an **installer** and a **portable zip** are published on [GitHub Releases](https://github.com/cdrjohnson/photo-tagger/releases/tag/desktop-v1.0.2).
+Use the desktop build when your library is too large for a browser tab. Both an **installer** and a **portable zip** are published on [GitHub Releases](https://github.com/cdrjohnson/photo-tagger/releases/tag/desktop-v1.0.3).
 
 ### Installer
 1. Download `Photo.Tagger_*_x64-setup.exe` (NSIS) or the `.msi`.
@@ -173,3 +173,11 @@ Once installed and used once online, it works offline. Use **🌓** (top right) 
 | Photos disappeared | Browser data was cleared, or you opened the app in a different browser/profile – each has its own library. Export your tags regularly. |
 | Dropbox pop-up shows an error | Add this site's **hostname** (e.g. `cdrjohnson.github.io`, no `https://`) to your Dropbox app's *Chooser / Saver / Embedder domains* ([steps](DROPBOX_SETUP.md)). |
 | Slow tagging on a phone | Keep the screen on and the app open while it works; photos are processed one by one. |
+
+### Desktop tagging error after upgrading
+
+If an older desktop build showed `no available backend found` / `Unexpected token '<'`,
+install or extract **v1.0.3 or newer**, reopen the same library, then click **Retry tagging**.
+Older versions could persist an HTML error page in the tagging runtime cache; v1.0.3
+bypasses that stale cache while keeping downloaded AI models cached. Existing photos
+and manual tags are preserved; do not delete the library or re-import the photos.

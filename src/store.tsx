@@ -197,6 +197,13 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
   }
   const endJob = () => setTimeout(() => { if (jobRef.current && jobRef.current.done >= jobRef.current.total) setJobBoth(null) }, 1500)
 
+  const reportTaggingFailure = useCallback((e: any) => {
+    if (!modelFailed.current) {
+      toast(`Tagging model unavailable: ${e?.message || e}. Photos are saved untagged. After updating or reloading, use "Retry tagging".`, 'error')
+    }
+    modelFailed.current = true
+  }, [toast])
+
   // ---------- ingest helpers ----------
   const finishPhoto = useCallback(async (prep: Prepared) => {
     await DB.savePhotoWithBlobs(prep.photo, prep.blobs)
@@ -214,8 +221,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
         await DB.putEmbedding(prep.photo.id, emb)
         await tagWithEmbedding(prep.photo, emb)
       } catch (e: any) {
-        modelFailed.current = true
-        toast(`Tagging model unavailable: ${e.message}. Photos were added untagged – use "Retry tagging" when you're online.`, 'error')
+        reportTaggingFailure(e)
       }
     }
     if (afterIngest.current && !faceFailed.current) {
@@ -230,13 +236,13 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
     if (settingsRef.current.autoSaveFolder && folderRef.current) {
       try { await saveOneToFolder(folderRef.current, prep.photo) } catch { /* permission may have lapsed */ }
     }
-  }, [ensureModel, setPhotosBoth, tagWithEmbedding, toast])
+  }, [ensureModel, reportTaggingFailure, setPhotosBoth, tagWithEmbedding, toast])
 
   // ---------- ingest ----------
   const run = useCallback(async () => {
     if (running.current) return
     running.current = true
-    modelFailed.current = false
+    // Keep a failed backend paused across streamed Dropbox batches, not just one run.
     let exactSkipped = 0
     try {
       while (queue.current.length) {
@@ -693,6 +699,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
   }, [ensureModel])
 
   const retagAll = useCallback(async () => {
+    ml.resetFailed()
     const s = settingsRef.current
     try {
       await syncCustomEmbeddings()
@@ -725,6 +732,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
   }, [ensureModel, persist, syncCustomEmbeddings, tagWithEmbedding, toast])
 
   const retagPhoto = useCallback(async (id: string) => {
+    ml.resetFailed()
     const p = photosRef.current.find((x) => x.id === id)
     if (!p) return
     try {
@@ -748,6 +756,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
     const pend = photosRef.current.filter((p) => p.status === 'pending')
     if (!pend.length) return
     modelFailed.current = false
+    ml.resetFailed()
     try {
       await runJob('Tagging', pend.length, async (step) => {
         for (const p of pend) {
@@ -763,12 +772,13 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
         }
       })
     } catch (e: any) {
-      toast(`Tagging failed: ${e.message}`, 'error')
+      reportTaggingFailure(e)
     }
-  }, [ensureModel, tagWithEmbedding, toast])
+  }, [ensureModel, reportTaggingFailure, tagWithEmbedding])
 
   const preloadModel = useCallback(async () => {
-    try { await ensureModel(); toast('Tagging model ready', 'ok') } catch (e: any) { toast(`Model download failed: ${e.message}`, 'error') }
+    ml.resetFailed()
+    try { await ensureModel(); modelFailed.current = false; toast('Tagging model ready', 'ok') } catch (e: any) { toast(`Model download failed: ${e.message}`, 'error') }
   }, [ensureModel, toast])
 
   // ---------- settings & vocabulary ----------

@@ -12,3 +12,6 @@ interface ImportMeta {
 declare module 'virtual:pwa-register' {
   export function registerSW(options?: { immediate?: boolean }): void
 }
+
+/** Runtime asset cache key from the installed ORT package (not the app version). */
+declare const __ORT_VERSION__: string
