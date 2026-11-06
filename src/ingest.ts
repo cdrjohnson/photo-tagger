@@ -2,6 +2,7 @@ import { analyseQuality, clipPixels, decodeImage, readExif, scaledCanvas, toBlob
 import { contentHash, dHashFromBitmap } from './hashes'
 import { exifAndQualityTags } from './tags'
 import type { Photo, Settings } from './types'
+import { isDesktop } from './platform'
 
 export const IMAGE_EXT = /\.(jpe?g|png|webp|gif|bmp|avif|heic|heif|tiff?)$/i
 export const isImageFile = (f: File) => f.type.startsWith('image/') || IMAGE_EXT.test(f.name)
@@ -36,6 +37,8 @@ export async function prepare(file: File, source: Photo['source'], settings: Set
     const { rgb, width: rw, height: rh } = clipPixels(bmp)
     const now = Date.now()
     const lm = file.lastModified && file.lastModified > 0 ? file.lastModified : undefined
+    const desktop = isDesktop()
+    const keepOrig = desktop || settings.keepOriginals || small
     const base: Photo = {
       id: uid(),
       fp: fingerprint({ name: file.name, size: file.size, lastModified: source === 'device' ? file.lastModified : 0 }),
@@ -55,13 +58,14 @@ export async function prepare(file: File, source: Photo['source'], settings: Set
       tags: [],
       rejected: [],
       source,
-      hasOriginal: small || settings.keepOriginals,
+      hasOriginal: keepOrig,
       status: 'pending',
     }
     base.tags = exifAndQualityTags(base)
     return {
       photo: base,
-      blobs: { thumb, view, original: settings.keepOriginals && !small ? file : undefined },
+      // Desktop always writes the original file into the library folder
+      blobs: { thumb, view, original: desktop || settings.keepOriginals || small ? file : undefined },
       rgb, rw, rh,
       contentHash: ch,
     }

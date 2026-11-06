@@ -1,7 +1,7 @@
 import { useEffect, useMemo } from 'react'
 import { useViewUrl } from '../hooks'
 import { useLibrary } from '../store'
-import { getBlob } from '../db'
+import { getBlob } from '../storage'
 import type { Photo } from '../types'
 import { TagInput } from './TagInput'
 import { usePeople } from '../people'

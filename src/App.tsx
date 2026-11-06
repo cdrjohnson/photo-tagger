@@ -237,11 +237,22 @@ export default function App() {
       <main>
         {view === 'people' ? <PeopleView onShowPhotos={(name) => { setFilters({ ...EMPTY_FILTERS, tags: [name.trim().toLowerCase().replace(/\s+/g, ' ')] }); setView('photos') }} />
           : !lib.ready ? <div className="center"><div className="spinner" /></div>
+          : lib.isDesktop && !lib.libraryPath ? (
+            <div className="empty" data-testid="choose-library">
+              <div className="empty-art" aria-hidden>📁</div>
+              <h1>Choose a library folder</h1>
+              <p>Photo Tagger Desktop keeps your originals on disk in a folder you choose. Thumbnails, tags, faces and settings live in a hidden <code>.photo-tagger</code> subfolder — nothing is uploaded.</p>
+              <button className="btn primary big" data-testid="pick-library" onClick={() => void lib.chooseLibraryFolder()}>Choose library folder…</button>
+              <p className="muted small">You can change this later in Settings → Data. Existing browser libraries are not migrated automatically — re-import photos into this folder.</p>
+            </div>
+          )
           : lib.photos.length === 0 ? (
             <div className="empty" data-testid="empty">
               <div className="empty-art" aria-hidden>🖼️</div>
               <h1>Tag and find your photos — privately</h1>
-              <p>Add photos from this device or Dropbox. A small AI model running <b>in your browser</b> labels what’s in each one. Nothing is uploaded anywhere.</p>
+              <p>{lib.isDesktop
+                ? <>Add photos from this device or Dropbox. They are copied into your library folder and tagged on-device. Originals stay on disk.</>
+                : <>Add photos from this device or Dropbox. A small AI model running <b>in your browser</b> labels what’s in each one. Nothing is uploaded anywhere.</>}</p>
               <div className="row center wrap">
                 <button className="btn primary big" data-testid="empty-add" onClick={() => fileRef.current?.click()}>Choose photos</button>
                 <button className="btn big touch-only" onClick={() => camRef.current?.click()}>Take a photo</button>
@@ -257,11 +268,7 @@ export default function App() {
               <button className="btn" onClick={() => setFilters((f) => ({ ...EMPTY_FILTERS, mode: f.mode, sort: f.sort }))}>Clear filters</button>
             </div>
           ) : (
-            <div className="grid" data-testid="grid">
-              {filtered.map((p, i) => (
-                <Tile key={p.id} p={p} i={i} selected={sel.has(p.id)} selecting={inSelection} onTile={onTile} onLong={onLong} onCheck={onCheck} />
-              ))}
-            </div>
+            <PhotoGrid filtered={filtered} sel={sel} inSelection={inSelection} onTile={onTile} onLong={onLong} onCheck={onCheck} />
           )}
       </main>
 
@@ -328,6 +335,54 @@ export default function App() {
     </div>
   )
 }
+
+
+const TILE_MIN = 170
+const PhotoGrid = memo(function PhotoGrid({ filtered, sel, inSelection, onTile, onLong, onCheck }: {
+  filtered: Photo[]
+  sel: Set<string>; inSelection: boolean
+  onTile: (i: number, id: string, e: { shiftKey: boolean }) => void
+  onLong: (i: number, id: string) => void
+  onCheck: (i: number, id: string) => void
+}) {
+  const ref = useRef<HTMLDivElement>(null)
+  const [range, setRange] = useState({ start: 0, end: 80 })
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const update = () => {
+      const cols = Math.max(1, Math.floor(el.clientWidth / (TILE_MIN + 8)))
+      const rowH = (el.clientWidth / cols) + 8
+      const scrollParent = el.closest('main') || document.documentElement
+      const top = scrollParent === document.documentElement ? window.scrollY : (scrollParent as HTMLElement).scrollTop
+      const viewH = scrollParent === document.documentElement ? window.innerHeight : (scrollParent as HTMLElement).clientHeight
+      const startRow = Math.max(0, Math.floor(top / rowH) - 2)
+      const endRow = Math.ceil((top + viewH) / rowH) + 2
+      setRange({ start: startRow * cols, end: Math.min(filtered.length, endRow * cols) })
+    }
+    update()
+    const scrollParent = el.closest('main') || window
+    scrollParent.addEventListener('scroll', update, { passive: true })
+    window.addEventListener('resize', update)
+    return () => {
+      scrollParent.removeEventListener('scroll', update as any)
+      window.removeEventListener('resize', update)
+    }
+  }, [filtered.length])
+  // Small libraries: render all (keeps e2e simple)
+  const virtual = filtered.length > 120
+  const start = virtual ? range.start : 0
+  const end = virtual ? range.end : filtered.length
+  const topPad = virtual && start > 0 ? Math.floor(start / Math.max(1, Math.floor((ref.current?.clientWidth || 800) / (TILE_MIN + 8)))) * ((ref.current?.clientWidth || 800) / Math.max(1, Math.floor((ref.current?.clientWidth || 800) / (TILE_MIN + 8))) + 8) : 0
+  return (
+    <div className="grid" data-testid="grid" ref={ref} style={virtual ? { paddingTop: topPad } : undefined}>
+      {filtered.slice(start, end).map((p, j) => {
+        const i = start + j
+        return <Tile key={p.id} p={p} i={i} selected={sel.has(p.id)} selecting={inSelection} onTile={onTile} onLong={onLong} onCheck={onCheck} />
+      })}
+    </div>
+  )
+})
 
 const Tile = memo(function Tile({ p, i, selected, selecting, onTile, onLong, onCheck }: {
   p: Photo; i: number; selected: boolean; selecting: boolean

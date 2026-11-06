@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { getBlob } from './db'
+import { getBlob } from './storage'
 
 const cache = new Map<string, string>()
 const inflight = new Map<string, Promise<string | undefined>>()

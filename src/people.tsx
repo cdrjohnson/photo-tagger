@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import * as DB from './db'
+import * as DB from './storage'
 import { faces as faceClient } from './ml/faceClient'
 import { decodeImage, scaledCanvas, toBlob } from './imageUtils'
 import { clusterFaces, suggestMatches, type Suggestion } from './faceLogic'
@@ -118,11 +118,7 @@ export function PeopleProvider({ children }: { children: ReactNode }) {
     }
     // replace any previous faces of this photo
     const old = facesRef.current.filter((f) => f.photoId === photoId)
-    if (old.length) {
-      const d = await DB.db(); const tx = d.transaction('faces', 'readwrite')
-      for (const f of old) tx.store.delete(f.id)
-      await tx.done
-    }
+    if (old.length) await DB.deleteFaceIds(old.map((f) => f.id))
     await DB.putFaces(recs)
     setFaces([...facesRef.current.filter((f) => f.photoId !== photoId), ...recs])
     await libRef.current.updatePhotos([photoId], (p) => ({ ...p, facesScanned: true, faceCount: recs.length }))

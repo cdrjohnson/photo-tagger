@@ -91,3 +91,10 @@ export async function putFaces(fs: Face[]) {
 export async function clearFaces() {
   await (await db()).clear('faces')
 }
+
+export async function deleteFaceIds(ids: string[]) {
+  const d = await db()
+  const tx = d.transaction('faces', 'readwrite')
+  for (const id of ids) tx.store.delete(id)
+  await tx.done
+}

@@ -19,10 +19,19 @@
     "test:e2e": "node scripts/e2e.mjs",
     "screenshots": "node scripts/screenshots.mjs",
     "predev": "node scripts/copy-ort.mjs",
-    "prebuild": "node scripts/copy-ort.mjs"
+    "prebuild": "node scripts/copy-ort.mjs",
+    "dev:tauri": "VITE_TAURI=1 BASE_PATH=./ vite",
+    "build:tauri": "tsc --noEmit && VITE_TAURI=1 BASE_PATH=./ vite build",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build",
+    "test:unit": "node scripts/unit-storage.mjs"
   },
   "dependencies": {
     "@huggingface/transformers": "^4.3.2",
+    "@tauri-apps/api": "^2.12.4",
+    "@tauri-apps/plugin-dialog": "^2.8.4",
+    "@tauri-apps/plugin-fs": "^2.7.1",
     "@vladmandic/face-api": "^1.7.15",
     "exifr": "^7.1.3",
     "idb": "^8.0.4",
@@ -30,6 +39,7 @@
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
+    "@tauri-apps/cli": "^2.12.4",
     "@types/react": "^18.3.31",
     "@types/react-dom": "^18.3.7",
     "@vitejs/plugin-react": "^5.2.0",

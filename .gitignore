@@ -6,3 +6,6 @@ public/ort
 *.log
 test-results
 public/face-models
+
+# Tauri
+src-tauri/target

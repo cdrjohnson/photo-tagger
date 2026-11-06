@@ -41,6 +41,27 @@ It is an installable web app (PWA) – open it on your laptop or phone, then "in
 - **Storage** in IndexedDB: thumbnail + a 2048 px copy per photo (optionally the full original). Nothing is uploaded.
 - **Responsive**, touch-friendly, **dark mode** (auto / light / dark), keyboard shortcuts in the detail view (←, →, Esc).
 
+
+## Windows desktop app
+
+For large libraries, use the **desktop app** (Tauri). Originals stay in a folder you choose; thumbnails, tags, faces and settings live in `<library>/.photo-tagger/` on disk — not in the browser’s IndexedDB quota.
+
+1. Download the latest **Windows installer** from [Releases](https://github.com/cdrjohnson/photo-tagger/releases) (`.exe` NSIS or `.msi`).
+2. Install and open **Photo Tagger**. Windows may show a SmartScreen warning on unsigned builds — choose **More info → Run anyway**.
+3. **WebView2** is required (built into Windows 11 and most Windows 10 installs).
+4. On first launch, **choose a library folder**. Adding photos or importing from Dropbox copies files into that folder, then tags them as each file arrives (same streamed import as the web app).
+5. The live web app at <https://cdrjohnson.github.io/photo-tagger/> keeps working independently. Browser libraries are **not** migrated automatically — re-import into the desktop library folder.
+
+Linux and macOS desktop builds should be straightforward later (`tauri build` on those OSes); phone apps are a separate step.
+
+Developers:
+
+```bash
+npm install
+npm run tauri:dev      # needs Rust + platform WebView deps
+npm run tauri:build    # produces installers under src-tauri/target/release/bundle/
+```
+
 ## Quick start
 
 Requirements: Node.js 20 or newer.
@@ -64,7 +85,7 @@ The first time you add a photo the app downloads the tagging model (~64 MB) from
 ```bash
 npx playwright install chromium     # once
 npm run build
-npm run test:e2e                    # 41 end-to-end tests in Chromium (incl. 9 for faces)
+npm run test:e2e                    # 45 end-to-end tests in Chromium (incl. 9 for faces)
 npm run screenshots                 # regenerates docs/images/*.png
 node scripts/smoke-live.mjs         # smoke-test the deployed site (real network)
 ```

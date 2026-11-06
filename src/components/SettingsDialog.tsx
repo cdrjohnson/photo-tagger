@@ -55,7 +55,7 @@ function Slider({ label, hint, value, min, max, step, onChange, testId }: {
 }
 
 function General({ onDirty }: { onDirty: () => void }) {
-  const { settings: s, saveSettings, model, preloadModel } = useLibrary()
+  const { settings: s, saveSettings, model, preloadModel, isDesktop } = useLibrary()
   const [est, setEst] = useState('')
   useEffect(() => {
     navigator.storage?.estimate?.().then((e) => setEst(`${fmtMB(e.usage ?? 0)} used of ${fmtMB(e.quota ?? 0)} available to this app`)).catch(() => {})
@@ -72,11 +72,15 @@ function General({ onDirty }: { onDirty: () => void }) {
       <Slider label="Bright threshold" hint="Average brightness above this gets “bright”." value={s.brightThreshold} min={150} max={250} step={5} onChange={(v) => set({ brightThreshold: v })} />
       <p className="muted">Changes are applied to your library when you close settings.</p>
       <h3>Storage</h3>
-      <label className="check">
-        <input type="checkbox" checked={s.keepOriginals} onChange={(e) => saveSettings({ keepOriginals: e.target.checked })} data-testid="set-keep-originals" />
-        <span>Keep full-size originals <small>Off (default): each photo is stored as a 2048&nbsp;px copy plus a thumbnail, which saves a lot of space. Applies to photos you add from now on.</small></span>
-      </label>
-      {est && <p className="muted">{est}</p>}
+      {isDesktop ? (
+        <p className="muted">Desktop mode always keeps the original file in your library folder. Thumbnails and 2048&nbsp;px views are cached under <code>.photo-tagger/</code>.</p>
+      ) : (
+        <label className="check">
+          <input type="checkbox" checked={s.keepOriginals} onChange={(e) => saveSettings({ keepOriginals: e.target.checked })} data-testid="set-keep-originals" />
+          <span>Keep full-size originals <small>Off (default): each photo is stored as a 2048&nbsp;px copy plus a thumbnail, which saves a lot of space. Applies to photos you add from now on.</small></span>
+        </label>
+      )}
+      {est && !isDesktop && <p className="muted">{est}</p>}
       <h3>Model</h3>
       <p className="muted">
         CLIP ViT-B/32 (4-bit, ≈64&nbsp;MB) runs inside your browser. It downloads once and is then cached. Status:{' '}
@@ -203,15 +207,25 @@ function Data() {
         try { await lib.findDuplicates() } finally { setScanning(false) }
       }}>{scanning ? 'Scanning…' : 'Find duplicates in library'}</button>
 
+      {lib.isDesktop && (
+        <>
+          <h3>Library folder</h3>
+          <p className="muted">Originals live in this folder. Tags, thumbnails, faces and settings are stored in <code>.photo-tagger/</code> inside it. This <b>is</b> your library — the browser “save to folder” export is not used in the desktop app.</p>
+          <p data-testid="library-path"><code>{lib.libraryPath || '(none chosen)'}</code></p>
+          <button className="btn" data-testid="change-library" onClick={() => void lib.changeLibraryFolder()}>{lib.libraryPath ? 'Change library folder…' : 'Choose library folder…'}</button>
+        </>
+      )}
       <h3>Save photos to a drive</h3>
       <p className="muted">
-        Copies the photos (original if kept, otherwise the 2048&nbsp;px version) plus tags onto a folder you choose.
+        {lib.isDesktop
+          ? 'On desktop your library folder already holds the originals. You can still download a zip backup of tagged copies.'
+          : <>Copies the photos (original if kept, otherwise the 2048&nbsp;px version) plus tags onto a folder you choose.
         The in-browser library stays the working copy — this is a backup/export, not two-way sync.
         {lib.folderSupported
           ? ' This browser can write to a live folder (Chrome / Edge on desktop).'
-          : ' This browser can’t pick a live folder (Safari, Firefox, phones) — download a zip instead.'}
+          : ' This browser can’t pick a live folder (Safari, Firefox, phones) — download a zip instead.'}</>}
       </p>
-      {lib.folderSupported ? (
+      {!lib.isDesktop && lib.folderSupported ? (
         <>
           <div className="row wrap">
             <button className="btn primary" data-testid="save-folder" disabled={saving || !lib.photos.length} onClick={async () => {
@@ -247,7 +261,7 @@ function Data() {
       }} />
       <button className="btn" data-testid="import-btn" onClick={() => fileRef.current?.click()}>Import JSON or CSV…</button>
       <h3>Danger zone</h3>
-      <p className="muted">Deletes every photo, tag and setting stored by this app in this browser. Your original photos elsewhere are not touched.</p>
+      <p className="muted">{lib.isDesktop ? "Deletes every photo record, tag and derived file under .photo-tagger/ in your library folder. Original image files in the library folder are also removed from that folder." : "Deletes every photo, tag and setting stored by this app in this browser. Your original photos elsewhere are not touched."}</p>
       <button className={`btn danger ${armed ? 'armed' : ''}`} data-testid="wipe" onClick={async () => {
         if (!armed) { setArmed(true); setTimeout(() => setArmed(false), 4000); return }
         await lib.clearEverything(); setArmed(false)

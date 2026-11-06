@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import * as DB from './db'
+import * as DB from './storage'
 import { ml, type ModelProgress, type ModelState } from './ml/client'
 import { applyAutoTags, buildVocab, scoreTags, type VocabEntry } from './tagging'
 import { addTag, exifAndQualityTags, normTag, removeTag } from './tags'
@@ -61,6 +61,11 @@ export interface Library {
   clearSaveFolder(): Promise<void>
   savePhotosToDisk(ids?: string[]): Promise<void>
   downloadPhotosZip(ids?: string[]): Promise<void>
+  /** Tauri desktop: absolute path of the chosen library folder, or null until picked */
+  libraryPath: string | null
+  isDesktop: boolean
+  chooseLibraryFolder(): Promise<void>
+  changeLibraryFolder(): Promise<void>
 }
 
 export interface NearDupe {
@@ -90,6 +95,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
   const [toasts, setToasts] = useState<Toast[]>([])
   const [nearDupes, setNearDupes] = useState<NearDupe[]>([])
   const [folderName, setFolderName] = useState<string | null>(null)
+  const [libraryPath, setLibraryPath] = useState<string | null>(null)
 
   const photosRef = useRef<Photo[]>([])
   const nearRef = useRef<NearDupe[]>([])
@@ -123,20 +129,32 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
   // ---------- load ----------
   useEffect(() => {
     (async () => {
+      const desktop = DB.isDesktop()
+      if (desktop) {
+        const path = await DB.getLibraryPath().catch(() => null)
+        setLibraryPath(path)
+        if (!path) {
+          setReady(true)
+          return
+        }
+      }
       const [ps, s, c, ce] = await Promise.all([
         DB.allPhotos(),
         DB.kvGet<Partial<Settings>>('settings'),
         DB.kvGet<CustomLabel[]>('custom'),
-        DB.kvGet<Record<string, Float32Array>>('customEmb'),
+        DB.kvGet<Record<string, number[]>>('customEmb'),
       ])
-      getSavedFolder().then((h) => { folderRef.current = h; setFolderName(h?.name ?? null) }).catch(() => {})
+      if (!desktop) getSavedFolder().then((h) => { folderRef.current = h; setFolderName(h?.name ?? null) }).catch(() => {})
       const merged = { ...DEFAULT_SETTINGS, ...(s ?? {}) }
+      if (desktop) merged.keepOriginals = true
       settingsRef.current = merged; setSettings(merged)
       customRef.current = c ?? []; setCustom(c ?? [])
-      customEmb.current = new Map(Object.entries(ce ?? {}))
+      const embMap = new Map<string, Float32Array>()
+      for (const [k, v] of Object.entries(ce ?? {})) embMap.set(k, v instanceof Float32Array ? v : Float32Array.from(v as number[]))
+      customEmb.current = embMap
       photosRef.current = ps; setPhotos(ps)
       setReady(true)
-      navigator.storage?.persist?.().catch(() => {})
+      if (!desktop) navigator.storage?.persist?.().catch(() => {})
     })()
     ml.onProgress = (p) => setModel((m) => ({ ...m, phase: p.phase, loaded: p.loaded, total: p.total }))
     ml.onState = (state) => setModel((m) => ({ ...m, state, error: ml.error }))
@@ -444,6 +462,35 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
     }
   }, [toast])
 
+
+  const chooseLibraryFolder = useCallback(async () => {
+    try {
+      const path = await DB.pickLibraryFolder()
+      setLibraryPath(path)
+      const [ps, st, c, ce] = await Promise.all([
+        DB.allPhotos(),
+        DB.kvGet<Partial<Settings>>('settings'),
+        DB.kvGet<CustomLabel[]>('custom'),
+        DB.kvGet<Record<string, number[]>>('customEmb'),
+      ])
+      const merged = { ...DEFAULT_SETTINGS, ...(st ?? {}), keepOriginals: true }
+      settingsRef.current = merged; setSettings(merged)
+      customRef.current = c ?? []; setCustom(c ?? [])
+      const embMap = new Map<string, Float32Array>()
+      for (const [k, v] of Object.entries(ce ?? {})) embMap.set(k, v instanceof Float32Array ? v : Float32Array.from(v as number[]))
+      customEmb.current = embMap
+      photosRef.current = ps; setPhotos(ps)
+      toast(`Library folder: ${path}`, 'ok')
+    } catch (e: any) {
+      if (String(e?.message || e).includes('No folder')) return
+      toast(e?.message || 'Could not open library folder', 'error')
+    }
+  }, [toast])
+
+  const changeLibraryFolder = useCallback(async () => {
+    await chooseLibraryFolder()
+  }, [chooseLibraryFolder])
+
   const cancelDropboxDownload = useCallback(() => {
     dropboxAbortRef.current?.abort()
   }, [])
@@ -600,7 +647,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
     await ensureModel()
     const es = await ml.embedTexts(missing)
     missing.forEach((m, i) => customEmb.current.set(m, es[i]))
-    await DB.kvSet('customEmb', Object.fromEntries(customEmb.current))
+    await DB.kvSet('customEmb', Object.fromEntries([...customEmb.current].map(([k, v]) => [k, Array.from(v)])))
   }, [ensureModel])
 
   const retagAll = useCallback(async () => {
@@ -787,11 +834,12 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
     clearEverything, toast, preloadModel, setAfterIngest,
     nearDupes, resolveNearDupe, resolveAllNearDupes, findDuplicates, dismissDupePair,
     folderSupported: canPickFolder, folderName, chooseSaveFolder, clearSaveFolder: clearSaveFolderFn,
+    libraryPath, isDesktop: DB.isDesktop(), chooseLibraryFolder, changeLibraryFolder,
     savePhotosToDisk, downloadPhotosZip,
   }), [ready, photos, settings, custom, job, model, toasts, dropboxKey, addFiles, importFromDropbox, cancelDropboxDownload, updatePhotos, addTags, removeTags,
     deletePhotos, retagAll, retagPhoto, retryPending, saveSettings, addCustomLabel, removeCustomLabel, toggleLabel, resetVocabulary, exportData,
     importTags, clearEverything, toast, preloadModel, setAfterIngest, nearDupes, resolveNearDupe, resolveAllNearDupes, findDuplicates,
-    dismissDupePair, folderName, chooseSaveFolder, clearSaveFolderFn, savePhotosToDisk, downloadPhotosZip])
+    dismissDupePair, folderName, chooseSaveFolder, clearSaveFolderFn, savePhotosToDisk, downloadPhotosZip, libraryPath, chooseLibraryFolder, changeLibraryFolder])
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>
 }

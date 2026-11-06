@@ -1,0 +1,24 @@
+[[permission]]
+identifier = "allow-library"
+description = "Access the on-disk photo library"
+commands.allow = [
+  "library_get_path",
+  "library_pick",
+  "library_clear",
+  "library_list_photos",
+  "library_put_photo",
+  "library_save_blobs",
+  "library_get_blob",
+  "library_put_embedding",
+  "library_all_embeddings",
+  "library_delete_photos",
+  "library_clear_all",
+  "library_kv_get",
+  "library_kv_set",
+  "library_all_faces",
+  "library_put_faces",
+  "library_clear_faces",
+  "library_import_bytes",
+  "library_read_file",
+  "library_delete_face_ids"
+]

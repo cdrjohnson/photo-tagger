@@ -1,12 +1,13 @@
 /** Save tagged photos to a local folder (File System Access API) or as a ZIP download. */
-import * as DB from './db'
+import * as DB from './storage'
+import { isDesktop } from './platform'
 import { toCSV, toJSON } from './exportImport'
 import type { CustomLabel, Photo, Settings } from './types'
 
 export const FOLDER_KV = 'saveFolder'
 export type DirHandle = FileSystemDirectoryHandle
 
-export const canPickFolder = typeof window !== 'undefined' && 'showDirectoryPicker' in window
+export const canPickFolder = typeof window !== 'undefined' && 'showDirectoryPicker' in window && !isDesktop()
 
 export async function pickFolder(): Promise<DirHandle> {
   // @ts-expect-error showDirectoryPicker is Chromium-only

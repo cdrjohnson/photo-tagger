@@ -45,6 +45,8 @@ export interface Photo {
   rejected: string[]
   source: 'device' | 'dropbox'
   hasOriginal: boolean
+  /** desktop: relative path of the original inside the library folder */
+  relPath?: string
   status: PhotoStatus
   error?: string
   /** face detection has run on this photo */

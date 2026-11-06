@@ -1,0 +1,61 @@
+# Build a Windows installer (NSIS + MSI) with Tauri 2. Does not touch GitHub Pages.
+name: Windows desktop
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: windows-desktop
+  cancel-in-progress: true
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: npm ci
+      - name: Generate Windows icons
+        run: npx --yes @tauri-apps/cli icon public/icon-512.png
+      - name: Build Windows installers
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VITE_DROPBOX_APP_KEY: ${{ vars.VITE_DROPBOX_APP_KEY }}
+        with:
+          tagName: desktop-v__VERSION__
+          releaseName: 'Photo Tagger Desktop v__VERSION__'
+          releaseBody: |
+            Windows desktop installer for Photo Tagger.
+
+            **Requirements:** Windows 10/11 with WebView2 (included on Windows 11 and most Windows 10).
+
+            **SmartScreen:** this build is unsigned — Windows may warn on first run; choose More info → Run anyway.
+
+            Library: choose a folder on first launch. Originals stay on disk; metadata lives in `.photo-tagger/` inside that folder.
+
+            The web app at https://cdrjohnson.github.io/photo-tagger/ is unchanged.
+          releaseDraft: false
+          prerelease: false
+          includeUpdaterJson: false
+          projectPath: .
+          tauriScript: npm run tauri --
+          args: --bundles nsis,msi
+      - name: Upload installer artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: photo-tagger-windows
+          path: |
+            src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/release/bundle/msi/*.msi
+          if-no-files-found: warn

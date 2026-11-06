@@ -1,3 +1,18 @@
+
+## Windows desktop app
+
+Install the desktop build when your library is too large for a browser tab.
+
+1. Get the installer from the project’s [GitHub Releases](https://github.com/cdrjohnson/photo-tagger/releases) (NSIS `.exe` or `.msi`).
+2. **WebView2** must be installed (Windows 11 and most Windows 10 already have it).
+3. Unsigned builds may trigger **SmartScreen** — More info → Run anyway. We do not ship a code-signing certificate.
+4. First launch: **Choose library folder…**. Photo Tagger copies new photos (and Dropbox downloads) into that folder and stores metadata under `.photo-tagger/` inside it. Originals always remain on disk.
+5. Cancel + confirm for Dropbox works the same as on the web: already-added photos stay in the library.
+6. “Save to folder” from the web app is unnecessary on desktop — your library folder *is* that location. You can still download a zip backup from Settings → Data.
+7. Existing data from the **browser/PWA** is not imported automatically; add photos again (or copy files into the library folder and re-ingest).
+
+Linux/macOS desktop ports are expected to reuse the same Tauri project later. iPhone/Android are out of scope for now.
+
 # Photo Tagger – user guide
 
 Photo Tagger looks at each photo, writes down what's in it as **tags** ("dog", "beach", "document"…), and lets you find photos by combining those tags. It all happens on your own device: **your photos are never uploaded**.
