@@ -1,7 +1,8 @@
 mod library;
 
 use library::LibraryState;
-use tauri::Manager;
+use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::webview::NewWindowResponse;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -32,6 +33,26 @@ pub fn run() {
       library::library_is_portable,
     ])
     .setup(|app| {
+      // Build the main window in code so we can allow Dropbox Chooser popups (window.open).
+      // CSP stays null in tauri.conf.json so dropins.js / chooser assets can load.
+      let _main = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
+        .title("Photo Tagger")
+        .inner_size(1280.0, 860.0)
+        .resizable(true)
+        .on_new_window(|url, _features| {
+          let host = url.host_str().unwrap_or("");
+          if host == "dropbox.com"
+            || host.ends_with(".dropbox.com")
+            || host.ends_with(".dropboxusercontent.com")
+            || host == "dropboxusercontent.com"
+          {
+            NewWindowResponse::Allow
+          } else {
+            NewWindowResponse::Deny
+          }
+        })
+        .build()?;
+
       let state = app.state::<LibraryState>();
       // Config lives in %APPDATA% normally, or <exe>/data when portable.txt is present
       let cfg = if library::is_portable() {
@@ -47,7 +68,6 @@ pub fn run() {
             let _ = state.open(&p);
           }
         } else if library::is_portable() {
-          // Default portable library beside the app if it already exists
           if let Ok(exe) = std::env::current_exe() {
             if let Some(parent) = exe.parent() {
               let lib = parent.join("library");

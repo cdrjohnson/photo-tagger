@@ -1,7 +1,7 @@
 
 ## Windows desktop app
 
-Use the desktop build when your library is too large for a browser tab. Both an **installer** and a **portable zip** are published on [GitHub Releases](https://github.com/cdrjohnson/photo-tagger/releases/tag/desktop-v1.0.0).
+Use the desktop build when your library is too large for a browser tab. Both an **installer** and a **portable zip** are published on [GitHub Releases](https://github.com/cdrjohnson/photo-tagger/releases/tag/desktop-v1.0.1).
 
 ### Installer
 1. Download `Photo.Tagger_*_x64-setup.exe` (NSIS) or the `.msi`.

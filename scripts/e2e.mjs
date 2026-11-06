@@ -32,7 +32,12 @@ await context.route('https://www.dropbox.com/static/api/2/dropins.js', (r) => r.
   body: `window.__dbxKey = document.getElementById('dropboxjs').dataset.appKey;
          window.__dbxCancel = false;
          window.__dbxFiles = null;
+         window.__dbxChooseCalls = 0;
+         window.__dbxChooseStack = [];
          window.Dropbox = { choose(o){
+           window.__dbxChooseCalls++;
+           // Record that choose ran synchronously (same turn as the click handler)
+           window.__dbxChooseStack.push('sync');
            // brief delay so the "Choose files…" banner is observable; cancel path resolves empty
            setTimeout(() => {
              if (window.__dbxCancel) { (o.cancel || (() => o.success([])))(); return }
@@ -337,6 +342,21 @@ await test('Dropbox: without a key the button explains setup; with a key it impo
   await page.keyboard.press('Escape')
 })
 
+
+await test('Dropbox: choose runs on the click turn without awaiting script load', async () => {
+  // Preload must have completed after the key was saved in the previous test
+  await page.waitForFunction(() => !!(window.Dropbox && window.Dropbox.choose), null, { timeout: 10_000 })
+  const before = await page.evaluate(() => window.__dbxChooseCalls || 0)
+  await page.evaluate(() => { window.__dbxCancel = true; window.__dbxChooseStack = [] })
+  await page.getByTestId('add-btn').click()
+  await page.getByTestId('add-dropbox').click()
+  // choose() must have been invoked during the click handling (stack marker set synchronously)
+  const after = await page.evaluate(() => ({ calls: window.__dbxChooseCalls || 0, stack: window.__dbxChooseStack || [] }))
+  ok(after.calls === before + 1, 'Dropbox.choose called exactly once on click (before=' + before + ' after=' + after.calls + ')')
+  ok(after.stack.includes('sync'), 'choose recorded as synchronous on the click turn')
+  // Cancel path still clears the waiting banner
+  await page.waitForFunction(() => !/Choose files in the Dropbox window/.test(document.querySelector('[data-testid=job-label]')?.textContent || ''), null, { timeout: 10_000 })
+})
 
 await test('Dropbox: streamed ingest — first file appears before the slow second finishes', async () => {
   await page.evaluate(() => {

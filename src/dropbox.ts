@@ -22,9 +22,15 @@ declare global {
 let loadedKey = ''
 let loading: Promise<void> | null = null
 
-/** Inject the Chooser script (must be loaded before the click so the pop-up is not blocked). */
+/** True when dropins.js is loaded for this app key and window.Dropbox.choose exists. */
+export function isDropboxReady(appKey: string): boolean {
+  return !!appKey && loadedKey === appKey && typeof window !== 'undefined' && typeof window.Dropbox?.choose === 'function'
+}
+
+/** Inject the Chooser script (must be loaded *before* the click so the pop-up is not blocked). */
 export function loadDropbox(appKey: string): Promise<void> {
   if (!appKey) return Promise.reject(new Error('no-key'))
+  if (isDropboxReady(appKey)) return Promise.resolve()
   if (loading && loadedKey === appKey) return loading
   document.getElementById('dropboxjs')?.remove()
   loadedKey = appKey
@@ -40,9 +46,13 @@ export function loadDropbox(appKey: string): Promise<void> {
   return loading
 }
 
+/**
+ * Opens the Dropbox Chooser. Calls window.Dropbox.choose() synchronously so it must be
+ * invoked on the same turn as a user click/tap (no await before this call).
+ */
 export function chooseFromDropbox(): Promise<DropboxChoice[]> {
   return new Promise((resolve, reject) => {
-    if (!window.Dropbox) return reject(new Error('Dropbox Chooser is not loaded yet.'))
+    if (!window.Dropbox?.choose) return reject(new Error('Dropbox Chooser is not loaded yet.'))
     window.Dropbox.choose({
       linkType: 'direct',
       multiselect: true,

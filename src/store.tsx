@@ -7,7 +7,7 @@ import { fingerprint, hashesFromBlob, isImageFile, pixelsFromBlob, prepare, type
 import { nearestPhash } from './hashes'
 import { buildZip, canPickFolder, clearSavedFolder, downloadBlob, ensurePermission, getSavedFolder, pickFolder, saveOneToFolder, saveToFolder, type DirHandle } from './folderSave'
 import { qualityFlags } from './imageUtils'
-import { chooseFromDropbox, downloadChoice, ENV_DROPBOX_KEY, loadDropbox } from './dropbox'
+import { chooseFromDropbox, downloadChoice, ENV_DROPBOX_KEY, isDropboxReady, loadDropbox } from './dropbox'
 import { parseImport, toCSV, toJSON, download } from './exportImport'
 import { DEFAULT_SETTINGS, type CustomLabel, type Photo, type Settings, type Tag } from './types'
 
@@ -575,10 +575,16 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
 
   const importFromDropbox = useCallback(async () => {
     if (!dropboxKey) return 'no-key' as const
+    // Dropbox.choose() must run on the same turn as the user click. Never await script load here.
+    if (!isDropboxReady(dropboxKey)) {
+      void loadDropbox(dropboxKey).catch((e: any) => toast(e?.message || 'Could not load Dropbox', 'error'))
+      toast('Loading Dropbox… click From Dropbox again', 'info')
+      return 'ok' as const
+    }
     try {
-      await loadDropbox(dropboxKey)
       // Visible while Dropbox's own dialog is open (we cannot put a spinner inside it)
       setJobBoth({ label: 'Choose files in the Dropbox window…', total: 0, done: 0, failed: 0 })
+      // choose() is invoked synchronously inside chooseFromDropbox — still on the click stack
       const chosen = await chooseFromDropbox()
       if (!chosen.length) {
         setJobBoth(null)
