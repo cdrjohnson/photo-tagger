@@ -6,8 +6,8 @@ import { PeopleProvider } from './people'
 import './styles.css'
 
 async function boot() {
-  // Vite DCE: Tauri builds set VITE_TAURI=1 and omit the PWA plugin, so this import is dropped.
-  if (import.meta.env.VITE_TAURI !== '1') {
+  // Vite DCE: Tauri CLI sets TAURI_ENV_PLATFORM and vite.config omits the PWA plugin.
+  if (!import.meta.env.TAURI_ENV_PLATFORM) {
     const { registerSW } = await import('virtual:pwa-register')
     registerSW({ immediate: true })
   }
