@@ -66,6 +66,9 @@ export interface Library {
   isDesktop: boolean
   chooseLibraryFolder(): Promise<void>
   changeLibraryFolder(): Promise<void>
+  /** true when running from a portable folder (portable.txt beside the exe) */
+  portable: boolean
+  useLibraryBesideApp(): Promise<void>
 }
 
 export interface NearDupe {
@@ -96,6 +99,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
   const [nearDupes, setNearDupes] = useState<NearDupe[]>([])
   const [folderName, setFolderName] = useState<string | null>(null)
   const [libraryPath, setLibraryPath] = useState<string | null>(null)
+  const [portable, setPortable] = useState(false)
 
   const photosRef = useRef<Photo[]>([])
   const nearRef = useRef<NearDupe[]>([])
@@ -131,6 +135,8 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
     (async () => {
       const desktop = DB.isDesktop()
       if (desktop) {
+        const port = await DB.isPortable().catch(() => false)
+        setPortable(!!port)
         const path = await DB.getLibraryPath().catch(() => null)
         setLibraryPath(path)
         if (!path) {
@@ -491,6 +497,29 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
     await chooseLibraryFolder()
   }, [chooseLibraryFolder])
 
+  const useLibraryBesideApp = useCallback(async () => {
+    try {
+      const path = await DB.useLibraryBesideApp()
+      setLibraryPath(path)
+      const [ps, st, c, ce] = await Promise.all([
+        DB.allPhotos(),
+        DB.kvGet<Partial<Settings>>('settings'),
+        DB.kvGet<CustomLabel[]>('custom'),
+        DB.kvGet<Record<string, number[]>>('customEmb'),
+      ])
+      const merged = { ...DEFAULT_SETTINGS, ...(st ?? {}), keepOriginals: true }
+      settingsRef.current = merged; setSettings(merged)
+      customRef.current = c ?? []; setCustom(c ?? [])
+      const embMap = new Map<string, Float32Array>()
+      for (const [k, v] of Object.entries(ce ?? {})) embMap.set(k, v instanceof Float32Array ? v : Float32Array.from(v as number[]))
+      customEmb.current = embMap
+      photosRef.current = ps; setPhotos(ps)
+      toast(`Library folder: ${path}`, 'ok')
+    } catch (e: any) {
+      toast(e?.message || 'Could not create library beside the app', 'error')
+    }
+  }, [toast])
+
   const cancelDropboxDownload = useCallback(() => {
     dropboxAbortRef.current?.abort()
   }, [])
@@ -834,12 +863,12 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
     clearEverything, toast, preloadModel, setAfterIngest,
     nearDupes, resolveNearDupe, resolveAllNearDupes, findDuplicates, dismissDupePair,
     folderSupported: canPickFolder, folderName, chooseSaveFolder, clearSaveFolder: clearSaveFolderFn,
-    libraryPath, isDesktop: DB.isDesktop(), chooseLibraryFolder, changeLibraryFolder,
+    libraryPath, isDesktop: DB.isDesktop(), chooseLibraryFolder, changeLibraryFolder, portable, useLibraryBesideApp,
     savePhotosToDisk, downloadPhotosZip,
   }), [ready, photos, settings, custom, job, model, toasts, dropboxKey, addFiles, importFromDropbox, cancelDropboxDownload, updatePhotos, addTags, removeTags,
     deletePhotos, retagAll, retagPhoto, retryPending, saveSettings, addCustomLabel, removeCustomLabel, toggleLabel, resetVocabulary, exportData,
     importTags, clearEverything, toast, preloadModel, setAfterIngest, nearDupes, resolveNearDupe, resolveAllNearDupes, findDuplicates,
-    dismissDupePair, folderName, chooseSaveFolder, clearSaveFolderFn, savePhotosToDisk, downloadPhotosZip, libraryPath, chooseLibraryFolder, changeLibraryFolder])
+    dismissDupePair, folderName, chooseSaveFolder, clearSaveFolderFn, savePhotosToDisk, downloadPhotosZip, libraryPath, chooseLibraryFolder, changeLibraryFolder, portable, useLibraryBesideApp])
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>
 }

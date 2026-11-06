@@ -20,5 +20,7 @@ commands.allow = [
   "library_clear_faces",
   "library_import_bytes",
   "library_read_file",
-  "library_delete_face_ids"
+  "library_delete_face_ids",
+  "library_use_beside_app",
+  "library_is_portable"
 ]

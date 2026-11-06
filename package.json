@@ -25,7 +25,8 @@
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
-    "test:unit": "node scripts/unit-storage.mjs"
+    "test:unit": "node scripts/unit-storage.mjs",
+    "package:portable": "node scripts/package-windows-portable.mjs"
   },
   "dependencies": {
     "@huggingface/transformers": "^4.3.2",

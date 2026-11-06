@@ -46,11 +46,18 @@ It is an installable web app (PWA) – open it on your laptop or phone, then "in
 
 For large libraries, use the **desktop app** (Tauri). Originals stay in a folder you choose; thumbnails, tags, faces and settings live in `<library>/.photo-tagger/` on disk — not in the browser’s IndexedDB quota.
 
-1. Download the latest **Windows installer** from [Releases](https://github.com/cdrjohnson/photo-tagger/releases) (`.exe` NSIS or `.msi`).
-2. Install and open **Photo Tagger**. Windows may show a SmartScreen warning on unsigned builds — choose **More info → Run anyway**.
-3. **WebView2** is required (built into Windows 11 and most Windows 10 installs).
-4. On first launch, **choose a library folder**. Adding photos or importing from Dropbox copies files into that folder, then tags them as each file arrives (same streamed import as the web app).
-5. The live web app at <https://cdrjohnson.github.io/photo-tagger/> keeps working independently. Browser libraries are **not** migrated automatically — re-import into the desktop library folder.
+Download from [Releases](https://github.com/cdrjohnson/photo-tagger/releases/tag/desktop-v1.0.0):
+
+| Build | File | When to use |
+| --- | --- | --- |
+| **Installer** | `Photo.Tagger_*_x64-setup.exe` or `*.msi` | Normal PC install (current user; NSIS does not need admin) |
+| **Portable** | `Photo.Tagger_*_x64_portable.zip` | USB drive or any folder — unzip and run `Photo Tagger.exe`, no installer |
+
+1. **WebView2** is required (built into Windows 11 and most Windows 10).
+2. Unsigned builds may show **SmartScreen** — More info → Run anyway.
+3. On first launch, choose a **library folder**, or **Use folder next to the app** (creates `library/` beside the exe — ideal for portable).
+4. **Portable** builds include a `portable.txt` marker so settings live in `data/` next to the exe (they travel with the folder). Installer builds use the normal app data location.
+5. Adding photos or Dropbox import copies files into the library folder and tags each as it arrives. The web app at <https://cdrjohnson.github.io/photo-tagger/> still works; browser libraries are **not** auto-migrated.
 
 Linux and macOS desktop builds should be straightforward later (`tauri build` on those OSes); phone apps are a separate step.
 

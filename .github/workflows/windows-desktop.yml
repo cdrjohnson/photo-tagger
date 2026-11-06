@@ -1,4 +1,4 @@
-# Build a Windows installer (NSIS + MSI) with Tauri 2. Does not touch GitHub Pages.
+# Build Windows installer (NSIS + MSI) and a portable zip. Does not touch GitHub Pages.
 name: Windows desktop
 on:
   push:
@@ -36,25 +36,46 @@ jobs:
           tagName: desktop-v__VERSION__
           releaseName: 'Photo Tagger Desktop v__VERSION__'
           releaseBody: |
-            Windows desktop installer for Photo Tagger.
+            Windows desktop builds for Photo Tagger.
 
-            **Requirements:** Windows 10/11 with WebView2 (included on Windows 11 and most Windows 10).
+            ### Installer (recommended for a normal PC install)
+            - `Photo.Tagger_*_x64-setup.exe` (NSIS) or `*_en-US.msi`
+            - Installs for the current user; no admin required for NSIS current-user mode.
 
-            **SmartScreen:** this build is unsigned — Windows may warn on first run; choose More info → Run anyway.
+            ### Portable (USB / no installer)
+            - `Photo.Tagger_*_x64_portable.zip` — unzip anywhere and run `Photo Tagger.exe`
+            - Settings live in a `data/` folder beside the exe; use **Use folder next to the app** for a `library/` folder in the same place.
+            - No admin rights; does not write to Program Files.
 
-            Library: choose a folder on first launch. Originals stay on disk; metadata lives in `.photo-tagger/` inside that folder.
+            **Requirements:** Windows 10/11 with WebView2 (built into Windows 11 and most Windows 10).
 
-            The web app at https://cdrjohnson.github.io/photo-tagger/ is unchanged.
+            **SmartScreen:** builds are unsigned — More info → Run anyway on first launch.
+
+            Library: originals stay on disk in the folder you choose; metadata is under `.photo-tagger/` inside that folder.
+
+            The web app at https://cdrjohnson.github.io/photo-tagger/ is unchanged. Browser IndexedDB libraries are not migrated automatically.
           releaseDraft: false
           prerelease: false
           includeUpdaterJson: false
           projectPath: .
           tauriScript: npm run tauri
-      - name: Upload installer artifacts
+      - name: Package portable zip
+        run: node scripts/package-windows-portable.mjs
+      - name: Attach portable zip to the GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $zip = Get-ChildItem -Path "src-tauri/target/release/bundle/portable/*.zip" | Select-Object -First 1
+          if (-not $zip) { throw "portable zip not found" }
+          $ver = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          gh release upload "desktop-v$ver" $zip.FullName --clobber
+      - name: Upload installer + portable artifacts
         uses: actions/upload-artifact@v4
         with:
           name: photo-tagger-windows
           path: |
             src-tauri/target/release/bundle/nsis/*.exe
             src-tauri/target/release/bundle/msi/*.msi
+            src-tauri/target/release/bundle/portable/*.zip
           if-no-files-found: warn

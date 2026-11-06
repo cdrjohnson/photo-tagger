@@ -9,6 +9,29 @@ use tauri_plugin_dialog::DialogExt;
 
 const META_DIR: &str = ".photo-tagger";
 
+/// Portable mode: a `portable.txt` / `.portable` marker next to the exe, or PHOTO_TAGGER_PORTABLE=1.
+fn exe_dir() -> Result<PathBuf, String> {
+  let exe = std::env::current_exe().map_err(e)?;
+  exe.parent().map(|p| p.to_path_buf()).ok_or_else(|| "no executable directory".into())
+}
+
+pub fn is_portable() -> bool {
+  if std::env::var_os("PHOTO_TAGGER_PORTABLE").is_some() {
+    return true;
+  }
+  let Ok(dir) = exe_dir() else { return false };
+  dir.join("portable.txt").is_file() || dir.join(".portable").is_file()
+}
+
+fn config_dir(app: &AppHandle) -> Result<PathBuf, String> {
+  if is_portable() {
+    let data = exe_dir()?.join("data");
+    fs::create_dir_all(&data).map_err(e)?;
+    return Ok(data);
+  }
+  app.path().app_config_dir().map_err(e)
+}
+
 pub struct LibraryState {
   inner: Mutex<Option<OpenLibrary>>,
 }
@@ -62,16 +85,16 @@ fn e<E: std::fmt::Display>(err: E) -> String {
 }
 
 fn persist_path(app: &AppHandle, path: &str) -> Result<(), String> {
-  let dir = app.path().app_config_dir().map_err(e)?;
+  let dir = config_dir(app)?;
   fs::create_dir_all(&dir).map_err(e)?;
   fs::write(dir.join("library-path.txt"), path).map_err(e)
 }
 
 fn clear_persisted(app: &AppHandle) -> Result<(), String> {
-  let dir = app.path().app_config_dir().map_err(e)?;
+  let dir = config_dir(app)?;
   let marker = dir.join("library-path.txt");
   if marker.exists() {
-    fs::remove_file(marker).map_err(e)?;
+    let _ = fs::remove_file(marker);
   }
   Ok(())
 }
@@ -532,4 +555,20 @@ pub fn library_delete_face_ids(state: State<'_, LibraryState>, ids: Vec<String>)
     }
     Ok(())
   })
+}
+
+#[tauri::command]
+pub fn library_is_portable() -> bool {
+  is_portable()
+}
+
+/// Create/use a `library` folder next to the executable (handy for USB / portable installs).
+#[tauri::command]
+pub fn library_use_beside_app(app: AppHandle, state: State<'_, LibraryState>) -> Result<String, String> {
+  let dir = exe_dir()?.join("library");
+  fs::create_dir_all(&dir).map_err(e)?;
+  let path = dir.to_string_lossy().into_owned();
+  state.open(&path)?;
+  persist_path(&app, &path)?;
+  Ok(path)
 }

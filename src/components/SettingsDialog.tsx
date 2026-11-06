@@ -212,7 +212,11 @@ function Data() {
           <h3>Library folder</h3>
           <p className="muted">Originals live in this folder. Tags, thumbnails, faces and settings are stored in <code>.photo-tagger/</code> inside it. This <b>is</b> your library — the browser “save to folder” export is not used in the desktop app.</p>
           <p data-testid="library-path"><code>{lib.libraryPath || '(none chosen)'}</code></p>
-          <button className="btn" data-testid="change-library" onClick={() => void lib.changeLibraryFolder()}>{lib.libraryPath ? 'Change library folder…' : 'Choose library folder…'}</button>
+          <div className="row wrap">
+            <button className="btn" data-testid="change-library" onClick={() => void lib.changeLibraryFolder()}>{lib.libraryPath ? 'Change library folder…' : 'Choose library folder…'}</button>
+            <button className="btn" data-testid="library-beside-settings" onClick={() => void lib.useLibraryBesideApp()}>Use folder next to the app</button>
+          </div>
+          {lib.portable && <p className="muted small">Portable build: app settings live in <code>data/</code> beside the executable.</p>}
         </>
       )}
       <h3>Save photos to a drive</h3>

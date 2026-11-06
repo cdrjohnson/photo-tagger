@@ -242,8 +242,16 @@ export default function App() {
               <div className="empty-art" aria-hidden>📁</div>
               <h1>Choose a library folder</h1>
               <p>Photo Tagger Desktop keeps your originals on disk in a folder you choose. Thumbnails, tags, faces and settings live in a hidden <code>.photo-tagger</code> subfolder — nothing is uploaded.</p>
-              <button className="btn primary big" data-testid="pick-library" onClick={() => void lib.chooseLibraryFolder()}>Choose library folder…</button>
-              <p className="muted small">You can change this later in Settings → Data. Existing browser libraries are not migrated automatically — re-import photos into this folder.</p>
+              <div className="row center wrap">
+                <button className="btn primary big" data-testid="pick-library" onClick={() => void lib.chooseLibraryFolder()}>Choose library folder…</button>
+                <button className="btn big" data-testid="library-beside" onClick={() => void lib.useLibraryBesideApp()}>Use folder next to the app</button>
+              </div>
+              <p className="muted small">
+                {lib.portable
+                  ? 'Portable mode: settings are stored in a data/ folder beside this app (good for USB drives). “Use folder next to the app” creates a library/ folder here.'
+                  : '“Use folder next to the app” creates a library/ folder beside Photo Tagger.exe. You can change this later in Settings → Data.'}
+                {' '}Existing browser libraries are not migrated automatically — re-import photos into this folder.
+              </p>
             </div>
           )
           : lib.photos.length === 0 ? (

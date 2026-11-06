@@ -132,3 +132,11 @@ export async function deleteFaceIds(ids: string[]) {
   // For now delete by rewriting: clear all faces of those ids through put with empty after SQL delete.
   await invoke('library_delete_face_ids', { ids })
 }
+
+export async function isPortable(): Promise<boolean> {
+  return invoke<boolean>('library_is_portable')
+}
+
+export async function useLibraryBesideApp(): Promise<string> {
+  return invoke<string>('library_use_beside_app')
+}

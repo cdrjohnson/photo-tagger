@@ -1,15 +1,26 @@
 
 ## Windows desktop app
 
-Install the desktop build when your library is too large for a browser tab.
+Use the desktop build when your library is too large for a browser tab. Both an **installer** and a **portable zip** are published on [GitHub Releases](https://github.com/cdrjohnson/photo-tagger/releases/tag/desktop-v1.0.0).
 
-1. Get the installer from the project’s [GitHub Releases](https://github.com/cdrjohnson/photo-tagger/releases) (NSIS `.exe` or `.msi`).
-2. **WebView2** must be installed (Windows 11 and most Windows 10 already have it).
-3. Unsigned builds may trigger **SmartScreen** — More info → Run anyway. We do not ship a code-signing certificate.
-4. First launch: **Choose library folder…**. Photo Tagger copies new photos (and Dropbox downloads) into that folder and stores metadata under `.photo-tagger/` inside it. Originals always remain on disk.
-5. Cancel + confirm for Dropbox works the same as on the web: already-added photos stay in the library.
-6. “Save to folder” from the web app is unnecessary on desktop — your library folder *is* that location. You can still download a zip backup from Settings → Data.
-7. Existing data from the **browser/PWA** is not imported automatically; add photos again (or copy files into the library folder and re-ingest).
+### Installer
+1. Download `Photo.Tagger_*_x64-setup.exe` (NSIS) or the `.msi`.
+2. Run the installer (NSIS current-user mode does not need admin).
+3. Open **Photo Tagger**.
+
+### Portable (no install)
+1. Download `Photo.Tagger_*_x64_portable.zip`.
+2. Unzip anywhere (USB stick, Desktop, Documents).
+3. Run `Photo Tagger.exe`. A `portable.txt` file in the folder makes settings live in `data/` beside the exe so they travel with the folder.
+4. On first launch, click **Use folder next to the app** to use the included `library/` folder, or choose any other folder.
+
+### Shared notes
+1. **WebView2** is required (Windows 11 and most Windows 10 already have it).
+2. Unsigned builds may trigger **SmartScreen** — More info → Run anyway. We do not ship a code-signing certificate.
+3. Photo Tagger copies new photos (and Dropbox downloads) into your library folder and stores metadata under `.photo-tagger/` inside it. Originals always remain on disk.
+4. Cancel + confirm for Dropbox works the same as on the web: already-added photos stay in the library.
+5. “Save to folder” from the web app is unnecessary on desktop — your library folder *is* that location. You can still download a zip backup from Settings → Data.
+6. Existing data from the **browser/PWA** is not imported automatically; add photos again (or copy files into the library folder and re-ingest).
 
 Linux/macOS desktop ports are expected to reuse the same Tauri project later. iPhone/Android are out of scope for now.
 

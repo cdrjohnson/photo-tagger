@@ -57,4 +57,4 @@ export async function deleteFaceIds(ids: string[]) {
 }
 
 export { isDesktop }
-export { getLibraryPath, pickLibraryFolder, clearLibraryFolder, importBytes } from './desktopDb'
+export { getLibraryPath, pickLibraryFolder, clearLibraryFolder, importBytes, isPortable, useLibraryBesideApp } from './desktopDb'
