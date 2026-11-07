@@ -115,6 +115,9 @@ console.log('\nDesktop (Chromium 1280×860)')
 await test('app shell loads, shows empty state, manifest + service worker are present', async () => {
   await page.goto(URL_BASE)
   await page.getByTestId('empty').waitFor()
+  const pkgVer = JSON.parse(await fs.readFile(path.join(ROOT, 'package.json'), 'utf8')).version
+  eq((await page.getByTestId('app-version').textContent()).trim(), 'v' + pkgVer, 'brand version')
+  ok(await page.getByTestId('app-version').isVisible(), 'brand version visible')
   const man = await (await fetch(URL_BASE + 'manifest.webmanifest')).json()
   eq(man.name, 'Photo Tagger'); eq(man.display, 'standalone')
   eq([man.start_url, man.scope], ['/photo-tagger/', '/photo-tagger/'], 'manifest start_url/scope')

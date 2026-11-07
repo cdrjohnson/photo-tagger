@@ -132,7 +132,7 @@ export default function App() {
   return (
     <div className="app">
       <header className="top" ref={headRef}>
-        <div className="brand"><img src={`${import.meta.env.BASE_URL}favicon.svg`} alt="" width="28" height="28" /><span>Photo Tagger</span></div>
+        <div className="brand"><img src={`${import.meta.env.BASE_URL}favicon.svg`} alt="" width="28" height="28" /><span>Photo Tagger</span><small className="brand-version" data-testid="app-version" title={`Photo Tagger version ${__APP_VERSION__}`}>v{__APP_VERSION__}</small></div>
         <div className="seg view-tabs" role="tablist" aria-label="View">
           <button role="tab" aria-selected={view === 'photos'} className={view === 'photos' ? 'on' : ''} data-testid="view-photos" onClick={() => setView('photos')}>Photos</button>
           <button role="tab" aria-selected={view === 'people'} className={view === 'people' ? 'on' : ''} data-testid="view-people" onClick={() => setView('people')}>

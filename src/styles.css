@@ -34,6 +34,7 @@ code { background: var(--panel2); padding: 1px 6px; border-radius: 6px; word-bre
 .top { position: sticky; top: 0; z-index: 20; display: flex; align-items: center; gap: 12px; padding: 10px 16px; padding-top: calc(10px + env(safe-area-inset-top)); background: color-mix(in srgb, var(--panel) 92%, transparent); backdrop-filter: blur(10px); border-bottom: 1px solid var(--border); }
 .brand { display: flex; align-items: center; gap: 8px; font-weight: 700; white-space: nowrap; }
 .brand img { border-radius: 7px; }
+.brand-version { font-weight: 500; font-size: 12px; opacity: .6; }
 .search { flex: 1; min-width: 0; max-width: 560px; }
 .search input { width: 100%; }
 .actions { display: flex; gap: 8px; align-items: center; margin-left: auto; }

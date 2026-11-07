@@ -15,3 +15,4 @@ declare module 'virtual:pwa-register' {
 
 /** Runtime asset cache key from the installed ORT package (not the app version). */
 declare const __ORT_VERSION__: string
+declare const __APP_VERSION__: string

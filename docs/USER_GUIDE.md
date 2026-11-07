@@ -181,3 +181,5 @@ install or extract **v1.0.3 or newer**, reopen the same library, then click **Re
 Older versions could persist an HTML error page in the tagging runtime cache; v1.0.3
 bypasses that stale cache while keeping downloaded AI models cached. Existing photos
 and manual tags are preserved; do not delete the library or re-import the photos.
+
+The app version (for example **v1.0.4**) is shown next to the Photo Tagger title in the top bar. In the People view, naming one face in a mixed *Unnamed* group moves look-alike faces to the *Is this…?* review list; no photos are deleted.

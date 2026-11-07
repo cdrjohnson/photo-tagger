@@ -13,7 +13,7 @@ const host = process.env.TAURI_DEV_HOST
 export default defineConfig({
   base,
   clearScreen: false,
-  define: { __ORT_VERSION__: JSON.stringify(JSON.parse(readFileSync(new URL('./node_modules/onnxruntime-web/package.json', import.meta.url), 'utf8')).version) },
+  define: { __APP_VERSION__: JSON.stringify(JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version), __ORT_VERSION__: JSON.stringify(JSON.parse(readFileSync(new URL('./node_modules/onnxruntime-web/package.json', import.meta.url), 'utf8')).version) },
   plugins: [
     react(),
     // Never register a service worker inside the Tauri webview
