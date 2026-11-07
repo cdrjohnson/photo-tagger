@@ -22,7 +22,7 @@ const src = await import('node:fs').then((fs) => fs.readFileSync(new URL('../src
 for (const name of ['allPhotos', 'putPhoto', 'savePhotoWithBlobs', 'getBlob', 'putEmbedding', 'allEmbeddings', 'deletePhotos', 'clearAll', 'kvGet', 'kvSet', 'allFaces', 'putFaces', 'clearFaces', 'isDesktop']) {
   assert.match(src, new RegExp(`export (async )?function ${name}|export \\{[^}]*\\b${name}\\b`), `storage exports ${name}`)
 }
-assert.match(src, /isDesktop\(\) \? desk\./, 'routes to desktop when isDesktop')
+assert.match(src, /isDesktop\(\) \? desk\b/, 'routes to desktop when isDesktop')
 assert.match(src, /idb\./, 'keeps IndexedDB path for web')
 
 const desk = await import('node:fs').then((fs) => fs.readFileSync(new URL('../src/desktopDb.ts', import.meta.url), 'utf8'))
