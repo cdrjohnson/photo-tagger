@@ -9,9 +9,12 @@ import { usePeople } from '../people'
 const fmtSize = (n: number) => (n > 1e6 ? `${(n / 1e6).toFixed(1)} MB` : `${Math.round(n / 1e3)} KB`)
 const SRC_LABEL = { person: 'People (from faces)', auto: 'Detected in image', manual: 'Added by you', exif: 'From photo metadata', quality: 'Quality check' } as const
 
-const MIN_ZOOM = 1
+// Zoom is the real display scale: 1 = 100% = native pixels (1:1).
+// "Fit" is computed per photo/viewport and is often well below 100% for large photos.
+const MIN_ZOOM_FLOOR = 0.05
 const MAX_ZOOM = 8
 const ZOOM_STEP = 1.25
+const EPS = 0.001
 
 export function Detail({ list, index, onIndex, onClose, allTags }: {
   list: Photo[]; index: number; onIndex: (i: number) => void; onClose: () => void; allTags: string[]
@@ -21,25 +24,57 @@ export function Detail({ list, index, onIndex, onClose, allTags }: {
   const p = list[index]
   const url = useViewUrl(p?.id)
 
-  // zoom=1 means fit-to-frame; higher values magnify. Pan is in CSS pixels of the viewport.
   const [zoom, setZoom] = useState(1)
+  const [fit, setFit] = useState(1)
+  const [nat, setNat] = useState<{ w: number; h: number } | null>(null)
   const [pan, setPan] = useState({ x: 0, y: 0 })
   const stageRef = useRef<HTMLDivElement>(null)
   const dragRef = useRef<{ x: number; y: number; panX: number; panY: number } | null>(null)
   const pinchRef = useRef<{ dist: number; zoom: number } | null>(null)
+  const fitRef = useRef(1)
+  const atFitRef = useRef(true)
 
-  const resetView = useCallback(() => { setZoom(1); setPan({ x: 0, y: 0 }) }, [])
+  // Allow zooming out below fit (and far below 100%) so every photo can be shrunk.
+  const minZoom = Math.max(0.01, Math.min(MIN_ZOOM_FLOOR * 2, fit * 0.5))
+  const minRef = useRef(minZoom); minRef.current = minZoom
+  const clampZoom = (z: number) => Math.min(MAX_ZOOM, Math.max(minRef.current, z))
+
+  const computeFit = useCallback(() => {
+    const el = stageRef.current
+    if (!el || !nat) return
+    const cs = getComputedStyle(el)
+    const w = el.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight)
+    const h = el.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom)
+    if (w <= 0 || h <= 0) return
+    const f = Math.min(1, w / nat.w, h / nat.h)
+    fitRef.current = f
+    setFit(f)
+    if (atFitRef.current) { setZoom(f); setPan({ x: 0, y: 0 }) }
+  }, [nat])
+
+  const resetView = useCallback(() => {
+    atFitRef.current = true
+    setZoom(fitRef.current); setPan({ x: 0, y: 0 })
+  }, [])
 
   // Reset fit when navigating to another photo
-  useEffect(() => { resetView() }, [p?.id, resetView])
-
-  const clampZoom = (z: number) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, z))
+  useEffect(() => { atFitRef.current = true; setNat(null); setPan({ x: 0, y: 0 }) }, [p?.id])
+  useEffect(() => { computeFit() }, [computeFit])
+  useEffect(() => {
+    const el = stageRef.current
+    if (!el || typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(() => computeFit())
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [computeFit])
 
   const zoomBy = useCallback((factor: number, origin?: { x: number; y: number }) => {
     setZoom((prev) => {
       const next = clampZoom(prev * factor)
-      if (next === prev) return prev
-      if (origin && stageRef.current) {
+      if (Math.abs(next - prev) < 1e-6) return prev
+      atFitRef.current = Math.abs(next - fitRef.current) < EPS
+      if (next <= fitRef.current + EPS) setPan({ x: 0, y: 0 })
+      else if (origin && stageRef.current) {
         const rect = stageRef.current.getBoundingClientRect()
         const cx = origin.x - rect.left - rect.width / 2
         const cy = origin.y - rect.top - rect.height / 2
@@ -49,21 +84,23 @@ export function Detail({ list, index, onIndex, onClose, allTags }: {
           y: cy - ((cy - p0.y) * next) / prev,
         }))
       }
-      if (next === 1) setPan({ x: 0, y: 0 })
       return next
     })
   }, [])
 
   const setZoomExact = useCallback((z: number) => {
     const next = clampZoom(z)
+    atFitRef.current = Math.abs(next - fitRef.current) < EPS
     setZoom(next)
-    if (next <= 1) setPan({ x: 0, y: 0 })
+    if (next <= fitRef.current + EPS) setPan({ x: 0, y: 0 })
   }, [])
 
   useEffect(() => {
     const k = (e: KeyboardEvent) => {
-      if ((e.target as HTMLElement)?.tagName === 'INPUT') { if (e.key === 'Escape') onClose(); return }
+      const tgt = e.target as HTMLInputElement
+      if (tgt?.tagName === 'INPUT' && tgt.type !== 'range') { if (e.key === 'Escape') onClose(); return }
       if (e.key === 'Escape') onClose()
+      if (tgt?.type === 'range' && e.key.startsWith('Arrow')) return
       if (e.key === 'ArrowRight' && index < list.length - 1) onIndex(index + 1)
       if (e.key === 'ArrowLeft' && index > 0) onIndex(index - 1)
       if (e.key === '+' || e.key === '=') { e.preventDefault(); zoomBy(ZOOM_STEP) }
@@ -89,8 +126,10 @@ export function Detail({ list, index, onIndex, onClose, allTags }: {
     return () => el.removeEventListener('wheel', onWheel)
   }, [zoomBy, p?.id])
 
+  const canPan = zoom > fit + EPS
+
   const onPointerDown = (e: React.PointerEvent) => {
-    if (zoom <= 1) return
+    if (!canPan) return
     if (e.pointerType === 'touch') return // pinch handled separately
     ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
     dragRef.current = { x: e.clientX, y: e.clientY, panX: pan.x, panY: pan.y }
@@ -107,7 +146,7 @@ export function Detail({ list, index, onIndex, onClose, allTags }: {
       const [a, b] = [e.touches[0], e.touches[1]]
       pinchRef.current = { dist: Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY), zoom }
       dragRef.current = null
-    } else if (e.touches.length === 1 && zoom > 1) {
+    } else if (e.touches.length === 1 && canPan) {
       const t = e.touches[0]
       dragRef.current = { x: t.clientX, y: t.clientY, panX: pan.x, panY: pan.y }
     }
@@ -118,8 +157,9 @@ export function Detail({ list, index, onIndex, onClose, allTags }: {
       const [a, b] = [e.touches[0], e.touches[1]]
       const dist = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY)
       const next = clampZoom(pinchRef.current.zoom * (dist / pinchRef.current.dist))
+      atFitRef.current = Math.abs(next - fitRef.current) < EPS
       setZoom(next)
-      if (next <= 1) setPan({ x: 0, y: 0 })
+      if (next <= fitRef.current + EPS) setPan({ x: 0, y: 0 })
     } else if (e.touches.length === 1 && dragRef.current) {
       const t = e.touches[0]
       const d = dragRef.current
@@ -159,20 +199,20 @@ export function Detail({ list, index, onIndex, onClose, allTags }: {
           <span className="spacer" />
           <div className="detail-zoom" role="group" aria-label="Zoom">
             <button type="button" className="btn icon" data-testid="detail-zoom-out" aria-label="Zoom out"
-              disabled={zoom <= MIN_ZOOM} onClick={() => zoomBy(1 / ZOOM_STEP)}>−</button>
-            <input type="range" min={MIN_ZOOM} max={MAX_ZOOM} step={0.05} value={zoom}
+              disabled={zoom <= minZoom + 1e-6} onClick={() => zoomBy(1 / ZOOM_STEP)}>−</button>
+            <input type="range" min={minZoom} max={MAX_ZOOM} step="any" value={zoom}
               data-testid="detail-zoom-slider" aria-label={`Zoom ${pct}%`}
               onChange={(e) => setZoomExact(Number(e.target.value))} />
             <button type="button" className="btn icon" data-testid="detail-zoom-in" aria-label="Zoom in"
               disabled={zoom >= MAX_ZOOM} onClick={() => zoomBy(ZOOM_STEP)}>＋</button>
-            <button type="button" className="btn small" data-testid="detail-zoom-reset" aria-label="Fit to frame"
-              disabled={zoom === 1 && pan.x === 0 && pan.y === 0} onClick={resetView}>{pct}%</button>
+            <button type="button" className="btn small" data-testid="detail-zoom-reset" aria-label="Fit to frame" title={`Fit (${Math.round(fit * 100)}%)`}
+              disabled={Math.abs(zoom - fit) < EPS && pan.x === 0 && pan.y === 0} onClick={resetView}>{pct}%</button>
           </div>
           <button className="btn icon" onClick={() => onIndex(index - 1)} disabled={index === 0} aria-label="Previous photo" data-testid="detail-prev">‹</button>
           <button className="btn icon" onClick={() => onIndex(index + 1)} disabled={index >= list.length - 1} aria-label="Next photo" data-testid="detail-next">›</button>
         </div>
         <div
-          className={`detail-img${zoom > 1 ? ' zoomed' : ''}`}
+          className={`detail-img${canPan ? ' zoomed' : ''}`}
           data-testid="detail-viewport"
           ref={stageRef}
           onPointerDown={onPointerDown}
@@ -188,9 +228,14 @@ export function Detail({ list, index, onIndex, onClose, allTags }: {
                 src={url}
                 alt={p.name}
                 data-testid="detail-img"
-                data-zoom={String(zoom)}
+                data-zoom={String(Math.round(zoom * 1000) / 1000)}
+                data-fit={String(Math.round(fit * 1000) / 1000)}
+                data-min-zoom={String(Math.round(minZoom * 1000) / 1000)}
                 draggable={false}
-                style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` }}
+                onLoad={(e) => { const im = e.currentTarget; setNat({ w: im.naturalWidth, h: im.naturalHeight }) }}
+                style={nat
+                  ? { width: nat.w, height: nat.h, transform: `translate(-50%, -50%) translate(${pan.x}px, ${pan.y}px) scale(${zoom})` }
+                  : { visibility: 'hidden' }}
               />
             : <div className="spinner" />}
         </div>
