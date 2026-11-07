@@ -105,16 +105,30 @@ const syncedKey = new Map<string, string>()
  * corresponds to a photo tag counts as Photo Tagger-managed, so removing the chip removes it in Dropbox too.
  * Returns the ids of photos whose tag list changed.
  */
+/** The '/…' path the Dropbox Tags API requires (it rejects 'id:…' with a 400). Resolves and remembers it if missing. */
+async function tagPath(c: DropboxClient, p: Photo): Promise<string> {
+  const cur = p.dropbox?.path
+  if (cur && cur.startsWith('/')) return cur
+  const path = await c.pathFor(p.dropbox!.id)
+  const latest = photos.get(p.id)
+  if (latest?.dropbox) { photos.set(p.id, { ...latest, dropbox: { ...latest.dropbox, path } }); touch(p.id) }
+  return path
+}
+
 export async function importNativeTags(ids?: string[]): Promise<string[]> {
   const c = activeDropbox(); if (!c) return []
   const list = (ids ?? [...photos.keys()]).map((id) => photos.get(id)).filter((p): p is Photo => !!p?.dropbox)
   if (!list.length) return []
   let tags: Map<string, string[]>
-  try { tags = await c.getTagsMany(list.map((p) => p.dropbox!.id)) } catch { return [] }
+  const paths = new Map<string, string>()
+  try {
+    for (const p of list) paths.set(p.id, await tagPath(c, p))
+    tags = await c.getTagsMany([...paths.values()])
+  } catch (e: any) { onWriteError?.(new Error(`Could not read Dropbox tags: ${e?.message || e}`)); return [] }
   const changed: string[] = []
   for (const p0 of list) {
     const p = photos.get(p0.id); if (!p) continue
-    const native = (tags.get(p.dropbox!.id) ?? []).filter((t) => toDropboxTag(t) === t && t.length > 0)
+    const native = (tags.get(paths.get(p.id)!) ?? []).filter((t) => toDropboxTag(t) === t && t.length > 0)
     if (!native.length) continue
     let next = p
     const have = new Set(next.tags.map((t) => toDropboxTag(t.name)))
@@ -134,8 +148,8 @@ async function syncNativeTags(c: DropboxClient, id: string) {
   const want = desiredDropboxTags(p)
   const key = want.join('|') + '#' + (owned.get(id) ?? []).join('|')
   if (syncedKey.get(id) === key) return
-  const path = p.dropbox.id
   try {
+    const path = await tagPath(c, p)
     const current = new Set(await c.getTags(path))
     const ours = new Set((owned.get(id) ?? []).filter((t) => current.has(t)))
     // remove only stale tags Photo Tagger itself added
@@ -180,7 +194,8 @@ export async function deletePhotos(ids: string[]) {
   }
   if (c) await Promise.all(gone.map(async (p) => {
     // take back only the native tags Photo Tagger added; the photo itself is untouched
-    for (const t of owned.get(p.id) ?? []) await c.removeTag(p.dropbox!.id, t).catch(() => {})
+    const tp = await tagPath(c, p).catch(() => null)
+    if (tp) for (const t of owned.get(p.id) ?? []) await c.removeTag(tp, t).catch(() => {})
     owned.delete(p.id); syncedKey.delete(p.id)
     await c.deleteMeta(metaPath(p)).catch(() => {})
   }))

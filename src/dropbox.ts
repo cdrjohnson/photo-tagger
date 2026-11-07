@@ -282,6 +282,13 @@ export class DropboxClient {
     const j = await this.rpc<any>('files/tags/get', { paths: [path] })
     return (j?.paths_to_tags?.[0]?.tags ?? []).map((t: any) => String(t.tag_text ?? '').toLowerCase()).filter(Boolean)
   }
+  /** Current path of a file id (files/get_metadata). The Tags API only accepts real '/…' paths, never 'id:…'. */
+  async pathFor(id: string): Promise<string> {
+    const j = await this.rpc<any>('files/get_metadata', { path: id })
+    const path = j?.path_display ?? j?.path_lower
+    if (!path || !String(path).startsWith('/')) throw new Error('Dropbox did not return a path for ' + id)
+    return path
+  }
   /** Native tags for many files at once (batched). Map keyed by the path/id passed in. */
   async getTagsMany(paths: string[]): Promise<Map<string, string[]>> {
     const out = new Map<string, string[]>()

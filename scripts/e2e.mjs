@@ -43,10 +43,11 @@ const DBX_TREE = {
   '/slow': [dbxFile('id:slow-a', 'cancel-stop-a.jpg', '/Slow'), dbxFile('id:slow-b', 'cancel-stop-b.jpg', '/Slow')],
   '/faces': [dbxFile('id:f1', 'obama-portrait.jpg', '/Faces'), dbxFile('id:f2', 'biden-2013.jpg', '/Faces'), dbxFile('id:f3', 'biden-2021.jpg', '/Faces')],
 }
+const idByPath = (p) => Object.values(DBX_TREE).flat().find((x) => x.path_lower === String(p).toLowerCase())?.id
 const CORS = { 'access-control-allow-origin': '*', 'access-control-allow-headers': 'authorization, content-type, dropbox-api-arg', 'access-control-allow-methods': 'POST, OPTIONS', 'access-control-expose-headers': 'dropbox-api-result' }
 async function stubDropbox(ctx) {
   // writes = any write/delete outside Photo Tagger's /.photo-tagger metadata folder (must stay 0)
-  const st = { token: [], downloads: {}, lists: [], revoked: 0, writes: 0, expireOnce: false, flakyOnce: new Set(), refreshes: 0, meta: new Map(), uploads: 0, metaDeletes: 0, thumbs: 0, fileTags: new Map([['id:dbx-a', new Set(['family_trip'])]]), tagAdds: [], tagRemoves: [] }
+  const st = { token: [], downloads: {}, lists: [], revoked: 0, writes: 0, expireOnce: false, flakyOnce: new Set(), refreshes: 0, meta: new Map(), uploads: 0, metaDeletes: 0, thumbs: 0, fileTags: new Map([['id:dbx-a', new Set(['family_trip'])]]), tagAdds: [], tagRemoves: [], tagGets: [], tagBad: 0 }
   const metaEntry = (path) => ({ '.tag': 'file', id: 'id:meta-' + path, name: path.split('/').pop(), path_display: path, path_lower: path.toLowerCase(), rev: 'm', size: 1 })
   await ctx.route('https://www.dropbox.com/oauth2/authorize**', (r) => {
     const u = new URL(r.request().url())
@@ -69,14 +70,26 @@ async function stubDropbox(ctx) {
     if (url.pathname === '/2/users/get_current_account') return json({ account_id: 'dbid:test', name: { display_name: 'Test User' }, email: 'test@example.com' })
     if (url.pathname === '/2/auth/token/revoke') { st.revoked++; return json(null) }
     // Native Dropbox file tags (metadata only): lowercase [\w]{1,32}, max 20 per file
+    // Like the real API, the Tags endpoints only accept '/…' paths: 'id:…' gets a 400 regex error
+    const badPath = (v) => !String(v).startsWith('/')
+    const regex400 = () => r.fulfill({ status: 400, headers: CORS, contentType: 'text/plain', body: 'Error in call to API function "files/tags/get": Value must be a string conforming to regex (/(.|[\r\n])*)' })
+    if (url.pathname === '/2/files/get_metadata') {
+      const b = JSON.parse(req.postData() || '{}')
+      const e = Object.values(DBX_TREE).flat().find((x) => x.id === b.path || x.path_lower === String(b.path).toLowerCase())
+      return e ? json(e) : json({ error_summary: 'path/not_found/' }, 409)
+    }
     if (url.pathname === '/2/files/tags/get') {
       const b = JSON.parse(req.postData() || '{}')
-      return json({ paths_to_tags: b.paths.map((p) => ({ path: p, tags: [...(st.fileTags.get(p) ?? [])].map((t) => ({ '.tag': 'user_generated_tag', tag_text: t })) })) })
+      if (b.paths.some(badPath)) { st.tagBad++; return regex400() }
+      st.tagGets.push(...b.paths)
+      return json({ paths_to_tags: b.paths.map((p) => ({ path: p, tags: [...(st.fileTags.get(idByPath(p)) ?? [])].map((t) => ({ '.tag': 'user_generated_tag', tag_text: t })) })) })
     }
     if (url.pathname === '/2/files/tags/add' || url.pathname === '/2/files/tags/remove') {
       const b = JSON.parse(req.postData() || '{}')
-      if (!SAMPLE_BY_ID[b.path]) return json({ error_summary: 'path/not_found/' }, 409)
-      const set = st.fileTags.get(b.path) ?? new Set(); st.fileTags.set(b.path, set)
+      if (badPath(b.path)) { st.tagBad++; return regex400() }
+      const fid = idByPath(b.path)
+      if (!SAMPLE_BY_ID[fid]) return json({ error_summary: 'path/not_found/' }, 409)
+      const set = st.fileTags.get(fid) ?? new Set(); st.fileTags.set(fid, set)
       if (url.pathname.endsWith('add')) {
         if (!/^\w{1,32}$/.test(b.tag_text)) return json({ error_summary: 'other/' }, 400)
         if (set.size >= 20) return json({ error_summary: 'too_many_tags/' }, 409)
@@ -589,7 +602,10 @@ await test('Dropbox: tag a folder — saved with Dropbox id, thumbnail + preview
   // native Dropbox tags on the photo itself (searchable in Dropbox)
   const norm = (n) => n.toLowerCase().replace(/[^a-z0-9_]+/g, '_').replace(/^_|_$/g, '').slice(0, 32)
   const fileTags = dbx.fileTags.get('id:dbx-a')
-  ok(dbx.tagAdds.some((x) => x.path === 'id:dbx-a'), 'tags/add called on the photo path')
+  ok(dbx.tagAdds.some((x) => x.path === '/Photos/from-dropbox.jpg'), 'tags/add called on the photo path')
+  ok(dbx.tagGets.includes('/Photos/from-dropbox.jpg'), 'tags/get on import uses the / path')
+  ok([...dbx.tagAdds, ...dbx.tagRemoves].every((x) => String(x.path).startsWith('/')) && dbx.tagGets.every((x) => x.startsWith('/')), 'Tags API only ever called with / paths')
+  eq(dbx.tagBad, 0, 'no id: paths sent to the Tags API')
   ok(!dbx.tagAdds.some((x) => String(x.path).includes('.photo-tagger')), 'never tags metadata files')
   for (const t of side.photo.tags.slice(0, 19)) ok(fileTags.has(norm(t.name)), `native tag ${norm(t.name)} on photo: ${[...fileTags]}`)
   ok(fileTags.has('family_trip'), 'pre-existing Dropbox tag still on the file')
@@ -605,7 +621,7 @@ await test('Dropbox: tag a folder — saved with Dropbox id, thumbnail + preview
   await page.keyboard.press('Escape')
   await page.evaluate(() => window.__ptFlushDropbox())
   ok(fileTags.has('sunny_day'), 'manual tag added natively: ' + [...fileTags])
-  ok(dbx.tagRemoves.some((x) => x.path === 'id:dbx-a' && x.tag_text === norm(victim)), 'tags/remove called for removed tag')
+  ok(dbx.tagRemoves.some((x) => x.path === '/Photos/from-dropbox.jpg' && x.tag_text === norm(victim)), 'tags/remove called for removed tag')
   ok(!fileTags.has(norm(victim)), 'removed tag gone from Dropbox')
   ok(fileTags.has('family_trip'), 'imported Dropbox tag kept while the user keeps it')
   ok(sidecarFor(dbx, 'dbx-a').photo.tags.some((t) => t.name === 'family_trip' && t.source === 'manual'), 'imported as an editable manual tag in /.photo-tagger')
@@ -618,9 +634,10 @@ await test('Dropbox: tag a folder — saved with Dropbox id, thumbnail + preview
   await dt('beach house').waitFor()
   await page.keyboard.press('Escape')
   await page.evaluate(() => window.__ptFlushDropbox())
-  ok(dbx.tagRemoves.some((x) => x.path === 'id:dbx-a' && x.tag_text === 'family_trip'), 'tags/remove called for the imported tag')
+  ok(dbx.tagRemoves.some((x) => x.path === '/Photos/from-dropbox.jpg' && x.tag_text === 'family_trip'), 'tags/remove called for the imported tag')
   ok(!fileTags.has('family_trip'), 'imported tag removed from Dropbox')
   ok(fileTags.has('beach_house'), 'newly added tag still syncs: ' + [...fileTags])
+  eq(dbx.tagBad, 0, 'edits sent / paths only')
   // a tag added in Dropbox later is picked up on Refresh without re-downloading
   dbx.fileTags.set('id:dbx-b', new Set([...(dbx.fileTags.get('id:dbx-b') ?? []), 'added_in_dropbox']))
   const dl = { ...dbx.downloads }
