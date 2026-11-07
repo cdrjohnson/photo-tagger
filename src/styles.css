@@ -276,3 +276,4 @@ dl.meta dt { color: var(--muted); } dl.meta dd { margin: 0; word-break: break-wo
 .dbx-row span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 button.dbx-row { cursor: pointer; }
 button.dbx-row:hover { background: var(--panel2); }
+.chip.src-dropbox { --dot: #0061fe; }

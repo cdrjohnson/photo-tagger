@@ -91,7 +91,7 @@ export function toDropboxTag(name: string): string {
 }
 /** Tags we want on the file, most important first: people, then your own tags, then auto tags by confidence, then EXIF/quality. */
 export function desiredDropboxTags(p: Photo): string[] {
-  const rank = (s: string) => (s === 'person' ? 0 : s === 'manual' ? 1 : s === 'auto' ? 2 : 3)
+  const rank = (s: string) => (s === 'person' ? 0 : s === 'manual' || s === 'dropbox' ? 1 : s === 'auto' ? 2 : 3)
   const sorted = [...p.tags].sort((a, b) => rank(a.source) - rank(b.source) || (b.score ?? 0) - (a.score ?? 0))
   const out: string[] = []
   for (const t of sorted) { const d = toDropboxTag(t.name); if (d && !out.includes(d)) out.push(d) }
@@ -132,7 +132,7 @@ export async function importNativeTags(ids?: string[]): Promise<string[]> {
     if (!native.length) continue
     let next = p
     const have = new Set(next.tags.map((t) => toDropboxTag(t.name)))
-    for (const t of native) if (!have.has(t)) { next = addTag(next, t, 'manual'); have.add(t) }
+    for (const t of native) if (!have.has(t)) { next = addTag(next, t, 'dropbox'); have.add(t) }
     const own = new Set([...(owned.get(p.id) ?? []), ...native.filter((t) => have.has(t))])
     owned.set(p.id, [...own].sort())
     if (next !== p) { photos.set(p.id, next); changed.push(p.id); touch(p.id) }

@@ -8,7 +8,7 @@ import { TagInput } from './TagInput'
 import { usePeople } from '../people'
 
 const fmtSize = (n: number) => (n > 1e6 ? `${(n / 1e6).toFixed(1)} MB` : `${Math.round(n / 1e3)} KB`)
-const SRC_LABEL = { person: 'People (from faces)', auto: 'Detected in image', manual: 'Added by you', exif: 'From photo metadata', quality: 'Quality check' } as const
+const SRC_LABEL = { person: 'People (from faces)', auto: 'Detected in image', manual: 'Added by you', dropbox: 'From Dropbox', exif: 'From photo metadata', quality: 'Quality check' } as const
 
 // Zoom is the real display scale: 1 = 100% = native pixels (1:1).
 // "Fit" is computed per photo/viewport and is often well below 100% for large photos.
@@ -247,8 +247,8 @@ export function Detail({ list, index, onIndex, onClose, allTags }: {
         {p.status === 'pending' && <p className="note warn">Not tagged yet. Auto-tags appear once the model has run.</p>}
         <section>
           <h3>Tags</h3>
-          {(['person', 'manual', 'auto', 'exif', 'quality'] as const).map((s) => groups[s] && (
-            <div key={s} className="tag-group">
+          {(['person', 'manual', 'dropbox', 'auto', 'exif', 'quality'] as const).map((s) => groups[s] && (
+            <div key={s} className="tag-group" data-testid="tag-group" data-source={s}>
               <div className="tag-group-label">{SRC_LABEL[s]}</div>
               <div className="chips">
                 {groups[s].map((t) => (

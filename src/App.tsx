@@ -413,7 +413,7 @@ const Tile = memo(function Tile({ p, i, selected, selecting, onTile, onLong, onC
   const fired = useRef(false)
   const start = () => { fired.current = false; timer.current = window.setTimeout(() => { fired.current = true; onLong(i, p.id) }, 550) }
   const stop = () => clearTimeout(timer.current)
-  const shown = p.tags.filter((t) => t.source === 'auto' || t.source === 'manual').slice(0, 2)
+  const shown = p.tags.filter((t) => t.source === 'auto' || t.source === 'manual' || t.source === 'dropbox').slice(0, 2)
   const warn = [p.quality.blurry && 'blurry', p.quality.dark && 'dark', p.quality.bright && 'bright'].filter(Boolean) as string[]
   return (
     <div

@@ -44,7 +44,7 @@ export function filterPhotos(photos: Photo[], f: Filters): Photo[] {
 
 export interface TagStat { name: string; count: number; source: TagSource }
 
-const PRIORITY: TagSource[] = ['person', 'manual', 'auto', 'exif', 'quality']
+const PRIORITY: TagSource[] = ['person', 'manual', 'dropbox', 'auto', 'exif', 'quality']
 
 /** Tag counts among the photos that match the non-tag filters; selected tags are always listed. */
 export function tagStats(photos: Photo[], f: Filters): TagStat[] {

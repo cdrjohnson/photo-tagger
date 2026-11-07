@@ -624,10 +624,16 @@ await test('Dropbox: tag a folder — saved with Dropbox id, thumbnail + preview
   ok(dbx.tagRemoves.some((x) => x.path === '/Photos/from-dropbox.jpg' && x.tag_text === norm(victim)), 'tags/remove called for removed tag')
   ok(!fileTags.has(norm(victim)), 'removed tag gone from Dropbox')
   ok(fileTags.has('family_trip'), 'imported Dropbox tag kept while the user keeps it')
-  ok(sidecarFor(dbx, 'dbx-a').photo.tags.some((t) => t.name === 'family_trip' && t.source === 'manual'), 'imported as an editable manual tag in /.photo-tagger')
+  
   ok(sidecarFor(dbx, 'dbx-a').photo.dropboxTags.includes('family_trip'), 'imported tag now managed by Photo Tagger')
+  ok(sidecarFor(dbx, 'dbx-a').photo.tags.some((t) => t.name === 'family_trip' && t.source === 'dropbox'), 'imported with source dropbox')
   // remove the imported Dropbox tag in the UI → removed in Dropbox too
   await tile('from-dropbox.jpg').click()
+  const grp = (src) => page.locator(`[data-testid=tag-group][data-source=${src}]`)
+  await grp('dropbox').locator('[data-tag="family_trip"]').waitFor()
+  ok((await grp('dropbox').textContent()).includes('From Dropbox'), 'From Dropbox heading')
+  eq(await grp('dropbox').locator('[data-tag="sunny day!"], [data-tag="sunny day"]').count(), 0, 'Photo Tagger-added tag not in the Dropbox group')
+  ok(await grp('manual').locator('[data-testid=detail-tag]').count() > 0, 'Photo Tagger tag shown under Added by you')
   await dt('family_trip').locator('[data-testid=remove-tag]').click()
   await dt('family_trip').waitFor({ state: 'detached' })
   await page.getByTestId('detail-tag-input').fill('beach house'); await page.getByTestId('detail-tag-input').press('Enter')

@@ -1,4 +1,5 @@
-export type TagSource = 'auto' | 'manual' | 'exif' | 'quality' | 'person'
+/** 'dropbox' = imported from the file's native Dropbox tags (not created by Photo Tagger) */
+export type TagSource = 'auto' | 'manual' | 'exif' | 'quality' | 'person' | 'dropbox'
 
 export interface Tag {
   name: string
