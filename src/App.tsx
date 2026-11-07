@@ -427,9 +427,11 @@ const Tile = memo(function Tile({ p, i, selected, selecting, onTile, onLong, onC
     >
       {url ? <img src={url} alt="" loading="lazy" draggable={false} /> : <div className="ph" />}
       <button className={`check-box ${selecting ? 'show' : ''}`} aria-label={selected ? 'Deselect' : 'Select'} aria-pressed={selected} data-testid="tile-check" onClick={(e) => { e.stopPropagation(); onCheck(i, p.id) }}>{selected ? '✓' : ''}</button>
-      {p.status === 'pending' && <span className="badge pend" title="Tagging…">tagging…</span>}
-      {p.duplicateOf && <span className="badge dupe" data-testid="dupe-badge" title="Marked as a duplicate">duplicate</span>}
-      {warn.length > 0 && <span className="badge warn" title={warn.join(', ')}>{warn[0]}</span>}
+      <div className="badges" data-testid="tile-badges">
+        {p.status === 'pending' && <span className="badge pend" title="Tagging…">tagging…</span>}
+        {p.duplicateOf && <span className="badge dupe" data-testid="dupe-badge" title="Marked as a duplicate">duplicate</span>}
+        {warn.length > 0 && <span className="badge warn" title={warn.join(', ')}>{warn[0]}</span>}
+      </div>
       <div className="cap">{shown.map((t) => <span key={t.name}>{t.name}</span>)}</div>
       <span className="sr-only">{new Date(photoTime(p)).toDateString()}</span>
     </div>

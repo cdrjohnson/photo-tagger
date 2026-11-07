@@ -228,6 +228,21 @@ await test('detail view: edit tags by hand, navigate, persists across reload', a
   await (await chip('my pet')).click(); eq(await names(), ['dog.jpg']); await clearFilters()
 })
 
+await test('tile status chips (tagging / duplicate / warning) stack without overlapping', async () => {
+  const boxes = await tile('mountain.jpg').evaluate((el) => {
+    const c = el.querySelector('.badges')
+    c.insertAdjacentHTML('beforeend', '<span class="badge pend">tagging…</span><span class="badge dupe">duplicate</span><span class="badge warn">blurry</span>')
+    const r = [...c.querySelectorAll('.badge')].map((b) => b.getBoundingClientRect()).map((b) => ({ t: b.top, b: b.bottom, l: b.left, r: b.right }))
+    c.querySelectorAll('.badge').forEach((b) => b.remove())
+    return r
+  })
+  ok(boxes.length >= 3, 'chips rendered')
+  for (let i = 0; i < boxes.length; i++) for (let j = i + 1; j < boxes.length; j++) {
+    const a = boxes[i], b = boxes[j]
+    ok(a.b <= b.t || b.b <= a.t || a.r <= b.l || b.r <= a.l, `chips ${i} and ${j} overlap`)
+  }
+})
+
 await test('detail view: zoom in/out, reset to fit, and pan when magnified', async () => {
   await tile('mountain.jpg').click()
   await page.getByTestId('detail').waitFor()

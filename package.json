@@ -1,6 +1,6 @@
 {
   "name": "photo-tagger",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "private": true,
   "description": "Private, on-device photo tagging: import photos, auto-tag them with CLIP in the browser, and filter by tag. Installable PWA.",
   "license": "MIT",
