@@ -4,6 +4,7 @@ From v1.0.7, Photo Tagger connects to Dropbox once and then lets you **browse yo
 
 - Each photo is downloaded **into memory only**, long enough to run the on-device tagger and face recognition, then discarded.
 - Tags, face names (and the face/CLIP data needed to match people) are **written into your Dropbox**, in a hidden folder `/.photo-tagger/` — one small JSON file per photo (`/.photo-tagger/meta/<file id>.json`) plus `/.photo-tagger/people.json`.
+- The tags (and the names of people you've identified) are also added to each photo as **Dropbox tags**, so searching Dropbox for `beach` or `grandma` finds the photos themselves. Dropbox tags are lowercase letters, digits and `_` (max 32 characters, 20 per photo): `Sunny Day!` becomes `sunny_day`; if a photo has more than 20, people come first, then your own tags, then the most confident auto tags. Photo Tagger only removes tags it added itself (it remembers them in `/.photo-tagger/`); tags you or other apps add in Dropbox are left alone. Removing a photo from Photo Tagger takes its Photo Tagger tags off the file.
 - Photo Tagger keeps **nothing about your Dropbox photos on this device**: no originals, thumbnails, previews, tags, embeddings or faces. The grid shows Dropbox's own thumbnails, fetched live and held in memory until you close the app.
 - The **only** things stored locally are the app key, your Dropbox sign-in (so you don't have to log in every launch), the list of folders you linked, and normal app settings.
 - Your photos are **never changed, moved or deleted**. Photo Tagger only ever writes or deletes files inside `/.photo-tagger/`.
@@ -27,10 +28,15 @@ On the app's **Permissions** tab tick these, then click **Submit**:
 | --- | --- |
 | `files.metadata.read` | list folders and files |
 | `files.content.read` | download an image into memory to tag it, show Dropbox thumbnails, read the tag files back |
+| `files.metadata.write` | add/remove Dropbox tags on your photos (tags only — file contents are never changed) |
 | `files.content.write` | save tag/face files in `/.photo-tagger/` (the app refuses to write anywhere else) |
 | `account_info.read` | show which account is connected |
 
-No sharing or `files.metadata.write` scopes are needed. If you connected before adding `files.content.write`, click **Disconnect** then **Connect Dropbox** again.
+No sharing scopes are needed.
+
+> **Upgrading from 1.0.7?** Tick **`files.metadata.write`** on the Permissions tab, click **Submit**, then in Photo Tagger go to Settings → Dropbox → **Disconnect** → **Connect Dropbox**. A token only gets the permissions that were enabled when you connected. Existing photos get their Dropbox tags the next time their tags change or you re-tag the library.
+
+Dropbox tags (and Dropbox's tags API) need **Full Dropbox** access — they don't work for App folder apps.
 
 ## 3. OAuth settings (redirect URIs)
 
@@ -72,7 +78,7 @@ Photos imported with the old Chooser (v1.0.6 and earlier) stay exactly as they w
 | From Dropbox opens Settings | No key saved, or not connected yet — follow steps 1–4. |
 | Dropbox says "Invalid redirect_uri" | Add the exact URI shown in Settings → Dropbox to the app's Redirect URIs (trailing `/` included). |
 | Dropbox says the app doesn't allow PKCE / public clients | Set **Allow public clients** to **Allow** (step 3). |
-| Error mentioning `missing_scope` | Tick the four scopes in step 2, **Submit**, then Disconnect and Connect again. |
+| Error mentioning `missing_scope` | Tick the five scopes in step 2, **Submit**, then Disconnect and Connect again. |
 | You only see an empty folder | The app has **App folder** access. Create a **Full Dropbox** app (step 1). |
 | Windows: "Port 53682 is busy" | Another program is using that port; close it and try again. |
 | "Dropbox session expired" | Settings → Dropbox → Connect again. |

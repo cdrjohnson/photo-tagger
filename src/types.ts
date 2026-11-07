@@ -46,6 +46,8 @@ export interface Photo {
   source: 'device' | 'dropbox'
   /** Dropbox-backed photo (v1.0.7+): lives in Dropbox; tags/faces are stored in /.photo-tagger sidecars in Dropbox, nothing locally */
   dropbox?: DropboxRef
+  /** native Dropbox file tags Photo Tagger itself added (so only these are ever removed) */
+  dropboxTags?: string[]
   hasOriginal: boolean
   /** desktop: relative path of the original inside the library folder */
   relPath?: string

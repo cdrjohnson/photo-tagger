@@ -38,7 +38,7 @@ async function sidecar(id: string) {
   const e = embeddings.get(id)
   return JSON.stringify({
     app: 'photo-tagger', version: 1, file: p.dropbox,
-    photo: p,
+    photo: { ...p, dropboxTags: owned.get(id) ?? [] },
     embedding: e ? f32ToB64(e) : undefined,
     faces: await Promise.all(fs.map(async (f) => ({ ...f, descriptor: f32ToB64(f.descriptor), thumb: f.thumb && f.thumb.size ? b64(new Uint8Array(await f.thumb.arrayBuffer())) : undefined }))),
   })
@@ -68,6 +68,7 @@ export function flush(): Promise<void> {
       while (i < ids.length) {
         const id = ids[i++]
         if (!photos.has(id)) continue
+        await syncNativeTags(c, id)
         try { await c.writeMeta(metaPath(photos.get(id)!), await sidecar(id)) } catch (e) { dirty.add(id); onWriteError?.(e) }
       }
     }
@@ -77,6 +78,56 @@ export function flush(): Promise<void> {
   return flushing
 }
 ;(globalThis as any).__ptFlushDropbox = flush
+
+// ---------- native Dropbox file tags (searchable in Dropbox) ----------
+/** Dropbox tag rules: lowercase, [a-z0-9_] only, 1..32 chars, at most 20 tags per file. */
+export const DBX_TAG_MAX_LEN = 32
+export const DBX_TAGS_PER_FILE = 20
+export function toDropboxTag(name: string): string {
+  const t = name.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+    .replace(/[^a-z0-9_]+/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '')
+  return t.slice(0, DBX_TAG_MAX_LEN).replace(/_$/, '')
+}
+/** Tags we want on the file, most important first: people, then your own tags, then auto tags by confidence, then EXIF/quality. */
+export function desiredDropboxTags(p: Photo): string[] {
+  const rank = (s: string) => (s === 'person' ? 0 : s === 'manual' ? 1 : s === 'auto' ? 2 : 3)
+  const sorted = [...p.tags].sort((a, b) => rank(a.source) - rank(b.source) || (b.score ?? 0) - (a.score ?? 0))
+  const out: string[] = []
+  for (const t of sorted) { const d = toDropboxTag(t.name); if (d && !out.includes(d)) out.push(d) }
+  return out
+}
+const syncedKey = new Map<string, string>()
+/** native tags Photo Tagger added, per photo id (persisted in the sidecar, independent of the app's photo objects) */
+const owned = new Map<string, string[]>()
+let tagErrorShown = false
+async function syncNativeTags(c: DropboxClient, id: string) {
+  const p = photos.get(id)
+  if (!p?.dropbox) return
+  const want = desiredDropboxTags(p)
+  const key = want.join('|') + '#' + (owned.get(id) ?? []).join('|')
+  if (syncedKey.get(id) === key) return
+  const path = p.dropbox.id
+  try {
+    const current = new Set(await c.getTags(path))
+    const ours = new Set((owned.get(id) ?? []).filter((t) => current.has(t)))
+    // remove only stale tags Photo Tagger itself added
+    for (const t of [...ours]) if (!want.includes(t)) { await c.removeTag(path, t); ours.delete(t); current.delete(t) }
+    let room = DBX_TAGS_PER_FILE - current.size
+    for (const t of want) {
+      if (current.has(t)) continue // already there (ours, or added by you / another app — left alone)
+      if (room <= 0) break
+      try { await c.addTag(path, t); ours.add(t); current.add(t); room-- } catch (e: any) { if (/too_many_tags/.test(e?.message)) break; if (e?.status !== 409) throw e }
+    }
+    const list = [...ours].sort()
+    owned.set(id, list)
+    syncedKey.set(id, want.join('|') + '#' + list.join('|'))
+  } catch (e: any) {
+    if (!tagErrorShown) {
+      tagErrorShown = true
+      onWriteError?.(new Error(/missing_scope|403|app folder|not support/i.test(String(e?.message)) ? 'Dropbox search tags need the files.metadata.write permission and Full Dropbox access — enable it, then Disconnect and Connect again (Settings → Dropbox)' : String(e?.message || e)))
+    }
+  }
+}
 const touch = (id: string) => { dirty.add(id); schedule() }
 
 // ---------- store operations (called by storage.ts) ----------
@@ -99,7 +150,12 @@ export async function deletePhotos(ids: string[]) {
     gone.push(p); photos.delete(id); thumbs.delete(id); views.delete(id); embeddings.delete(id); dirty.delete(id)
     for (const f of [...faces.values()]) if (f.photoId === id) faces.delete(f.id)
   }
-  if (c) await Promise.all(gone.map((p) => c.deleteMeta(metaPath(p)).catch(() => {})))
+  if (c) await Promise.all(gone.map(async (p) => {
+    // take back only the native tags Photo Tagger added; the photo itself is untouched
+    for (const t of owned.get(p.id) ?? []) await c.removeTag(p.dropbox!.id, t).catch(() => {})
+    owned.delete(p.id); syncedKey.delete(p.id)
+    await c.deleteMeta(metaPath(p)).catch(() => {})
+  }))
 }
 
 export async function getBlob(store: 'thumbs' | 'views' | 'originals', id: string): Promise<Blob | undefined> {
@@ -115,7 +171,7 @@ export async function getBlob(store: 'thumbs' | 'views' | 'originals', id: strin
 
 /** Forget everything held in memory (on disconnect / app wipe). Dropbox is untouched. */
 export function clearMemory() {
-  photos.clear(); thumbs.clear(); views.clear(); embeddings.clear(); faces.clear(); people = []; dirty.clear(); peopleDirty = false
+  photos.clear(); thumbs.clear(); views.clear(); embeddings.clear(); faces.clear(); people = []; dirty.clear(); peopleDirty = false; syncedKey.clear(); owned.clear(); tagErrorShown = false
 }
 
 /** Read every sidecar from Dropbox into memory. */
@@ -133,6 +189,7 @@ export async function loadFromDropbox(c: DropboxClient = activeDropbox()!) {
         if (j?.app !== 'photo-tagger' || !j.photo?.id) continue
         const p: Photo = { ...j.photo, hasOriginal: false, source: 'dropbox', relPath: undefined }
         nextPhotos.set(p.id, p)
+        if (Array.isArray(j.photo.dropboxTags)) owned.set(p.id, j.photo.dropboxTags)
         if (j.embedding) nextEmb.set(p.id, b64ToF32(j.embedding))
         for (const f of j.faces ?? []) nextFaces.set(f.id, { ...f, descriptor: b64ToF32(f.descriptor), thumb: f.thumb ? new Blob([unb64(f.thumb)], { type: 'image/jpeg' }) : new Blob() })
       } catch { /* skip unreadable sidecar */ }

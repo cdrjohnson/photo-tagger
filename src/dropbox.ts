@@ -8,9 +8,10 @@ export const ENV_DROPBOX_KEY: string = (import.meta.env.VITE_DROPBOX_APP_KEY as 
 
 /**
  * Scopes. files.content.write is needed only to write Photo Tagger's own metadata files
- * (tags / faces) under /.photo-tagger/ in the user's Dropbox. Photos themselves are never modified or deleted.
+ * (tags / faces) under /.photo-tagger/ in the user's Dropbox. files.metadata.write is used only for Dropbox's native
+ * file tags (files/tags/add|remove) so tags are searchable in Dropbox. Photo bytes are never modified or deleted.
  */
-export const DROPBOX_SCOPES = ['account_info.read', 'files.metadata.read', 'files.content.read', 'files.content.write'] as const
+export const DROPBOX_SCOPES = ['account_info.read', 'files.metadata.read', 'files.metadata.write', 'files.content.read', 'files.content.write'] as const
 /** Folder inside the user's Dropbox that holds Photo Tagger's metadata (one JSON sidecar per photo). */
 export const META_ROOT = '/.photo-tagger'
 /** Fixed loopback port for the Windows app's OAuth return (register http://127.0.0.1:53682/ in the Dropbox console). */
@@ -174,6 +175,12 @@ export class DropboxClient {
     if (Date.now() > this.session.expiresAt - 60_000) await this.refresh()
     let r = await fetch(url, { ...init(this.session.accessToken), signal })
     if (r.status === 401) { await this.refresh(); r = await fetch(url, { ...init(this.session.accessToken), signal }) }
+    // Rate limited: honour Retry-After (capped) a few times
+    for (let n = 0; r.status === 429 && n < 3; n++) {
+      const wait = Math.min(10, Number(r.headers.get('retry-after')) || 1 + n)
+      await new Promise((res) => setTimeout(res, wait * 1000))
+      r = await fetch(url, { ...init(this.session.accessToken), signal })
+    }
     if (!r.ok) {
       const t = await r.text().catch(() => '')
       throw new DropboxError(`Dropbox request failed (${r.status})${t ? `: ${t.slice(0, 160)}` : ''}`, r.status)
@@ -268,6 +275,17 @@ export class DropboxClient {
   /** List a folder; [] when it does not exist yet. */
   async listIfExists(path: string): Promise<DropboxEntry[]> {
     try { return await this.listFolder(path) } catch (e: any) { if (e?.status === 409) return []; throw e }
+  }
+
+  /** Native Dropbox tags currently on a file (any source). */
+  async getTags(path: string): Promise<string[]> {
+    const j = await this.rpc<any>('files/tags/get', { paths: [path] })
+    return (j?.paths_to_tags?.[0]?.tags ?? []).map((t: any) => String(t.tag_text ?? '').toLowerCase()).filter(Boolean)
+  }
+  /** Add / remove one native Dropbox tag (metadata only — the file's bytes are untouched). */
+  async addTag(path: string, tag: string) { await this.rpc('files/tags/add', { path, tag_text: tag }) }
+  async removeTag(path: string, tag: string) {
+    try { await this.rpc('files/tags/remove', { path, tag_text: tag }) } catch (e: any) { if (!(e?.status === 409 && /tag_not_present/.test(e.message))) throw e }
   }
 
   /** Best-effort token revoke on Disconnect (does not touch any file). */

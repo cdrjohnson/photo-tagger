@@ -46,7 +46,7 @@ const DBX_TREE = {
 const CORS = { 'access-control-allow-origin': '*', 'access-control-allow-headers': 'authorization, content-type, dropbox-api-arg', 'access-control-allow-methods': 'POST, OPTIONS', 'access-control-expose-headers': 'dropbox-api-result' }
 async function stubDropbox(ctx) {
   // writes = any write/delete outside Photo Tagger's /.photo-tagger metadata folder (must stay 0)
-  const st = { token: [], downloads: {}, lists: [], revoked: 0, writes: 0, expireOnce: false, flakyOnce: new Set(), refreshes: 0, meta: new Map(), uploads: 0, metaDeletes: 0, thumbs: 0 }
+  const st = { token: [], downloads: {}, lists: [], revoked: 0, writes: 0, expireOnce: false, flakyOnce: new Set(), refreshes: 0, meta: new Map(), uploads: 0, metaDeletes: 0, thumbs: 0, fileTags: new Map([['id:dbx-a', new Set(['family_trip'])]]), tagAdds: [], tagRemoves: [] }
   const metaEntry = (path) => ({ '.tag': 'file', id: 'id:meta-' + path, name: path.split('/').pop(), path_display: path, path_lower: path.toLowerCase(), rev: 'm', size: 1 })
   await ctx.route('https://www.dropbox.com/oauth2/authorize**', (r) => {
     const u = new URL(r.request().url())
@@ -68,6 +68,24 @@ async function stubDropbox(ctx) {
     if (!/^Bearer tok-/.test(auth)) return json({ error_summary: 'invalid_access_token' }, 401)
     if (url.pathname === '/2/users/get_current_account') return json({ account_id: 'dbid:test', name: { display_name: 'Test User' }, email: 'test@example.com' })
     if (url.pathname === '/2/auth/token/revoke') { st.revoked++; return json(null) }
+    // Native Dropbox file tags (metadata only): lowercase [\w]{1,32}, max 20 per file
+    if (url.pathname === '/2/files/tags/get') {
+      const b = JSON.parse(req.postData() || '{}')
+      return json({ paths_to_tags: b.paths.map((p) => ({ path: p, tags: [...(st.fileTags.get(p) ?? [])].map((t) => ({ '.tag': 'user_generated_tag', tag_text: t })) })) })
+    }
+    if (url.pathname === '/2/files/tags/add' || url.pathname === '/2/files/tags/remove') {
+      const b = JSON.parse(req.postData() || '{}')
+      if (!SAMPLE_BY_ID[b.path]) return json({ error_summary: 'path/not_found/' }, 409)
+      const set = st.fileTags.get(b.path) ?? new Set(); st.fileTags.set(b.path, set)
+      if (url.pathname.endsWith('add')) {
+        if (!/^\w{1,32}$/.test(b.tag_text)) return json({ error_summary: 'other/' }, 400)
+        if (set.size >= 20) return json({ error_summary: 'too_many_tags/' }, 409)
+        st.tagAdds.push(b); set.add(b.tag_text.toLowerCase()); return json(null)
+      }
+      st.tagRemoves.push(b)
+      if (!set.has(b.tag_text)) return json({ error_summary: 'tag_not_present/' }, 409)
+      set.delete(b.tag_text); return json(null)
+    }
     if (url.pathname === '/2/files/delete_v2') {
       const p = JSON.parse(req.postData() || '{}').path || ''
       if (!p.toLowerCase().startsWith('/.photo-tagger/')) { st.writes++; return json({ error_summary: 'forbidden' }, 400) }
@@ -511,14 +529,14 @@ await test('Dropbox: without a key the button explains setup; shows redirect URI
   const uris = await page.getByTestId('redirect-uri').allTextContents()
   ok(uris.includes('http://127.0.0.1:4174/photo-tagger/'), 'local redirect shown: ' + uris)
   ok(uris.includes('https://cdrjohnson.github.io/photo-tagger/'), 'live redirect shown: ' + uris)
-  eq((await page.getByTestId('dropbox-scope').allTextContents()).sort(), ['account_info.read', 'files.content.read', 'files.content.write', 'files.metadata.read'], 'scopes')
+  eq((await page.getByTestId('dropbox-scope').allTextContents()).sort(), ['account_info.read', 'files.content.read', 'files.content.write', 'files.metadata.read', 'files.metadata.write'], 'scopes')
   ok(!/Chooser/.test(await page.getByTestId('settings').textContent()), 'no Chooser domain instructions left')
   await closeSettings()
   await connectDropbox(page, 'test_app_key_123')
   const a = dbx.authorize
   eq([a.client_id, a.response_type, a.code_challenge_method, a.token_access_type, a.redirect_uri], ['test_app_key_123', 'code', 'S256', 'offline', 'http://127.0.0.1:4174/photo-tagger/'], 'authorize params')
   ok(a.code_challenge && a.code_challenge.length >= 43, 'PKCE challenge')
-  ok(!/files\.metadata\.write|sharing|delete|permanent/.test(a.scope) && /files\.content\.write/.test(a.scope), 'minimal scopes: ' + a.scope)
+  ok(!/sharing|delete|permanent/.test(a.scope) && /files\.content\.write/.test(a.scope) && /files\.metadata\.write/.test(a.scope), 'minimal scopes: ' + a.scope)
   const t = dbx.token[0]
   eq([t.grant_type, t.code, t.client_id, t.redirect_uri], ['authorization_code', 'stub-code', 'test_app_key_123', 'http://127.0.0.1:4174/photo-tagger/'], 'token exchange')
   ok(t.code_verifier && t.code_verifier.length >= 43 && !('client_secret' in t), 'PKCE verifier, no secret')
@@ -568,6 +586,29 @@ await test('Dropbox: tag a folder — saved with Dropbox id, thumbnail + preview
   eq([side.photo.source, side.photo.dropbox.id, side.photo.dropbox.path, side.photo.dropbox.rev, side.photo.dropbox.contentHash, side.photo.hasOriginal], ['dropbox', 'id:dbx-a', '/Photos/from-dropbox.jpg', 'rdbx-a', 'hid:dbx-a', false], 'Dropbox record')
   ok(side.photo.tags.length > 0 && side.embedding, 'tags + embedding stored in Dropbox')
   eq((await tagsOf('from-dropbox.jpg')).sort(), side.photo.tags.map((t) => t.name).sort(), 'grid tags = Dropbox tags')
+  // native Dropbox tags on the photo itself (searchable in Dropbox)
+  const norm = (n) => n.toLowerCase().replace(/[^a-z0-9_]+/g, '_').replace(/^_|_$/g, '').slice(0, 32)
+  const fileTags = dbx.fileTags.get('id:dbx-a')
+  ok(dbx.tagAdds.some((x) => x.path === 'id:dbx-a'), 'tags/add called on the photo path')
+  ok(!dbx.tagAdds.some((x) => String(x.path).includes('.photo-tagger')), 'never tags metadata files')
+  for (const t of side.photo.tags.slice(0, 19)) ok(fileTags.has(norm(t.name)), `native tag ${norm(t.name)} on photo: ${[...fileTags]}`)
+  ok(fileTags.has('family_trip'), 'pre-existing third-party tag preserved')
+  // edit tags in the app → native tags follow (add + remove), third-party tag untouched
+  await tile('from-dropbox.jpg').click()
+  await page.getByTestId('detail-tag-input').fill('Sunny Day!'); await page.getByTestId('detail-tag-input').press('Enter')
+  const dt = (t) => page.locator(`[data-testid=detail-tag][data-tag="${t}"]`)
+  const victim = side.photo.tags.find((t) => t.source === 'auto')?.name
+  ok(victim, 'has an auto tag to remove')
+  await dt(victim).locator('[data-testid=remove-tag]').click()
+  await dt(victim).waitFor({ state: 'detached' })
+  await page.keyboard.press('Escape')
+  await page.evaluate(() => window.__ptFlushDropbox())
+  ok(fileTags.has('sunny_day'), 'manual tag added natively: ' + [...fileTags])
+  ok(dbx.tagRemoves.some((x) => x.path === 'id:dbx-a' && x.tag_text === norm(victim)), 'tags/remove called for removed tag')
+  ok(!fileTags.has(norm(victim)), 'removed tag gone from Dropbox')
+  ok(fileTags.has('family_trip'), 'third-party tag still preserved')
+  ok(!dbx.tagRemoves.some((x) => x.tag_text === 'family_trip'), 'never removes a tag Photo Tagger did not add')
+  eq(sidecarFor(dbx, 'dbx-a').photo.dropboxTags.includes('family_trip'), false, 'ownership tracked in sidecar')
   ok((await tagsOf('from-dropbox.jpg')).length > 0, 'tagged')
   await tile('from-dropbox.jpg').click()
   await page.getByTestId('dropbox-path').waitFor()
@@ -628,6 +669,7 @@ await test('Dropbox: Remove from app deletes only the Photo Tagger sidecar, neve
   await tile('cancel-stop-a.jpg').waitFor({ state: 'detached' })
   for (let i = 0; i < 30 && sidecarFor(dbx, 'slow-a'); i++) await page.waitForTimeout(100)
   ok(!sidecarFor(dbx, 'slow-a'), 'sidecar removed')
+  eq([...(dbx.fileTags.get('id:slow-a') ?? [])], [], 'Photo Tagger tags taken back from the photo')
   eq(dbx.writes, 0, 'photo file in Dropbox untouched (no delete/write outside /.photo-tagger)')
   await page.keyboard.press('Escape').catch(() => {})
 })

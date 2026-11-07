@@ -107,13 +107,13 @@ function DropboxTab() {
       <h3>Dropbox as your library</h3>
       <p>
         Connect your Dropbox once, then browse your folders inside Photo Tagger and tag them. Each photo is downloaded <b>into memory only</b> to run tagging and
-        face recognition, then discarded. Tags, face names and other metadata are <b>written to your Dropbox</b> (a hidden <code>/.photo-tagger</code> folder, one small file per photo).
+        face recognition, then discarded. Tags and face names are added to each photo as <b>Dropbox tags</b> (searchable in Dropbox), and all metadata is <b>written to your Dropbox</b> (a hidden <code>/.photo-tagger</code> folder, one small file per photo).
         Photo Tagger keeps <b>nothing about your Dropbox photos on this device</b> — only the app key, your Dropbox sign-in and app settings. Your photos are never changed, moved or deleted.
       </p>
       <ol className="steps">
         <li>Open <a href="https://www.dropbox.com/developers/apps" target="_blank" rel="noreferrer noopener">dropbox.com/developers/apps</a> and pick the app you already created
           (or create one: Scoped access → <b>Full Dropbox</b>). With <b>App folder</b> access you can only browse <code>/Apps/&lt;your app&gt;</code>; choose Full Dropbox to browse your real photo folders.</li>
-        <li>On the <b>Permissions</b> tab, tick {DROPBOX_SCOPES.map((sc, i) => <span key={sc}>{i ? ', ' : ''}<code data-testid="dropbox-scope">{sc}</code></span>)} and click <b>Submit</b>. <code>files.content.write</code> is used only to save Photo Tagger’s metadata files in <code>/.photo-tagger</code>.</li>
+        <li>On the <b>Permissions</b> tab, tick {DROPBOX_SCOPES.map((sc, i) => <span key={sc}>{i ? ', ' : ''}<code data-testid="dropbox-scope">{sc}</code></span>)} and click <b>Submit</b>. <code>files.content.write</code> is used only to save Photo Tagger’s metadata files in <code>/.photo-tagger</code>; <code>files.metadata.write</code> adds the tags to each photo as Dropbox tags so you can search them in Dropbox. Already connected? After ticking a new permission, click <b>Disconnect</b> and <b>Connect Dropbox</b> again.</li>
         <li>On the <b>Settings</b> tab under OAuth 2, set <b>Allow public clients (Implicit Grant &amp; PKCE)</b> to <b>Allow</b>, then add {redirects.length > 1 ? 'these Redirect URIs' : 'this Redirect URI'} exactly (press Add after each):
           {redirects.map((r) => <div key={r}><code data-testid="redirect-uri">{r}</code></div>)}
           {!isDesktop && <small> The Windows app uses <code>{DESKTOP_REDIRECT_URI}</code> — add it too if you use both.</small>}</li>
