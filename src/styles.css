@@ -265,3 +265,14 @@ dl.meta dt { color: var(--muted); } dl.meta dd { margin: 0; word-break: break-wo
   .dupe-meta { grid-column: 1 / -1; grid-template-columns: auto auto auto 1fr; justify-items: start; column-gap: 8px; }
 }
 .detail-img > .spinner { position: absolute; left: 50%; top: 50%; margin: -16px 0 0 -16px; }
+
+/* Dropbox folder browser */
+.dbx-card { width: min(640px, 100%); }
+.dbx-crumbs { font-size: .95em; overflow-wrap: anywhere; }
+.linkish { background: none; border: 0; padding: 0; font: inherit; color: var(--accent); cursor: pointer; }
+.linkish:hover { text-decoration: underline; }
+.dbx-list { border: 1px solid var(--border); border-radius: var(--radius); max-height: 46vh; min-height: 120px; overflow: auto; padding: 4px; display: flex; flex-direction: column; }
+.dbx-row { display: flex; gap: 8px; align-items: center; padding: 8px 10px; border-radius: 8px; background: none; border: 0; font: inherit; color: var(--text); text-align: left; }
+.dbx-row span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+button.dbx-row { cursor: pointer; }
+button.dbx-row:hover { background: var(--panel2); }

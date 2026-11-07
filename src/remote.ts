@@ -1,0 +1,149 @@
+/**
+ * Dropbox-backed photos live in Dropbox only. This module keeps them in memory for the session
+ * and persists tags / faces / embeddings as JSON sidecars under /.photo-tagger/meta/ in the user's Dropbox.
+ * Nothing about these photos is written to IndexedDB or the desktop library folder.
+ */
+import { activeDropbox, META_ROOT, type DropboxClient } from './dropbox'
+import type { Face, Person, Photo } from './types'
+
+const photos = new Map<string, Photo>()
+const thumbs = new Map<string, Blob>()
+const views = new Map<string, Blob>()
+const embeddings = new Map<string, Float32Array>()
+const faces = new Map<string, Face>()
+let people: Person[] = []
+const listeners = new Set<() => void>()
+export const onRemoteChange = (fn: () => void) => { listeners.add(fn); return () => { listeners.delete(fn) } }
+const emit = () => listeners.forEach((f) => f())
+
+export const metaPath = (p: { dropbox?: { id: string } }) => `${META_ROOT}/meta/${p.dropbox!.id.replace(/^id:/, '').replace(/[^A-Za-z0-9_-]/g, '_')}.json`
+const PEOPLE_PATH = `${META_ROOT}/people.json`
+
+export const isRemotePhoto = (p: Photo | undefined) => !!p?.dropbox && !p.hasOriginal && p.source === 'dropbox'
+export const hasRemote = (id: string) => photos.has(id)
+export const remotePhotos = () => [...photos.values()]
+export const remoteFaces = () => [...faces.values()]
+export const remotePeople = () => people
+export const remoteEmbeddings = () => new Map(embeddings)
+
+// ---------- encoding ----------
+function b64(bytes: Uint8Array) { let s = ''; for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode(...bytes.subarray(i, i + 0x8000)); return btoa(s) }
+function unb64(s: string) { const b = atob(s); const a = new Uint8Array(b.length); for (let i = 0; i < b.length; i++) a[i] = b.charCodeAt(i); return a }
+const f32ToB64 = (f: Float32Array) => b64(new Uint8Array(f.buffer.slice(f.byteOffset, f.byteOffset + f.byteLength)))
+const b64ToF32 = (s: string) => new Float32Array(unb64(s).buffer)
+
+async function sidecar(id: string) {
+  const p = photos.get(id)!
+  const fs = [...faces.values()].filter((f) => f.photoId === id)
+  const e = embeddings.get(id)
+  return JSON.stringify({
+    app: 'photo-tagger', version: 1, file: p.dropbox,
+    photo: p,
+    embedding: e ? f32ToB64(e) : undefined,
+    faces: await Promise.all(fs.map(async (f) => ({ ...f, descriptor: f32ToB64(f.descriptor), thumb: f.thumb && f.thumb.size ? b64(new Uint8Array(await f.thumb.arrayBuffer())) : undefined }))),
+  })
+}
+
+// ---------- write-behind to Dropbox ----------
+const dirty = new Set<string>()
+let peopleDirty = false
+let timer: ReturnType<typeof setTimeout> | null = null
+let flushing: Promise<void> = Promise.resolve()
+export let onWriteError: ((e: unknown) => void) | null = null
+export const setWriteErrorHandler = (fn: ((e: unknown) => void) | null) => { onWriteError = fn }
+function schedule() {
+  if (timer) clearTimeout(timer)
+  timer = setTimeout(() => { timer = null; void flush() }, 500)
+}
+/** Write every pending change to Dropbox (resolves when done). */
+export function flush(): Promise<void> {
+  if (timer) { clearTimeout(timer); timer = null }
+  flushing = flushing.then(async () => {
+    const c = activeDropbox()
+    if (!c) return
+    const ids = [...dirty]; dirty.clear()
+    const doPeople = peopleDirty; peopleDirty = false
+    let i = 0
+    const worker = async () => {
+      while (i < ids.length) {
+        const id = ids[i++]
+        if (!photos.has(id)) continue
+        try { await c.writeMeta(metaPath(photos.get(id)!), await sidecar(id)) } catch (e) { dirty.add(id); onWriteError?.(e) }
+      }
+    }
+    await Promise.all([worker(), worker(), worker()])
+    if (doPeople) { try { await c.writeMeta(PEOPLE_PATH, JSON.stringify({ app: 'photo-tagger', version: 1, people })) } catch (e) { peopleDirty = true; onWriteError?.(e) } }
+  })
+  return flushing
+}
+;(globalThis as any).__ptFlushDropbox = flush
+const touch = (id: string) => { dirty.add(id); schedule() }
+
+// ---------- store operations (called by storage.ts) ----------
+export function putPhoto(p: Photo) { photos.set(p.id, p); touch(p.id) }
+export function savePhotoWithBlobs(p: Photo, b: { thumb: Blob; view: Blob }) {
+  photos.set(p.id, p); thumbs.set(p.id, b.thumb); views.set(p.id, b.view); touch(p.id)
+}
+export function putEmbedding(id: string, e: Float32Array) { embeddings.set(id, e); touch(id) }
+export function putFaces(fs: Face[]) { for (const f of fs) { faces.set(f.id, f); touch(f.photoId) } }
+export function deleteFaceIds(ids: string[]) { for (const id of ids) { const f = faces.get(id); if (f) { faces.delete(id); touch(f.photoId) } } }
+export function clearFaces() { const ids = new Set([...faces.values()].map((f) => f.photoId)); faces.clear(); ids.forEach(touch) }
+export function setPeople(list: Person[]) { people = list; peopleDirty = true; schedule() }
+
+/** Remove from the app; deletes only Photo Tagger's sidecar in Dropbox, never the photo. */
+export async function deletePhotos(ids: string[]) {
+  const c = activeDropbox()
+  const gone: Photo[] = []
+  for (const id of ids) {
+    const p = photos.get(id); if (!p) continue
+    gone.push(p); photos.delete(id); thumbs.delete(id); views.delete(id); embeddings.delete(id); dirty.delete(id)
+    for (const f of [...faces.values()]) if (f.photoId === id) faces.delete(f.id)
+  }
+  if (c) await Promise.all(gone.map((p) => c.deleteMeta(metaPath(p)).catch(() => {})))
+}
+
+export async function getBlob(store: 'thumbs' | 'views' | 'originals', id: string): Promise<Blob | undefined> {
+  const p = photos.get(id); if (!p) return undefined
+  if (store === 'originals') return undefined
+  const cache = store === 'thumbs' ? thumbs : views
+  const hit = cache.get(id); if (hit) return hit
+  const c = activeDropbox(); if (!c) return undefined
+  const b = await c.thumbnail(p.dropbox!.id, store === 'thumbs' ? 'w480h320' : 'w2048h1536')
+  if (b) { cache.set(id, b.type ? b : new Blob([b], { type: 'image/jpeg' })); return cache.get(id) }
+  return undefined
+}
+
+/** Forget everything held in memory (on disconnect / app wipe). Dropbox is untouched. */
+export function clearMemory() {
+  photos.clear(); thumbs.clear(); views.clear(); embeddings.clear(); faces.clear(); people = []; dirty.clear(); peopleDirty = false
+}
+
+/** Read every sidecar from Dropbox into memory. */
+export async function loadFromDropbox(c: DropboxClient = activeDropbox()!) {
+  if (!c) return
+  const list = (await c.listIfExists(`${META_ROOT}/meta`)).filter((e) => e.kind === 'file' && e.name.endsWith('.json'))
+  const nextPhotos = new Map<string, Photo>(), nextFaces = new Map<string, Face>(), nextEmb = new Map<string, Float32Array>()
+  let i = 0
+  const worker = async () => {
+    while (i < list.length) {
+      const e = list[i++]
+      try {
+        const blob = await c.downloadRaw(e.id); if (!blob) continue
+        const j = JSON.parse(await blob.text())
+        if (j?.app !== 'photo-tagger' || !j.photo?.id) continue
+        const p: Photo = { ...j.photo, hasOriginal: false, source: 'dropbox', relPath: undefined }
+        nextPhotos.set(p.id, p)
+        if (j.embedding) nextEmb.set(p.id, b64ToF32(j.embedding))
+        for (const f of j.faces ?? []) nextFaces.set(f.id, { ...f, descriptor: b64ToF32(f.descriptor), thumb: f.thumb ? new Blob([unb64(f.thumb)], { type: 'image/jpeg' }) : new Blob() })
+      } catch { /* skip unreadable sidecar */ }
+    }
+  }
+  await Promise.all(Array.from({ length: 6 }, worker))
+  const pj = await c.downloadRaw(PEOPLE_PATH).then((b) => b?.text()).catch(() => null)
+  photos.clear(); nextPhotos.forEach((v, k) => photos.set(k, v))
+  faces.clear(); nextFaces.forEach((v, k) => faces.set(k, v))
+  embeddings.clear(); nextEmb.forEach((v, k) => embeddings.set(k, v))
+  try { people = pj ? (JSON.parse(pj).people ?? []) : [] } catch { people = [] }
+}
+/** Tell listeners (People) that remote data changed — call after the photo list is refreshed. */
+export const notifyRemote = emit

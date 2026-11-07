@@ -1,4 +1,5 @@
 mod library;
+mod oauth;
 
 use library::LibraryState;
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
@@ -31,6 +32,7 @@ pub fn run() {
       library::library_delete_face_ids,
       library::library_use_beside_app,
       library::library_is_portable,
+      oauth::dropbox_oauth_loopback,
     ])
     .setup(|app| {
       // Build the main window in code so we can allow Dropbox Chooser popups (window.open).

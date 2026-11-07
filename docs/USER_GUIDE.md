@@ -17,8 +17,8 @@ Use the desktop build when your library is too large for a browser tab. Both an 
 ### Shared notes
 1. **WebView2** is required (Windows 11 and most Windows 10 already have it).
 2. Unsigned builds may trigger **SmartScreen** — More info → Run anyway. We do not ship a code-signing certificate.
-3. Photo Tagger copies new photos (and Dropbox downloads) into your library folder and stores metadata under `.photo-tagger/` inside it. Originals always remain on disk.
-4. Cancel + confirm for Dropbox works the same as on the web: already-added photos stay in the library.
+3. Photo Tagger copies new photos from this device into your library folder and stores metadata under `.photo-tagger/` inside it. Dropbox photos are not copied and nothing about them is written locally — their tags and faces are saved in `/.photo-tagger/` inside your Dropbox.
+4. Connect Dropbox in Settings → Dropbox: your browser opens dropbox.com, you click Allow, and the app picks it up via `http://127.0.0.1:53682/`. Cancel + confirm for Dropbox works the same as on the web: already-added photos stay in the library.
 5. “Save to folder” from the web app is unnecessary on desktop — your library folder *is* that location. You can still download a zip backup from Settings → Data.
 6. Existing data from the **browser/PWA** is not imported automatically; add photos again (or copy files into the library folder and re-ingest).
 
@@ -37,7 +37,8 @@ Tap **＋ Add photos** (top right):
 | **Choose photos** | Opens your camera roll / gallery (on a phone) or a file picker (on a computer). Select as many as you like. |
 | **Take a photo** | Phones: opens the camera and adds the shot. |
 | **Add a folder** | Computers: adds every image inside a folder. |
-| **From Dropbox** | Opens the Dropbox picker. Needs a one-time setup: see [Dropbox setup](DROPBOX_SETUP.md). While their dialog is open, Photo Tagger shows a waiting banner under the header (their dialog itself has no spinner). After **Choose**, the same banner tracks download/ingest progress (n/N, Cancel). Works even when the library is still empty. |
+| **From Dropbox** | Opens Photo Tagger's own Dropbox browser (after a one-time connect: see [Dropbox setup](DROPBOX_SETUP.md)). Browse folders with the breadcrumbs, then **Tag new photos here** (tick **Include subfolders** for everything below). The banner tracks progress (n/N, Cancel). Photos are downloaded into memory only; tags and faces are written to `/.photo-tagger/` in your Dropbox, nothing is stored on this device. |
+| **Refresh Dropbox** | Re-checks the Dropbox folders you've tagged before and tags only photos that are new since last time. |
 
 On a computer you can also **drag and drop** images anywhere on the page, or paste an image from the clipboard.
 
@@ -125,9 +126,11 @@ Open **⚙️**.
 Changes to tagging settings are applied to your whole library when you close Settings.
 
 ### Dropbox
-Paste your Dropbox **app key** here. See [Dropbox setup](DROPBOX_SETUP.md).
+Paste your Dropbox **app key**, then **Connect Dropbox** (see [Dropbox setup](DROPBOX_SETUP.md) — it lists the redirect URIs and the scopes `files.metadata.read`, `files.content.read`, `files.content.write` (only for Photo Tagger's own `/.photo-tagger/` files), `account_info.read` to add to your Dropbox app; use **Full Dropbox** access to browse your real folders). The tab shows who is connected and a **Disconnect** button that forgets the sign-in on this device.
 
-When you import many photos, watch the **banner under the header** (visible even on an empty library): first “Choose files in the Dropbox window…” with a waiting bar, then “Downloading from Dropbox · n/N” (with a **Cancel** button). Each photo is tagged as soon as it finishes downloading, so it appears in your library during the import — Photo Tagger does not wait for the whole batch (that kept thousands of files in memory and could abort in Firefox). Failed downloads are retried a couple of times; any that still fail are summarised in one toast at the end, not a stack of red errors. If you hit **Cancel**, you get a confirm dialog: remaining downloads stop; photos already in your library stay. Choose **Keep downloading** if you tapped Cancel by mistake.
+While tagging a Dropbox folder, watch the **banner under the header**: “Tagging from Dropbox · n/N” with **Cancel**. Up to three photos download at a time, each only into memory; it is tagged and face-scanned, its tags/faces are written to `/.photo-tagger/` in your Dropbox, and the bytes are dropped. Nothing about Dropbox photos is stored on this device — only the app key, sign-in, linked folders and settings. Network hiccups are retried; anything still failing is summarised in one toast. **Cancel** asks to confirm: remaining work stops, photos already added stay.
+
+Dropbox photos show Dropbox's thumbnails (fetched live, kept in memory). **Download original** / Save fetches the original from Dropbox at that moment. **Remove from app** deletes only Photo Tagger's tag file in `/.photo-tagger/` — never the photo. Face recognition (People) works on Dropbox photos exactly like on others.
 
 ### Labels (the vocabulary)
 ![Labels](images/desktop-labels.png)
@@ -171,7 +174,8 @@ Once installed and used once online, it works offline. Use **🌓** (top right) 
 | A photo is missing tags it should have | Lower the confidence threshold, or add a custom label for it. |
 | A photo won't import | The browser may not be able to read that format (for example HEIC on desktop Chrome). Convert to JPEG first. |
 | Photos disappeared | Browser data was cleared, or you opened the app in a different browser/profile – each has its own library. Export your tags regularly. |
-| Dropbox pop-up shows an error | Add this site's **hostname** (e.g. `cdrjohnson.github.io`, no `https://`) to your Dropbox app's *Chooser / Saver / Embedder domains* ([steps](DROPBOX_SETUP.md)). |
+| Dropbox says “Invalid redirect_uri” | Add the exact Redirect URI from Settings → Dropbox to your Dropbox app ([steps](DROPBOX_SETUP.md)). |
+| Dropbox browser only shows an empty folder | Your Dropbox app has *App folder* access; create a *Full Dropbox* app. |
 | Slow tagging on a phone | Keep the screen on and the app open while it works; photos are processed one by one. |
 
 ### Desktop tagging error after upgrading

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useViewUrl } from '../hooks'
 import { useLibrary } from '../store'
 import { getBlob } from '../storage'
+import { fetchDropboxOriginal } from '../dropbox'
 import type { Photo } from '../types'
 import { TagInput } from './TagInput'
 import { usePeople } from '../people'
@@ -181,7 +182,8 @@ export function Detail({ list, index, onIndex, onClose, allTags }: {
   const retagOne = () => lib.retagPhoto(p.id)
 
   const download = async () => {
-    const blob = (await getBlob('originals', p.id)) ?? (await getBlob('views', p.id))
+    const blob = (p.dropbox && !p.hasOriginal ? await fetchDropboxOriginal(p) : undefined)
+      ?? (await getBlob('originals', p.id)) ?? (await getBlob('views', p.id))
     if (!blob) return
     const u = URL.createObjectURL(blob)
     const a = document.createElement('a'); a.href = u; a.download = p.name; a.click()
@@ -275,17 +277,18 @@ export function Detail({ list, index, onIndex, onClose, allTags }: {
             <dt>Brightness</dt><dd>{Math.round(p.quality.brightness)} / 255{p.quality.dark ? ' (dark)' : p.quality.bright ? ' (bright)' : ''}</dd>
             <dt>Faces</dt><dd data-testid="face-count">{p.facesScanned ? p.faceCount ?? 0 : 'not checked'}</dd>
             <dt>Source</dt><dd>{p.source === 'dropbox' ? 'Dropbox' : 'This device'}</dd>
+            {p.dropbox && <><dt>Dropbox path</dt><dd data-testid="dropbox-path">{p.dropbox.path}</dd></>}
           </dl>
         </section>
         <div className="row wrap">
           <button className="btn" onClick={retagOne}>Re-run tagging</button>
-          <button className="btn" onClick={download} data-testid="download">{p.hasOriginal ? 'Download original' : 'Download copy'}</button>
+          <button className="btn" onClick={download} data-testid="download">{p.hasOriginal || p.dropbox ? 'Download original' : 'Download copy'}</button>
           <button className="btn danger" data-testid="delete-photo" onClick={async () => {
             const next = list[index + 1] ?? list[index - 1]
             await lib.deletePhotos([p.id])
             if (!next) onClose()
             else onIndex(Math.min(index, list.length - 2))
-          }}>Delete</button>
+          }} title={p.dropbox ? 'Removes it from Photo Tagger (and its tags file in /.photo-tagger). The photo stays in your Dropbox.' : undefined}>{p.dropbox ? 'Remove from app' : 'Delete'}</button>
         </div>
       </aside>
     </div>

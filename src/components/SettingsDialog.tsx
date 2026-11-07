@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { DEFAULT_LABELS } from '../labels'
-import { ENV_DROPBOX_KEY } from '../dropbox'
+import { DESKTOP_REDIRECT_URI, DROPBOX_SCOPES, ENV_DROPBOX_KEY, WEB_REDIRECT_URI, redirectUri } from '../dropbox'
 import { useLibrary } from '../store'
 
 type Tab = 'general' | 'dropbox' | 'vocab' | 'data'
@@ -99,29 +99,45 @@ function General({ onDirty }: { onDirty: () => void }) {
 }
 
 function DropboxTab() {
-  const { settings, saveSettings, dropboxKey } = useLibrary()
+  const { settings, saveSettings, dropboxKey, dropbox, connectDropbox, disconnectDropbox, isDesktop } = useLibrary()
   const [v, setV] = useState(settings.dropboxAppKey)
+  const redirects = isDesktop ? [DESKTOP_REDIRECT_URI] : [...new Set([redirectUri(), WEB_REDIRECT_URI])]
   return (
     <>
-      <h3>Dropbox app key</h3>
+      <h3>Dropbox as your library</h3>
       <p>
-        Importing from Dropbox uses the Dropbox Chooser, which needs an <b>app key</b> from a free Dropbox app that you create. The key is not a secret
-        (it is visible in the page anyway), and your photos go straight from Dropbox to this browser.
+        Connect your Dropbox once, then browse your folders inside Photo Tagger and tag them. Each photo is downloaded <b>into memory only</b> to run tagging and
+        face recognition, then discarded. Tags, face names and other metadata are <b>written to your Dropbox</b> (a hidden <code>/.photo-tagger</code> folder, one small file per photo).
+        Photo Tagger keeps <b>nothing about your Dropbox photos on this device</b> — only the app key, your Dropbox sign-in and app settings. Your photos are never changed, moved or deleted.
       </p>
       <ol className="steps">
-        <li>Open <a href="https://www.dropbox.com/developers/apps/create" target="_blank" rel="noreferrer noopener">dropbox.com/developers/apps/create</a> and create an app (Scoped access → App folder or Full Dropbox).</li>
-        <li>On the app’s <b>Settings</b> tab, add this site to <b>Chooser / Saver / Embedder domains</b>: <code data-testid="origin">{location.hostname}</code>
-          <small> Enter the hostname only — no <code>https://</code>, no path, no port. Dropbox rejects values like <code>https://example.com</code>.</small></li>
-        <li>Copy the <b>App key</b> and paste it below.</li>
+        <li>Open <a href="https://www.dropbox.com/developers/apps" target="_blank" rel="noreferrer noopener">dropbox.com/developers/apps</a> and pick the app you already created
+          (or create one: Scoped access → <b>Full Dropbox</b>). With <b>App folder</b> access you can only browse <code>/Apps/&lt;your app&gt;</code>; choose Full Dropbox to browse your real photo folders.</li>
+        <li>On the <b>Permissions</b> tab, tick {DROPBOX_SCOPES.map((sc, i) => <span key={sc}>{i ? ', ' : ''}<code data-testid="dropbox-scope">{sc}</code></span>)} and click <b>Submit</b>. <code>files.content.write</code> is used only to save Photo Tagger’s metadata files in <code>/.photo-tagger</code>.</li>
+        <li>On the <b>Settings</b> tab under OAuth 2, set <b>Allow public clients (Implicit Grant &amp; PKCE)</b> to <b>Allow</b>, then add {redirects.length > 1 ? 'these Redirect URIs' : 'this Redirect URI'} exactly (press Add after each):
+          {redirects.map((r) => <div key={r}><code data-testid="redirect-uri">{r}</code></div>)}
+          {!isDesktop && <small> The Windows app uses <code>{DESKTOP_REDIRECT_URI}</code> — add it too if you use both.</small>}</li>
+        <li>Copy the <b>App key</b> (never the App secret) and paste it below, then click <b>Connect Dropbox</b>.</li>
       </ol>
       <label className="field">
         <span>App key</span>
         <input data-testid="dropbox-key" value={v} placeholder={ENV_DROPBOX_KEY ? '(using the build-time key)' : 'e.g. a1b2c3d4e5f6g7h'} autoCapitalize="none" autoCorrect="off" spellCheck={false} onChange={(e) => setV(e.target.value.trim())} />
       </label>
       <div className="row wrap">
-        <button className="btn primary" data-testid="dropbox-save" onClick={() => saveSettings({ dropboxAppKey: v })}>Save key</button>
-        <span className="muted">{dropboxKey ? 'A key is configured – the Dropbox button is active.' : 'No key set yet.'}</span>
+        <button className="btn" data-testid="dropbox-save" onClick={() => saveSettings({ dropboxAppKey: v })}>Save key</button>
+        {dropbox.connected
+          ? <>
+              <span className="muted" data-testid="dropbox-status">Connected{dropbox.account ? ` as ${dropbox.account}` : ''}</span>
+              <button className="btn danger" data-testid="dropbox-disconnect" onClick={() => void disconnectDropbox()}>Disconnect</button>
+            </>
+          : <>
+              <button className="btn primary" data-testid="dropbox-connect" disabled={!dropboxKey || dropbox.connecting}
+                onClick={async () => { if (v !== settings.dropboxAppKey) await saveSettings({ dropboxAppKey: v }); await connectDropbox() }}>
+                {dropbox.connecting ? (isDesktop ? 'Finish in your browser…' : 'Connecting…') : 'Connect Dropbox'}</button>
+              <span className="muted" data-testid="dropbox-status">{dropboxKey ? 'Not connected.' : 'No key set yet.'}</span>
+            </>}
       </div>
+      <p className="muted"><small>Disconnect forgets the sign-in on this device; your tags stay in Dropbox and come back when you connect again. Photo Tagger never ships a key.</small></p>
     </>
   )
 }

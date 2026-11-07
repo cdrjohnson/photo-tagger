@@ -5,15 +5,24 @@
 import { isDesktop } from './platform'
 import * as idb from './db'
 import * as desk from './desktopDb'
-import type { Face, Photo } from './types'
+import * as remote from './remote'
+import type { Face, Person, Photo } from './types'
+
+const local = () => (isDesktop() ? desk : idb)
+const isRemote = (p: Photo) => remote.isRemotePhoto(p)
+const remoteFace = (f: Face) => remote.hasRemote(f.photoId)
 
 export async function allPhotos(): Promise<Photo[]> {
-  return isDesktop() ? desk.allPhotos() : idb.allPhotos()
+  const ps = await local().allPhotos()
+  return [...ps, ...remote.remotePhotos()]
 }
 export async function putPhoto(p: Photo): Promise<void> {
-  return isDesktop() ? desk.putPhoto(p) : idb.putPhoto(p)
+  if (isRemote(p)) return remote.putPhoto(p)
+  return local().putPhoto(p)
 }
 export async function savePhotoWithBlobs(p: Photo, b: { thumb: Blob; view: Blob; original?: Blob }): Promise<void> {
+  // Dropbox-backed photos: memory for this session + metadata sidecar in Dropbox; nothing local
+  if (isRemote(p)) return remote.savePhotoWithBlobs(p, b)
   if (isDesktop()) {
     const saved = await desk.savePhotoWithBlobs(p, b)
     // Keep caller’s object in sync with disk (relPath, hasOriginal)
@@ -23,37 +32,70 @@ export async function savePhotoWithBlobs(p: Photo, b: { thumb: Blob; view: Blob;
   return idb.savePhotoWithBlobs(p, b)
 }
 export async function getBlob(store: 'thumbs' | 'views' | 'originals', id: string) {
-  return isDesktop() ? desk.getBlob(store, id) : idb.getBlob(store, id)
+  if (remote.hasRemote(id)) return remote.getBlob(store, id)
+  return local().getBlob(store, id)
 }
 export async function putEmbedding(id: string, e: Float32Array) {
-  return isDesktop() ? desk.putEmbedding(id, e) : idb.putEmbedding(id, e)
+  if (remote.hasRemote(id)) return remote.putEmbedding(id, e)
+  return local().putEmbedding(id, e)
 }
 export async function allEmbeddings() {
-  return isDesktop() ? desk.allEmbeddings() : idb.allEmbeddings()
+  const m = await local().allEmbeddings()
+  for (const [k, v] of remote.remoteEmbeddings()) m.set(k, v)
+  return m
 }
 export async function deletePhotos(ids: string[]) {
-  return isDesktop() ? desk.deletePhotos(ids) : idb.deletePhotos(ids)
+  const r = ids.filter((id) => remote.hasRemote(id))
+  const l = ids.filter((id) => !remote.hasRemote(id))
+  if (r.length) await remote.deletePhotos(r)
+  if (l.length) await local().deletePhotos(l)
 }
 export async function clearAll() {
-  return isDesktop() ? desk.clearAll() : idb.clearAll()
+  remote.clearMemory() // the Dropbox metadata itself is left alone
+  return local().clearAll()
 }
 export async function kvGet<T>(key: string): Promise<T | undefined> {
-  return isDesktop() ? desk.kvGet<T>(key) : idb.kvGet<T>(key)
+  const v = await local().kvGet<T>(key)
+  if (key === 'people') {
+    const rp = remote.remotePeople()
+    if (!rp.length) return v
+    const byId = new Map<string, Person>()
+    for (const p of [...((v as Person[] | undefined) ?? []), ...rp]) byId.set(p.id, p)
+    return [...byId.values()] as T
+  }
+  return v
 }
 export async function kvSet(key: string, value: unknown) {
-  return isDesktop() ? desk.kvSet(key, value) : idb.kvSet(key, value)
+  if (key === 'people' && Array.isArray(value)) {
+    // People named on Dropbox photos live in Dropbox; only people used by local photos stay local
+    const list = value as Person[]
+    const remoteIds = new Set(remote.remoteFaces().map((f) => f.personId).filter(Boolean))
+    const localFaces = await local().allFaces()
+    const localIds = new Set(localFaces.map((f) => f.personId).filter(Boolean))
+    if (remote.remotePhotos().length || remote.remotePeople().length) {
+      remote.setPeople(list.filter((p) => remoteIds.has(p.id) || !localIds.has(p.id)))
+      return local().kvSet(key, list.filter((p) => localIds.has(p.id)))
+    }
+  }
+  return local().kvSet(key, value)
 }
 export async function allFaces(): Promise<Face[]> {
-  return isDesktop() ? desk.allFaces() : idb.allFaces()
+  return [...(await local().allFaces()), ...remote.remoteFaces()]
 }
 export async function putFaces(fs: Face[]) {
-  return isDesktop() ? desk.putFaces(fs) : idb.putFaces(fs)
+  const r = fs.filter(remoteFace), l = fs.filter((f) => !remoteFace(f))
+  if (r.length) remote.putFaces(r)
+  if (l.length) await local().putFaces(l)
 }
 export async function clearFaces() {
-  return isDesktop() ? desk.clearFaces() : idb.clearFaces()
+  remote.clearFaces()
+  return local().clearFaces()
 }
 export async function deleteFaceIds(ids: string[]) {
-  return isDesktop() ? desk.deleteFaceIds(ids) : idb.deleteFaceIds(ids)
+  const rset = new Set(remote.remoteFaces().map((f) => f.id))
+  const r = ids.filter((id) => rset.has(id)), l = ids.filter((id) => !rset.has(id))
+  if (r.length) remote.deleteFaceIds(r)
+  if (l.length) await local().deleteFaceIds(l)
 }
 
 export { isDesktop }

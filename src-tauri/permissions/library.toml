@@ -22,5 +22,6 @@ commands.allow = [
   "library_read_file",
   "library_delete_face_ids",
   "library_use_beside_app",
-  "library_is_portable"
+  "library_is_portable",
+  "dropbox_oauth_loopback"
 ]

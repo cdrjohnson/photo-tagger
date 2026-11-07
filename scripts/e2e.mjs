@@ -26,49 +26,109 @@ await makeScreenshotSample(browser)
 const FILES = ['dog.jpg', 'cat.jpg', 'beach.jpg', 'city.jpg', 'pizza.jpg', 'mountain.jpg', 'person.jpg', 'document.jpg',
   'blurry-mountain.jpg', 'dark-city.jpg', 'bright-beach.jpg', 'geotagged-cat.jpg', 'screenshot.png']
 
-// Dropbox is stubbed: the Chooser script and the direct-link host are served locally.
-await context.route('https://www.dropbox.com/static/api/2/dropins.js', (r) => r.fulfill({
-  contentType: 'text/javascript',
-  body: `window.__dbxKey = document.getElementById('dropboxjs').dataset.appKey;
-         window.__dbxCancel = false;
-         window.__dbxFiles = null;
-         window.__dbxChooseCalls = 0;
-         window.__dbxChooseStack = [];
-         window.Dropbox = { choose(o){
-           window.__dbxChooseCalls++;
-           // Record that choose ran synchronously (same turn as the click handler)
-           window.__dbxChooseStack.push('sync');
-           // brief delay so the "Choose files…" banner is observable; cancel path resolves empty
-           setTimeout(() => {
-             if (window.__dbxCancel) { (o.cancel || (() => o.success([])))(); return }
-             o.success(window.__dbxFiles || [
-               { name: 'from-dropbox.jpg', link: 'https://dl.dropboxusercontent.com/s/test/from-dropbox.jpg', bytes: 1 },
-               { name: 'from-dropbox-2.jpg', link: 'https://dl.dropboxusercontent.com/s/test/from-dropbox-2.jpg', bytes: 1 },
-             ])
-           }, 200)
-         } }`,
-}))
-const dropboxFlaky = { n: 0 }
-await context.route('https://dl.dropboxusercontent.com/**', async (r) => {
-  const u = r.request().url()
-  if (/flaky-retry/.test(u)) {
-    dropboxFlaky.n++
-    if (dropboxFlaky.n === 1) return r.abort('failed') // transient — app should retry
-  }
-  if (/from-dropbox-2|cancel-.*-b|stream-b|slow/.test(u)) await new Promise((res) => setTimeout(res, 8_000))
-  let file = 'dropbox-import-a.jpg'
-  if (u.includes('from-dropbox-2')) file = 'dropbox-import-b.jpg'
-  else if (u.includes('cancel-keep-a')) file = 'dropbox-import-c.jpg'
-  else if (u.includes('cancel-keep-b')) file = 'dropbox-import-d.jpg'
-  else if (u.includes('cancel-stop-a')) file = 'dropbox-import-e.jpg'
-  else if (u.includes('cancel-stop-b')) file = 'dropbox-import-f.jpg'
-  else if (u.includes('stream-a')) file = 'dropbox-import-g.jpg'
-  else if (u.includes('stream-b')) file = 'dropbox-import-h.jpg'
-  else if (u.includes('flaky-retry')) file = 'dropbox-import-i.jpg'
-  return r.fulfill({
-    contentType: 'image/jpeg', headers: { 'access-control-allow-origin': '*' }, body: await fs.readFile(sample(file)),
+// Dropbox is stubbed: OAuth authorize/token and the HTTP API (list_folder, download, account) are served locally.
+// No real key or account is used.
+const SAMPLE_BY_ID = {
+  'id:dbx-a': 'dropbox-import-a.jpg', 'id:dbx-b': 'dropbox-import-b.jpg', 'id:dbx-c': 'dropbox-import-g.jpg',
+  'id:slow-a': 'dropbox-import-e.jpg', 'id:slow-b': 'dropbox-import-f.jpg',
+  'id:f1': 'obama-portrait.jpg', 'id:f2': 'biden-2013.jpg', 'id:f3': 'biden-2021.jpg',
+}
+const dbxFile = (id, name, dir) => ({ '.tag': 'file', id, name, path_display: `${dir}/${name}`, path_lower: `${dir}/${name}`.toLowerCase(), rev: 'r' + id.slice(3), size: 1000, content_hash: 'h' + id, client_modified: '2024-05-01T10:00:00Z' })
+const dbxDir = (name, dir) => ({ '.tag': 'folder', id: 'id:dir-' + name, name, path_display: `${dir}/${name}`, path_lower: `${dir}/${name}`.toLowerCase() })
+const DBX_TREE = {
+  '': [dbxDir('Photos', ''), dbxDir('Docs', ''), dbxDir('Slow', ''), dbxDir('Faces', ''), { '.tag': 'file', id: 'id:txt', name: 'readme.txt', path_display: '/readme.txt', path_lower: '/readme.txt', rev: 'r1', size: 5 }],
+  '/photos': [dbxDir('Trip', '/Photos'), dbxFile('id:dbx-a', 'from-dropbox.jpg', '/Photos'), dbxFile('id:dbx-b', 'from-dropbox-2.jpg', '/Photos'), { '.tag': 'file', id: 'id:pdf', name: 'notes.pdf', path_display: '/Photos/notes.pdf', path_lower: '/photos/notes.pdf', rev: 'r2', size: 5 }],
+  '/photos/trip': [dbxFile('id:dbx-c', 'trip.jpg', '/Photos/Trip')],
+  '/docs': [],
+  '/slow': [dbxFile('id:slow-a', 'cancel-stop-a.jpg', '/Slow'), dbxFile('id:slow-b', 'cancel-stop-b.jpg', '/Slow')],
+  '/faces': [dbxFile('id:f1', 'obama-portrait.jpg', '/Faces'), dbxFile('id:f2', 'biden-2013.jpg', '/Faces'), dbxFile('id:f3', 'biden-2021.jpg', '/Faces')],
+}
+const CORS = { 'access-control-allow-origin': '*', 'access-control-allow-headers': 'authorization, content-type, dropbox-api-arg', 'access-control-allow-methods': 'POST, OPTIONS', 'access-control-expose-headers': 'dropbox-api-result' }
+async function stubDropbox(ctx) {
+  // writes = any write/delete outside Photo Tagger's /.photo-tagger metadata folder (must stay 0)
+  const st = { token: [], downloads: {}, lists: [], revoked: 0, writes: 0, expireOnce: false, flakyOnce: new Set(), refreshes: 0, meta: new Map(), uploads: 0, metaDeletes: 0, thumbs: 0 }
+  const metaEntry = (path) => ({ '.tag': 'file', id: 'id:meta-' + path, name: path.split('/').pop(), path_display: path, path_lower: path.toLowerCase(), rev: 'm', size: 1 })
+  await ctx.route('https://www.dropbox.com/oauth2/authorize**', (r) => {
+    const u = new URL(r.request().url())
+    st.authorize = Object.fromEntries(u.searchParams)
+    return r.fulfill({ status: 302, headers: { location: `${u.searchParams.get('redirect_uri')}?code=stub-code&state=${u.searchParams.get('state')}` } })
   })
-})
+  await ctx.route('https://api.dropboxapi.com/**', async (r) => {
+    const req = r.request()
+    if (req.method() === 'OPTIONS') return r.fulfill({ status: 200, headers: CORS })
+    const url = new URL(req.url())
+    const json = (o, status = 200) => r.fulfill({ status, contentType: 'application/json', headers: CORS, body: JSON.stringify(o) })
+    if (url.pathname === '/oauth2/token') {
+      const b = Object.fromEntries(new URLSearchParams(req.postData() || ''))
+      st.token.push(b)
+      if (b.grant_type === 'refresh_token') { st.refreshes++; return json({ access_token: 'tok-refreshed', token_type: 'bearer', expires_in: 14400 }) }
+      return json({ access_token: 'tok-1', refresh_token: 'ref-1', token_type: 'bearer', expires_in: 14400, account_id: 'dbid:test' })
+    }
+    const auth = req.headers()['authorization'] || ''
+    if (!/^Bearer tok-/.test(auth)) return json({ error_summary: 'invalid_access_token' }, 401)
+    if (url.pathname === '/2/users/get_current_account') return json({ account_id: 'dbid:test', name: { display_name: 'Test User' }, email: 'test@example.com' })
+    if (url.pathname === '/2/auth/token/revoke') { st.revoked++; return json(null) }
+    if (url.pathname === '/2/files/delete_v2') {
+      const p = JSON.parse(req.postData() || '{}').path || ''
+      if (!p.toLowerCase().startsWith('/.photo-tagger/')) { st.writes++; return json({ error_summary: 'forbidden' }, 400) }
+      st.metaDeletes++; st.meta.delete(p.toLowerCase()); return json({ metadata: {} })
+    }
+    if (url.pathname === '/2/files/list_folder' && (JSON.parse(req.postData() || '{}').path || '').toLowerCase() === '/.photo-tagger/meta') {
+      const entries = [...st.meta.keys()].filter((k) => k.startsWith('/.photo-tagger/meta/')).map(metaEntry)
+      if (!entries.length) return json({ error_summary: 'path/not_found/' }, 409)
+      return json({ entries, cursor: 'c:[]', has_more: false })
+    }
+    if (url.pathname === '/2/files/list_folder') {
+      if (st.expireOnce && auth === 'Bearer tok-1') { st.expireOnce = false; return json({ error_summary: 'expired_access_token/' }, 401) }
+      const b = JSON.parse(req.postData() || '{}')
+      st.lists.push(b)
+      const key = (b.path || '').toLowerCase()
+      let entries = DBX_TREE[key] ?? []
+      if (b.recursive) entries = Object.entries(DBX_TREE).filter(([k]) => k === key || k.startsWith(key + '/')).flatMap(([, v]) => v)
+      // paginate: first page = first two entries, rest via /continue
+      if (entries.length > 2) return json({ entries: entries.slice(0, 2), cursor: 'c:' + JSON.stringify(entries.slice(2)), has_more: true })
+      return json({ entries, cursor: 'c:[]', has_more: false })
+    }
+    if (url.pathname === '/2/files/list_folder/continue') {
+      const b = JSON.parse(req.postData() || '{}')
+      st.lists.push({ continue: true })
+      return json({ entries: JSON.parse(b.cursor.slice(2)), cursor: 'c:[]', has_more: false })
+    }
+    st.writes++ // any other endpoint (e.g. a delete) would be a bug
+    return json({ error_summary: 'not_stubbed' }, 400)
+  })
+  await ctx.route('https://content.dropboxapi.com/**', async (r) => {
+    const req = r.request()
+    if (req.method() === 'OPTIONS') return r.fulfill({ status: 200, headers: CORS })
+    const url = new URL(req.url())
+    const arg = JSON.parse(req.headers()['dropbox-api-arg'] || '{}')
+    if (url.pathname === '/2/files/upload') {
+      if (!String(arg.path).toLowerCase().startsWith('/.photo-tagger/')) { st.writes++; return r.fulfill({ status: 400, headers: CORS, body: 'no' }) }
+      st.uploads++; st.meta.set(arg.path.toLowerCase(), req.postData() || '')
+      return r.fulfill({ status: 200, headers: CORS, contentType: 'application/json', body: '{}' })
+    }
+    if (url.pathname === '/2/files/get_thumbnail_v2') {
+      st.thumbs++
+      const f = SAMPLE_BY_ID[arg.resource?.path]
+      if (!f) return r.fulfill({ status: 409, headers: CORS, body: '{}' })
+      return r.fulfill({ status: 200, headers: { ...CORS, 'content-type': 'application/octet-stream' }, body: await fs.readFile(sample(f)) })
+    }
+    if (url.pathname !== '/2/files/download') { st.writes++; return r.fulfill({ status: 400, headers: CORS, body: 'no' }) }
+    const id = arg.path
+    if (String(id).startsWith('id:meta-') || String(id).toLowerCase().startsWith('/.photo-tagger/')) {
+      const key = String(id).replace(/^id:meta-/, '').toLowerCase()
+      return st.meta.has(key) ? r.fulfill({ status: 200, headers: { ...CORS, 'content-type': 'application/octet-stream' }, body: st.meta.get(key) }) : r.fulfill({ status: 409, headers: CORS, contentType: 'application/json', body: '{"error_summary":"path/not_found/"}' })
+    }
+    st.downloads[id] = (st.downloads[id] || 0) + 1
+    if (st.flakyOnce.has(id)) { st.flakyOnce.delete(id); return r.abort('failed') } // transient — app should retry
+    if (id === 'id:slow-b') await new Promise((res) => setTimeout(res, 8_000))
+    const file = SAMPLE_BY_ID[id]
+    if (!file) return r.fulfill({ status: 409, headers: CORS, contentType: 'application/json', body: '{"error_summary":"path/not_found/"}' })
+    return r.fulfill({ status: 200, headers: { ...CORS, 'content-type': 'application/octet-stream' }, body: await fs.readFile(sample(file)) })
+  })
+  return st
+}
+const dbx = await stubDropbox(context)
 
 const page = await context.newPage()
 const errors = []
@@ -409,204 +469,231 @@ await test('vocabulary: add a custom label (text model loads on demand) and appl
   ok((await tagsOf('city.jpg')).includes('skyline'), 'custom tag on city')
 })
 
-await test('Dropbox: without a key the button explains setup; with a key it imports via the Chooser', async () => {
+const idb = (pg, fn, arg) => pg.evaluate(([src, arg]) => new Promise((res, rej) => {
+  const r = indexedDB.open('photo-tagger'); r.onerror = () => rej(r.error)
+  r.onsuccess = async () => { try { res(await (new Function('db', 'arg', src))(r.result, arg)) } catch (e) { rej(e) } finally { r.result.close() } }
+}), [fn, arg])
+const getAll = (store) => `return new Promise((res) => { const q = db.transaction('${store}').objectStore('${store}').getAll(); q.onsuccess = () => res(q.result) })`
+const getKeys = (store) => `return new Promise((res) => { const q = db.transaction('${store}').objectStore('${store}').getAllKeys(); q.onsuccess = () => res(q.result) })`
+const keepDupes = async (pg = page) => { while (await pg.getByTestId('dupe-review').count()) { await pg.getByTestId('dupe-keep-all').click().catch(() => {}); await pg.waitForTimeout(300) } }
+const waitTile = async (n, pg = page, timeout = 180_000) => {
+  const t0 = Date.now()
+  while (Date.now() - t0 < timeout) {
+    await keepDupes(pg)
+    if (await pg.locator(`[data-testid=photo-tile][data-name="${n}"]`).count()) return
+    await pg.waitForTimeout(300)
+  }
+  throw new Error(`tile ${n} never appeared`)
+}
+const sidecarFor = (st, idPart) => { const k = [...st.meta.keys()].find((k) => k.includes(idPart)); return k ? JSON.parse(st.meta.get(k)) : null }
+// Nothing about Dropbox photos may be stored on this device (IndexedDB): no photo rows, thumbs, previews, originals, embeddings or faces.
+const assertNothingLocal = async (pg) => {
+  const photos = await idb(pg, getAll('photos'))
+  eq(photos.filter((p) => p.dropbox || p.source === 'dropbox').map((p) => p.name), [], 'no Dropbox photo rows in IndexedDB')
+  const localIds = new Set(photos.map((p) => p.id))
+  for (const st of ['thumbs', 'views', 'originals', 'embeddings']) {
+    const extra = (await idb(pg, getKeys(st))).filter((k) => !localIds.has(k))
+    eq(extra, [], `no Dropbox data in ${st}`)
+  }
+  eq((await idb(pg, getAll('faces'))).filter((f) => !localIds.has(f.photoId)).length, 0, 'no Dropbox faces in IndexedDB')
+}
+const connectDropbox = async (pg, key) => {
+  await pg.getByTestId('open-settings').click(); await pg.getByTestId('tab-dropbox').click()
+  await pg.getByTestId('dropbox-key').fill(key)
+  await pg.getByTestId('dropbox-save').click()
+  await Promise.all([pg.waitForURL((u) => !u.searchParams.has('code') && u.pathname.endsWith('/photo-tagger/'), { timeout: 30_000 }), pg.getByTestId('dropbox-connect').click()])
+  await pg.getByTestId('open-settings').waitFor()
+}
+
+await test('Dropbox: without a key the button explains setup; shows redirect URIs + read-only scopes; Connect runs OAuth PKCE', async () => {
   await page.getByTestId('add-btn').click(); await page.getByTestId('add-dropbox').click()
   await page.getByTestId('settings-note').waitFor()
-  eq(await page.getByTestId('origin').textContent(), '127.0.0.1', 'shows hostname (no https://) to whitelist')
-  await page.getByTestId('dropbox-key').fill('test_app_key_123'); await page.getByTestId('dropbox-save').click()
+  const uris = await page.getByTestId('redirect-uri').allTextContents()
+  ok(uris.includes('http://127.0.0.1:4174/photo-tagger/'), 'local redirect shown: ' + uris)
+  ok(uris.includes('https://cdrjohnson.github.io/photo-tagger/'), 'live redirect shown: ' + uris)
+  eq((await page.getByTestId('dropbox-scope').allTextContents()).sort(), ['account_info.read', 'files.content.read', 'files.content.write', 'files.metadata.read'], 'scopes')
+  ok(!/Chooser/.test(await page.getByTestId('settings').textContent()), 'no Chooser domain instructions left')
   await closeSettings()
-  await page.waitForFunction(() => window.__dbxKey === 'test_app_key_123')
+  await connectDropbox(page, 'test_app_key_123')
+  const a = dbx.authorize
+  eq([a.client_id, a.response_type, a.code_challenge_method, a.token_access_type, a.redirect_uri], ['test_app_key_123', 'code', 'S256', 'offline', 'http://127.0.0.1:4174/photo-tagger/'], 'authorize params')
+  ok(a.code_challenge && a.code_challenge.length >= 43, 'PKCE challenge')
+  ok(!/files\.metadata\.write|sharing|delete|permanent/.test(a.scope) && /files\.content\.write/.test(a.scope), 'minimal scopes: ' + a.scope)
+  const t = dbx.token[0]
+  eq([t.grant_type, t.code, t.client_id, t.redirect_uri], ['authorization_code', 'stub-code', 'test_app_key_123', 'http://127.0.0.1:4174/photo-tagger/'], 'token exchange')
+  ok(t.code_verifier && t.code_verifier.length >= 43 && !('client_secret' in t), 'PKCE verifier, no secret')
+  ok(!page.url().includes('code='), 'URL cleaned: ' + page.url())
+  await openSettings('dropbox')
+  await page.waitForFunction(() => /Connected as Test User/.test(document.querySelector('[data-testid=dropbox-status]')?.textContent || ''))
+  await closeSettings()
+})
 
-  // Cancel path: waiting banner appears, then clears
-  await page.evaluate(() => { window.__dbxCancel = true })
+await test('Dropbox: in-app browser lists folders and images (paginated), skips non-images, breadcrumbs work', async () => {
+  dbx.expireOnce = true // first API call gets 401 → app refreshes the token and retries
   await page.getByTestId('add-btn').click(); await page.getByTestId('add-dropbox').click()
-  await page.getByTestId('job-label').waitFor()
-  ok(/Choose files in the Dropbox window/.test(await page.getByTestId('job-label').textContent()), 'waiting banner')
-  ok(await page.getByTestId('job-bar').count(), 'waiting bar visible')
-  await page.waitForFunction(() => !/Choose files in the Dropbox window/.test(document.querySelector('[data-testid=job-label]')?.textContent || ''), null, { timeout: 10_000 })
-  ok(!/Choose files in the Dropbox window/.test((await page.getByTestId('job-label').textContent().catch(() => '')) || ''), 'waiting banner cleared on cancel')
+  await page.getByTestId('dropbox-browser').waitFor()
+  await page.locator('[data-testid=dropbox-folder][data-name="Photos"]').waitFor()
+  ok(dbx.refreshes >= 1, 'expired token was refreshed')
+  eq(await page.getByTestId('dropbox-folder').evaluateAll((els) => els.map((e) => e.dataset.name)), ['Docs', 'Faces', 'Photos', 'Slow'], 'root folders (from 2 pages)')
+  eq(await page.getByTestId('dropbox-file').count(), 0, 'readme.txt skipped')
+  await page.locator('[data-testid=dropbox-folder][data-name="Photos"]').click()
+  await page.locator('[data-testid=dropbox-file][data-name="from-dropbox-2.jpg"]').waitFor()
+  eq(await page.getByTestId('dropbox-file').evaluateAll((els) => els.map((e) => e.dataset.name)), ['from-dropbox-2.jpg', 'from-dropbox.jpg'], 'images, pdf skipped')
+  eq(await page.getByTestId('dropbox-folder').evaluateAll((els) => els.map((e) => e.dataset.name)), ['Trip'], 'subfolder')
+  ok(dbx.lists.some((l) => l.continue), 'list_folder/continue used')
+  ok(!(await page.getByTestId('dropbox-recursive').isChecked()), 'Include subfolders off by default')
+  await page.getByTestId('dropbox-crumb').first().click()
+  await page.locator('[data-testid=dropbox-folder][data-name="Docs"]').waitFor()
+  await page.locator('[data-testid=dropbox-folder][data-name="Photos"]').click()
+  await page.locator('[data-testid=dropbox-file][data-name="from-dropbox.jpg"]').waitFor()
+})
 
-  // Successful import: waiting → downloading → tagging banners
-  await page.evaluate(() => { window.__dbxCancel = false })
-  await page.getByTestId('add-btn').click(); await page.getByTestId('add-dropbox').click()
-  await page.getByTestId('job-label').waitFor()
-  ok(/Choose files in the Dropbox window|Downloading from Dropbox|Processing /.test(await page.getByTestId('job-label').textContent()), 'progress banner during import')
-  await page.waitForFunction(() => /Downloading from Dropbox|Processing /.test(document.querySelector('[data-testid=job-label]')?.textContent || ''), null, { timeout: 15_000 })
-  // content may land in near-dupe review if it happens to match; keep any dropbox rows
-  await Promise.race([
-    tile('from-dropbox.jpg').waitFor({ timeout: 60_000 }),
-    page.getByTestId('dupe-review').waitFor({ timeout: 60_000 }).then(async () => {
-      while (await page.getByTestId('dupe-review').count()) {
-        await page.getByTestId('dupe-keep-all').click()
-        await page.waitForTimeout(200)
-      }
-      await tile('from-dropbox.jpg').waitFor({ timeout: 60_000 })
-    }),
-  ])
-  await page.waitForFunction(() => document.querySelector('[data-name="from-dropbox.jpg"]')?.dataset.status === 'ready', null, { timeout: 120_000 })
-  await tile('from-dropbox-2.jpg').waitFor({ timeout: 120_000 })
-  await page.waitForFunction(() => document.querySelector('[data-name="from-dropbox-2.jpg"]')?.dataset.status === 'ready', null, { timeout: 180_000 })
-  await settled()
-  if (await page.getByTestId('dupe-review').count()) {
-    await page.getByTestId('dupe-keep-all').click()
-    await page.waitForFunction(() => !document.querySelector('[data-testid=dupe-review]')).catch(() => {})
-  }
+await test('Dropbox: tag a folder — saved with Dropbox id, thumbnail + preview, no full original stored', async () => {
+  dbx.flakyOnce.add('id:dbx-b') // first download aborts — retried, no error toast
+  await page.getByTestId('dropbox-process').click()
+  await page.getByTestId('dropbox-browser').waitFor({ state: 'detached' })
+  await page.waitForFunction(() => /Tagging from Dropbox|Processing|Listing/.test(document.querySelector('[data-testid=job-label]')?.textContent || ''), null, { timeout: 15_000 })
+  ok(await page.getByTestId('job-cancel').count(), 'cancellable banner')
+  await waitTile('from-dropbox.jpg'); await waitTile('from-dropbox-2.jpg')
+  await page.waitForFunction(() => ['from-dropbox.jpg', 'from-dropbox-2.jpg'].every((n) => document.querySelector(`[data-name="${n}"]`)?.dataset.status === 'ready'), null, { timeout: 180_000 })
+  await settled(); await keepDupes()
+  eq(await tile('trip.jpg').count(), 0, 'subfolder not ingested when Include subfolders is off')
+  ok(dbx.downloads['id:dbx-b'] >= 2, 'transient abort retried')
+  const toasts = await page.locator('.toast').allTextContents()
+  ok(!toasts.some((x) => /abort|failed/i.test(x)), 'no error toasts: ' + toasts.join(' | '))
+  await assertNothingLocal(page)
+  await page.evaluate(() => window.__ptFlushDropbox())
+  const side = sidecarFor(dbx, 'dbx-a')
+  ok(side, 'tags sidecar written to Dropbox: ' + [...dbx.meta.keys()].join(','))
+  eq([side.photo.source, side.photo.dropbox.id, side.photo.dropbox.path, side.photo.dropbox.rev, side.photo.dropbox.contentHash, side.photo.hasOriginal], ['dropbox', 'id:dbx-a', '/Photos/from-dropbox.jpg', 'rdbx-a', 'hid:dbx-a', false], 'Dropbox record')
+  ok(side.photo.tags.length > 0 && side.embedding, 'tags + embedding stored in Dropbox')
+  eq((await tagsOf('from-dropbox.jpg')).sort(), side.photo.tags.map((t) => t.name).sort(), 'grid tags = Dropbox tags')
   ok((await tagsOf('from-dropbox.jpg')).length > 0, 'tagged')
   await tile('from-dropbox.jpg').click()
-  await page.getByText('Dropbox', { exact: true }).waitFor()
+  await page.getByTestId('dropbox-path').waitFor()
+  eq(await page.getByTestId('dropbox-path').textContent(), '/Photos/from-dropbox.jpg')
+  await page.locator('[data-testid=detail] img').first().waitFor({ state: 'visible', timeout: 15_000 }) // detail shows the local preview
+  eq(await page.getByTestId('delete-photo').textContent(), 'Remove from app')
   await page.keyboard.press('Escape')
 })
 
-
-await test('Dropbox: choose runs on the click turn without awaiting script load', async () => {
-  // Preload must have completed after the key was saved in the previous test
-  await page.waitForFunction(() => !!(window.Dropbox && window.Dropbox.choose), null, { timeout: 10_000 })
-  const before = await page.evaluate(() => window.__dbxChooseCalls || 0)
-  await page.evaluate(() => { window.__dbxCancel = true; window.__dbxChooseStack = [] })
-  await page.getByTestId('add-btn').click()
-  await page.getByTestId('add-dropbox').click()
-  // choose() must have been invoked during the click handling (stack marker set synchronously)
-  const after = await page.evaluate(() => ({ calls: window.__dbxChooseCalls || 0, stack: window.__dbxChooseStack || [] }))
-  ok(after.calls === before + 1, 'Dropbox.choose called exactly once on click (before=' + before + ' after=' + after.calls + ')')
-  ok(after.stack.includes('sync'), 'choose recorded as synchronous on the click turn')
-  // Cancel path still clears the waiting banner
-  await page.waitForFunction(() => !/Choose files in the Dropbox window/.test(document.querySelector('[data-testid=job-label]')?.textContent || ''), null, { timeout: 10_000 })
-})
-
-await test('Dropbox: progress banner visible on empty library (waiting + downloading)', async () => {
-  // Fresh profile so the library is empty — does not wipe the main test page
-  const c2 = await browser.newContext({ viewport: { width: 1280, height: 860 } })
-  await c2.route('https://www.dropbox.com/static/api/2/dropins.js', (r) => r.fulfill({
-    contentType: 'text/javascript',
-    body: `window.__dbxKey = document.getElementById('dropboxjs').dataset.appKey;
-           window.__dbxCancel = false;
-           window.__dbxFiles = null;
-           window.Dropbox = { choose(o){
-             setTimeout(() => {
-               if (window.__dbxCancel) { (o.cancel || (() => o.success([])))(); return }
-               o.success(window.__dbxFiles || [])
-             }, 200)
-           } }`,
-  }))
-  await c2.route('https://dl.dropboxusercontent.com/**', async (r) => {
-    const u = r.request().url()
-    const file = u.includes('empty-lib-b') ? 'dropbox-import-h.jpg' : 'dropbox-import-g.jpg'
-    if (u.includes('empty-lib-b')) await new Promise((res) => setTimeout(res, 4_000))
-    return r.fulfill({
-      contentType: 'image/jpeg', headers: { 'access-control-allow-origin': '*' }, body: await fs.readFile(sample(file)),
-    })
-  })
-  const p2 = await c2.newPage()
-  try {
-    await p2.goto(URL_BASE)
-    await p2.getByTestId('empty').waitFor()
-    await p2.getByTestId('open-settings').click()
-    await p2.getByTestId('tab-dropbox').click()
-    await p2.getByTestId('dropbox-key').fill('test_app_key_empty')
-    await p2.getByTestId('dropbox-save').click()
-    await p2.getByTestId('settings-close').click()
-    await p2.waitForFunction(() => !!(window.Dropbox && window.Dropbox.choose), null, { timeout: 15_000 })
-    await p2.evaluate(() => {
-      window.__dbxCancel = false
-      window.__dbxFiles = [
-        { name: 'empty-lib-a.jpg', link: 'https://dl.dropboxusercontent.com/s/test/empty-lib-a.jpg', bytes: 1 },
-        { name: 'empty-lib-b.jpg', link: 'https://dl.dropboxusercontent.com/s/test/empty-lib-b.jpg', bytes: 1 },
-      ]
-    })
-    await p2.getByTestId('empty').getByRole('button', { name: 'From Dropbox' }).click()
-    await p2.getByTestId('banner').waitFor({ timeout: 5_000 })
-    await p2.getByTestId('job-label').waitFor()
-    ok(/Choose files in the Dropbox window|Downloading from Dropbox|Processing /.test(await p2.getByTestId('job-label').textContent()), 'banner text on empty library')
-    ok(await p2.getByTestId('job-bar').count(), 'progress/waiting bar present on empty library')
-    // Empty state can still be on screen while the first files download — banner must remain visible above it
-    ok(await p2.getByTestId('banner').isVisible(), 'banner visible while library still empty')
-    await p2.waitForFunction(() => /Downloading from Dropbox|Processing /.test(document.querySelector('[data-testid=job-label]')?.textContent || ''), null, { timeout: 15_000 })
-    ok(await p2.getByTestId('job-cancel').count(), 'Cancel available during download on empty library')
-    await p2.locator('[data-testid=photo-tile][data-name="empty-lib-a.jpg"]').waitFor({ timeout: 90_000 })
-  } finally {
-    await c2.close()
-  }
-})
-
-await test('Dropbox: streamed ingest — first file appears before the slow second finishes', async () => {
-  await page.evaluate(() => {
-    window.__dbxCancel = false
-    window.__dbxFiles = [
-      { name: 'stream-a.jpg', link: 'https://dl.dropboxusercontent.com/s/test/stream-a.jpg', bytes: 1 },
-      { name: 'stream-b.jpg', link: 'https://dl.dropboxusercontent.com/s/test/stream-b.jpg', bytes: 1 },
-    ]
-  })
+await test('Dropbox: Refresh re-lists linked folders and skips already-seen file ids; subfolders opt-in', async () => {
+  const before = { ...dbx.downloads }
+  await page.getByTestId('add-btn').click(); await page.getByTestId('add-dropbox-refresh').click()
+  await page.locator('.toast', { hasText: /No new photos — 2 already in your library/ }).waitFor({ timeout: 30_000 })
+  eq(dbx.downloads, before, 'nothing re-downloaded')
+  // now include subfolders: only trip.jpg is new
   await page.getByTestId('add-btn').click(); await page.getByTestId('add-dropbox').click()
-  await page.waitForFunction(() => /Downloading from Dropbox|Processing /.test(document.querySelector('[data-testid=job-label]')?.textContent || ''), null, { timeout: 15_000 })
-  // First (fast) file must land while the slow second is still going
-  await tile('stream-a.jpg').waitFor({ timeout: 60_000 })
-  // Slow b is still downloading — a already in the library proves stream ingest (not download-all-then-add)
-  ok(await tile('stream-a.jpg').count(), 'streamed: first photo in library before batch ends')
-  eq(await tile('stream-b.jpg').count(), 0, 'second (slow) file not yet present when first lands')
-  await tile('stream-b.jpg').waitFor({ timeout: 120_000 })
-  await settled()
+  await page.locator('[data-testid=dropbox-folder][data-name="Photos"]').click()
+  await page.locator('[data-testid=dropbox-file][data-name="from-dropbox.jpg"] [data-testid=dropbox-in-library]').waitFor()
+  await page.getByTestId('dropbox-recursive').check()
+  await page.getByTestId('dropbox-process').click()
+  await waitTile('trip.jpg')
+  await settled(); await keepDupes()
+  eq([dbx.downloads['id:dbx-a'], dbx.downloads['id:dbx-c']], [before['id:dbx-a'], 1], 'only the new file downloaded')
+  await page.evaluate(() => window.__ptFlushDropbox())
+  eq([...dbx.meta.keys()].filter((k) => k.includes('dbx-a')).length, 1, 'one sidecar per Dropbox file')
+  // Reopen: tags come back from Dropbox, nothing local
+  const tagsBefore = (await tagsOf('from-dropbox.jpg')).sort()
+  await page.reload(); await page.getByTestId('grid').waitFor()
+  await tile('from-dropbox.jpg').waitFor({ timeout: 30_000 })
+  eq((await tagsOf('from-dropbox.jpg')).sort(), tagsBefore, 'tags read back from Dropbox after reload')
+  ok(await tile('trip.jpg').count(), 'all Dropbox photos listed after reload')
+  await assertNothingLocal(page)
+  const linked = await idb(page, `return new Promise((res) => { const q = db.transaction('kv').objectStore('kv').get('dropboxFolders'); q.onsuccess = () => res(q.result) })`)
+  eq(linked.map((f) => [f.path, f.recursive]), [['/Photos', true]], 'linked folder remembered')
 })
 
-await test('Dropbox: Cancel confirm dismiss keeps downloading', async () => {
-  await page.evaluate(() => {
-    window.__dbxCancel = false
-    window.__dbxFiles = [
-      { name: 'cancel-keep-a.jpg', link: 'https://dl.dropboxusercontent.com/s/test/cancel-keep-a.jpg', bytes: 1 },
-      { name: 'cancel-keep-b.jpg', link: 'https://dl.dropboxusercontent.com/s/test/cancel-keep-b.jpg', bytes: 1 },
-    ]
-  })
+await test('Dropbox: Cancel stops remaining work; already-processed photos stay', async () => {
   await page.getByTestId('add-btn').click(); await page.getByTestId('add-dropbox').click()
-  await page.waitForFunction(() => /Downloading from Dropbox|Processing /.test(document.querySelector('[data-testid=job-label]')?.textContent || ''), null, { timeout: 15_000 })
+  await page.locator('[data-testid=dropbox-folder][data-name="Slow"]').click()
+  await page.locator('[data-testid=dropbox-file][data-name="cancel-stop-b.jpg"]').waitFor()
+  await page.getByTestId('dropbox-process').click()
+  await waitTile('cancel-stop-a.jpg', page, 60_000)
   await page.getByTestId('job-cancel').click()
   await page.getByTestId('cancel-dropbox-confirm').waitFor()
-  ok(/already added|library stay|Remaining downloads will stop/i.test(await page.getByTestId('cancel-dropbox-confirm').textContent()), 'explains cancel')
-  await page.getByTestId('cancel-dropbox-keep').click()
-  await page.getByTestId('cancel-dropbox-confirm').waitFor({ state: 'detached' })
-  ok(await page.getByTestId('job-cancel').count(), 'still cancellable — download continues')
-  await tile('cancel-keep-a.jpg').waitFor({ timeout: 120_000 })
-  await tile('cancel-keep-b.jpg').waitFor({ timeout: 120_000 })
-  await settled()
-})
-
-await test('Dropbox: Cancel download stops remaining; already-ingested stay', async () => {
-  await page.evaluate(() => {
-    window.__dbxCancel = false
-    window.__dbxFiles = [
-      { name: 'cancel-stop-a.jpg', link: 'https://dl.dropboxusercontent.com/s/test/cancel-stop-a.jpg', bytes: 1 },
-      { name: 'cancel-stop-b.jpg', link: 'https://dl.dropboxusercontent.com/s/test/cancel-stop-b.jpg', bytes: 1 },
-    ]
-  })
-  await page.getByTestId('add-btn').click(); await page.getByTestId('add-dropbox').click()
-  await page.waitForFunction(() => /Downloading from Dropbox|Processing /.test(document.querySelector('[data-testid=job-label]')?.textContent || ''), null, { timeout: 15_000 })
-  // Wait until first file is in the library (streamed) — proves cancel keeps what arrived
-  await tile('cancel-stop-a.jpg').waitFor({ timeout: 60_000 })
-  await page.getByTestId('job-cancel').click()
-  await page.getByTestId('cancel-dropbox-confirm').waitFor()
+  ok(/already added/i.test(await page.getByTestId('cancel-dropbox-confirm').textContent()), 'explains cancel')
   await page.getByTestId('cancel-dropbox-confirm-btn').click()
-  await page.getByTestId('cancel-dropbox-confirm').waitFor({ state: 'detached' })
-  await page.waitForTimeout(2500)
-  ok(await tile('cancel-stop-a.jpg').count(), 'already-ingested photo remains')
-  eq(await tile('cancel-stop-b.jpg').count(), 0, 'aborted slow file not ingested')
-})
-
-await test('Dropbox: aborted fetch is retried; no per-file abort toast spam', async () => {
-  dropboxFlaky.n = 0
-  await page.evaluate(() => {
-    window.__dbxCancel = false
-    window.__dbxFiles = [
-      { name: 'flaky-retry.jpg', link: 'https://dl.dropboxusercontent.com/s/test/flaky-retry.jpg', bytes: 1 },
-    ]
-  })
-  const abortToasts = []
-  page.on('console', () => {})
-  await page.getByTestId('add-btn').click(); await page.getByTestId('add-dropbox').click()
-  await tile('flaky-retry.jpg').waitFor({ timeout: 60_000 })
+  await page.waitForTimeout(9000)
+  ok(await tile('cancel-stop-a.jpg').count(), 'already-processed photo remains')
+  eq(await tile('cancel-stop-b.jpg').count(), 0, 'aborted file not ingested')
   await settled()
-  ok(dropboxFlaky.n >= 2, 'retried after first abort (attempts=' + dropboxFlaky.n + ')')
-  const toasts = await page.locator('.toast').allTextContents()
-  ok(!toasts.some((t) => /operation was aborted/i.test(t)), 'no per-file abort toast: ' + toasts.join(' | '))
 })
 
+await test('Dropbox: Remove from app deletes only the Photo Tagger sidecar, never the Dropbox photo', async () => {
+  await page.evaluate(() => window.__ptFlushDropbox())
+  ok(sidecarFor(dbx, 'slow-a'), 'sidecar exists before remove')
+  await tile('cancel-stop-a.jpg').click()
+  await page.getByTestId('delete-photo').click()
+  await tile('cancel-stop-a.jpg').waitFor({ state: 'detached' })
+  for (let i = 0; i < 30 && sidecarFor(dbx, 'slow-a'); i++) await page.waitForTimeout(100)
+  ok(!sidecarFor(dbx, 'slow-a'), 'sidecar removed')
+  eq(dbx.writes, 0, 'photo file in Dropbox untouched (no delete/write outside /.photo-tagger)')
+  await page.keyboard.press('Escape').catch(() => {})
+})
+
+await test('Dropbox: Disconnect forgets the session; From Dropbox goes back to Settings', async () => {
+  await openSettings('dropbox')
+  await page.getByTestId('dropbox-disconnect').click()
+  await page.waitForFunction(() => /Not connected/.test(document.querySelector('[data-testid=dropbox-status]')?.textContent || ''))
+  const sess = await idb(page, `return new Promise((res) => { const q = db.transaction('kv').objectStore('kv').get('dropboxSession'); q.onsuccess = () => res(q.result ?? null) })`)
+  eq(sess, null, 'tokens cleared')
+  for (let i = 0; i < 50 && !dbx.revoked; i++) await page.waitForTimeout(100)
+  ok(dbx.revoked >= 1, 'token revoked')
+  await closeSettings()
+  await page.getByTestId('add-btn').click(); await page.getByTestId('add-dropbox').click()
+  await page.getByTestId('settings-note').waitFor()
+  ok(await page.getByTestId('dropbox-connect').isVisible(), 'Connect shown again')
+  await closeSettings()
+  await page.reload(); await page.getByTestId('grid').waitFor()
+  await openSettings('dropbox')
+  ok(/Not connected/.test(await page.getByTestId('dropbox-status').textContent()), 'still disconnected after reload')
+  await closeSettings()
+  eq(await tile('from-dropbox.jpg').count(), 0, 'Dropbox photos are not kept locally after disconnect')
+  await assertNothingLocal(page)
+  ok(sidecarFor(dbx, 'dbx-a'), 'tags remain in Dropbox')
+  eq(dbx.writes, 0, 'no write/delete call ever made to Dropbox')
+})
+
+await test('Dropbox: face recognition runs on Dropbox-backed photos (People clusters)', async () => {
+  const c4 = await browser.newContext({ viewport: { width: 1280, height: 860 } })
+  await routeModel(c4).catch(() => {})
+  const st = await stubDropbox(c4)
+  const p4 = await c4.newPage()
+  try {
+    await p4.goto(URL_BASE)
+    await p4.getByTestId('empty').waitFor()
+    await connectDropbox(p4, 'face_key')
+    await p4.getByTestId('empty').getByRole('button', { name: 'From Dropbox' }).click()
+    await p4.locator('[data-testid=dropbox-folder][data-name="Faces"]').click()
+    await p4.locator('[data-testid=dropbox-file][data-name="biden-2021.jpg"]').waitFor()
+    await p4.getByTestId('dropbox-process').click()
+    for (const n of ['obama-portrait.jpg', 'biden-2013.jpg', 'biden-2021.jpg']) await waitTile(n, p4, 300_000)
+    for (let i = 0; i < 300; i++) {
+      const done = await p4.evaluate(() => [...document.querySelectorAll('[data-testid=photo-tile]')].length === 3)
+      if (done && await p4.locator('[data-testid=photo-tile][data-status=ready]').count() === 3) break
+      await p4.waitForTimeout(1000)
+    }
+    await p4.getByTestId('view-people').click(); await p4.getByTestId('people-view').waitFor()
+    if (await p4.getByTestId('face-scan').count()) await p4.getByTestId('face-scan').click()
+    await p4.waitForFunction(() => document.querySelectorAll('[data-testid=cluster]').length > 0, null, { timeout: 300_000 })
+    for (let i = 0; i < 300; i++) {
+      await p4.evaluate(() => window.__ptFlushDropbox())
+      if (['f1', 'f2', 'f3'].every((k) => sidecarFor(st, k)?.photo?.facesScanned)) break
+      await p4.waitForTimeout(1000)
+    }
+    const nFaces = ['f1', 'f2', 'f3'].map((k) => sidecarFor(st, k)?.faces?.length ?? 0).reduce((a, b) => a + b, 0)
+    ok(nFaces >= 3, 'face data written to Dropbox sidecars: ' + nFaces)
+    await assertNothingLocal(p4)
+    await p4.reload(); await p4.getByTestId('grid').waitFor({ timeout: 30_000 }).catch(() => {})
+    await p4.getByTestId('view-people').click(); await p4.getByTestId('people-view').waitFor()
+    await p4.getByTestId('view-people').click(); await p4.getByTestId('people-view').waitFor()
+    await p4.waitForFunction(() => document.querySelectorAll('[data-testid=cluster]').length > 0, null, { timeout: 60_000 }) // faces read back from Dropbox
+    const clusters = await p4.getByTestId('cluster').evaluateAll((els) => els.map((e) => e.dataset.photos.split('|').sort().join('|')))
+    ok(clusters.includes('biden-2013.jpg|biden-2021.jpg'), 'Biden cluster from Dropbox photos: ' + clusters.join(' / '))
+    eq(st.writes, 0, 'no Dropbox writes')
+  } finally { await c4.close() }
+})
 
 await test('Tagging backend: one summary across imports, pending photos survive, Retry starts a fresh worker', async () => {
   const c = await browser.newContext({ viewport: { width: 1280, height: 860 }, serviceWorkers: 'block' })
@@ -696,6 +783,7 @@ await test('delete a photo from the detail view', async () => {
   await tile(target).click()
   await page.getByTestId('delete-photo').click()
   await page.waitForFunction((n) => document.querySelectorAll('[data-testid=photo-tile]').length === n, before - 1)
+  eq(dbx.writes, 0, 'removing a Dropbox-backed photo never calls Dropbox')
 })
 
 // ---------- faces / people ----------

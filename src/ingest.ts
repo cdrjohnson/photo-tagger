@@ -1,7 +1,7 @@
 import { analyseQuality, clipPixels, decodeImage, readExif, scaledCanvas, toBlob } from './imageUtils'
 import { contentHash, dHashFromBitmap } from './hashes'
 import { exifAndQualityTags } from './tags'
-import type { Photo, Settings } from './types'
+import type { DropboxRef, Photo, Settings } from './types'
 import { isDesktop } from './platform'
 
 export const IMAGE_EXT = /\.(jpe?g|png|webp|gif|bmp|avif|heic|heif|tiff?)$/i
@@ -24,24 +24,25 @@ export interface Prepared {
 }
 
 /** Decode, thumbnail, read EXIF, run quality checks, compute content + perceptual hashes. Does not run the ML model. */
-export async function prepare(file: File, source: Photo['source'], settings: Settings): Promise<Prepared> {
+export async function prepare(file: File, source: Photo['source'], settings: Settings, dropbox?: DropboxRef): Promise<Prepared> {
   const [exif, bmp, bytes] = await Promise.all([readExif(file), decodeImage(file), file.arrayBuffer()])
   try {
     const ch = await contentHash(bytes)
     const ph = dHashFromBitmap(bmp)
     const long = Math.max(bmp.width, bmp.height)
     const thumb = await toBlob(scaledCanvas(bmp, Math.min(1, 360 / long)), 0.8)
-    const small = long <= 2048 && file.size < 2_500_000 && /image\/(jpeg|png|webp)/.test(file.type)
+    // Dropbox-backed: always re-encode a viewing preview so no copy of the original bytes is kept
+    const small = !dropbox && long <= 2048 && file.size < 2_500_000 && /image\/(jpeg|png|webp)/.test(file.type)
     const view = small ? file : await toBlob(scaledCanvas(bmp, Math.min(1, 2048 / long)), 0.86)
     const quality = analyseQuality(bmp, settings)
     const { rgb, width: rw, height: rh } = clipPixels(bmp)
     const now = Date.now()
     const lm = file.lastModified && file.lastModified > 0 ? file.lastModified : undefined
     const desktop = isDesktop()
-    const keepOrig = desktop || settings.keepOriginals || small
+    const keepOrig = !dropbox && (desktop || settings.keepOriginals || small)
     const base: Photo = {
       id: uid(),
-      fp: fingerprint({ name: file.name, size: file.size, lastModified: source === 'device' ? file.lastModified : 0 }),
+      fp: dropbox ? `dropbox:${dropbox.id}` : fingerprint({ name: file.name, size: file.size, lastModified: source === 'device' ? file.lastModified : 0 }),
       contentHash: ch,
       phash: ph,
       name: file.name,
@@ -58,6 +59,7 @@ export async function prepare(file: File, source: Photo['source'], settings: Set
       tags: [],
       rejected: [],
       source,
+      ...(dropbox ? { dropbox } : {}),
       hasOriginal: keepOrig,
       status: 'pending',
     }
@@ -65,7 +67,7 @@ export async function prepare(file: File, source: Photo['source'], settings: Set
     return {
       photo: base,
       // Desktop always writes the original file into the library folder
-      blobs: { thumb, view, original: desktop || settings.keepOriginals || small ? file : undefined },
+      blobs: { thumb, view, original: keepOrig ? file : undefined },
       rgb, rw, rh,
       contentHash: ch,
     }

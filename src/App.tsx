@@ -4,6 +4,7 @@ import { SettingsDialog } from './components/SettingsDialog'
 import { TagInput } from './components/TagInput'
 import { PeopleView } from './components/PeopleView'
 import { DupeReview } from './components/DupeReview'
+import { DropboxBrowser } from './components/DropboxBrowser'
 import { usePeople } from './people'
 import { filterPhotos, tagStats, photoTime } from './filter'
 import { useInView, useTheme, useThumb } from './hooks'
@@ -27,6 +28,7 @@ export default function App() {
   const [bulk, setBulk] = useState(false)
   const [dragging, setDragging] = useState(false)
   const [cancelDropboxConfirm, setCancelDropboxConfirm] = useState(false)
+  const [dbxBrowser, setDbxBrowser] = useState(false)
   useEffect(() => {
     if (cancelDropboxConfirm && !lib.job?.cancellable) setCancelDropboxConfirm(false)
   }, [cancelDropboxConfirm, lib.job?.cancellable])
@@ -120,8 +122,9 @@ export default function App() {
   const onFiles = (e: React.ChangeEvent<HTMLInputElement>) => { const f = [...(e.target.files ?? [])]; e.target.value = ''; void lib.addFiles(f) }
   const doDropbox = async () => {
     setAddMenu(false)
-    const r = await lib.importFromDropbox()
-    if (r === 'no-key') setSettings({ tab: 'dropbox', note: 'Add your Dropbox app key to import from Dropbox. It takes about two minutes – steps below.' })
+    if (!lib.dropboxKey) setSettings({ tab: 'dropbox', note: 'Add your Dropbox app key, then connect Dropbox to browse and tag your folders. It takes a few minutes – steps below.' })
+    else if (!lib.dropbox.connected) setSettings({ tab: 'dropbox', note: 'Connect Dropbox to browse and tag your folders in Photo Tagger.' })
+    else setDbxBrowser(true)
   }
 
   const j = lib.job
@@ -150,7 +153,10 @@ export default function App() {
                 <button role="menuitem" data-testid="add-photos" onClick={() => pick(fileRef)}>📁 Choose photos<small>Gallery, camera roll or files</small></button>
                 <button role="menuitem" data-testid="add-camera" onClick={() => pick(camRef)}>📷 Take a photo<small>Use the camera</small></button>
                 <button role="menuitem" className="desktop-only" data-testid="add-folder" onClick={() => pick(dirRef)}>🗂 Add a folder<small>All images inside</small></button>
-                <button role="menuitem" data-testid="add-dropbox" onClick={doDropbox}>📦 From Dropbox<small>{lib.dropboxKey ? 'Pick files in Dropbox' : 'Needs an app key'}</small></button>
+                <button role="menuitem" data-testid="add-dropbox" onClick={doDropbox}>📦 From Dropbox<small>{lib.dropbox.connected ? 'Browse and tag your Dropbox folders' : lib.dropboxKey ? 'Connect Dropbox first' : 'Needs an app key'}</small></button>
+                {lib.dropbox.connected && lib.dropbox.folders.length > 0 && (
+                  <button role="menuitem" data-testid="add-dropbox-refresh" onClick={() => { setAddMenu(false); void lib.refreshDropbox() }}>↻ Refresh Dropbox<small>Tag new photos in linked folders</small></button>
+                )}
               </div>
             )}
           </div>
@@ -261,8 +267,8 @@ export default function App() {
               <div className="empty-art" aria-hidden>🖼️</div>
               <h1>Tag and find your photos — privately</h1>
               <p>{lib.isDesktop
-                ? <>Add photos from this device or Dropbox. They are copied into your library folder and tagged on-device. Originals stay on disk.</>
-                : <>Add photos from this device or Dropbox. A small AI model running <b>in your browser</b> labels what’s in each one. Nothing is uploaded anywhere.</>}</p>
+                ? <>Add photos from this device (copied into your library folder) or connect Dropbox and tag your folders there — Dropbox photos and their tags stay in Dropbox. Everything is tagged on-device.</>
+                : <>Add photos from this device or your Dropbox. A small AI model running <b>in your browser</b> labels what’s in each one. Nothing is uploaded anywhere.</>}</p>
               <div className="row center wrap">
                 <button className="btn primary big" data-testid="empty-add" onClick={() => fileRef.current?.click()}>Choose photos</button>
                 <button className="btn big touch-only" onClick={() => camRef.current?.click()}>Take a photo</button>
@@ -291,7 +297,7 @@ export default function App() {
           <button className="btn primary" disabled={!sel.size} data-testid="bulk-tag" onClick={() => setBulk(true)}>Tags…</button>
           <button className="btn" disabled={!sel.size} data-testid="sel-export" onClick={() => lib.exportData('json', selIds)}>Export tags</button>
           <button className="btn" disabled={!sel.size} data-testid="sel-save" onClick={() => void (lib.folderSupported ? lib.savePhotosToDisk(selIds) : lib.downloadPhotosZip(selIds))}>{lib.folderSupported ? 'Save to folder…' : 'Download zip…'}</button>
-          <button className="btn danger" disabled={!sel.size} data-testid="sel-delete" onClick={async () => { if (confirm(`Delete ${sel.size} photo(s) from this app? Originals elsewhere are not affected.`)) { await lib.deletePhotos(selIds); exitSelect() } }}>Delete</button>
+          <button className="btn danger" disabled={!sel.size} data-testid="sel-delete" onClick={async () => { if (confirm(`Delete ${sel.size} photo(s) from this app? Originals elsewhere (including Dropbox) are not affected.`)) { await lib.deletePhotos(selIds); exitSelect() } }}>Delete</button>
         </div>
       )}
 
@@ -317,14 +323,15 @@ export default function App() {
       )}
       {settings && <SettingsDialog initialTab={settings.tab} note={settings.note} onClose={() => setSettings(null)} />}
       
+      {dbxBrowser && <DropboxBrowser onClose={() => setDbxBrowser(false)} />}
       {cancelDropboxConfirm && (
         <div className="modal sheet" role="dialog" aria-modal="true" aria-labelledby="cancel-dropbox-title" data-testid="cancel-dropbox-confirm">
           <div className="sheet-card">
             <div className="settings-head">
-              <h2 id="cancel-dropbox-title">Cancel Dropbox download?</h2>
+              <h2 id="cancel-dropbox-title">Cancel Dropbox tagging?</h2>
               <button className="btn icon" aria-label="Close" data-testid="cancel-dropbox-dismiss" onClick={() => setCancelDropboxConfirm(false)}>✕</button>
             </div>
-            <p>Remaining downloads will stop. Photos <b>already added</b> to your library stay there and keep tagging if needed. In-progress downloads will not be kept.</p>
+            <p>Remaining downloads will stop. Photos <b>already added</b> to your library stay there and keep tagging if needed. In-progress downloads will not be kept. Nothing in your Dropbox changes.</p>
             <div className="row wrap" style={{ justifyContent: 'flex-end', gap: 8 }}>
               <button type="button" className="btn" data-testid="cancel-dropbox-keep" onClick={() => setCancelDropboxConfirm(false)}>Keep downloading</button>
               <button type="button" className="btn danger" data-testid="cancel-dropbox-confirm-btn" onClick={() => {

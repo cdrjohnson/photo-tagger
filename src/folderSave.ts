@@ -1,4 +1,5 @@
 /** Save tagged photos to a local folder (File System Access API) or as a ZIP download. */
+import { fetchDropboxOriginal } from './dropbox'
 import * as DB from './storage'
 import { isDesktop } from './platform'
 import { toCSV, toJSON } from './exportImport'
@@ -50,6 +51,11 @@ function safeName(name: string, used: Set<string>) {
 }
 
 async function photoBlob(p: Photo): Promise<Blob> {
+  // Dropbox-backed: fetch the original from Dropbox at save time (never stored locally)
+  if (p.dropbox && !p.hasOriginal) {
+    const o = await fetchDropboxOriginal(p)
+    if (o) return o
+  }
   if (p.hasOriginal) {
     const o = await DB.getBlob('originals', p.id)
     if (o) return o

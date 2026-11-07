@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import * as DB from './storage'
+import { onRemoteChange } from './remote'
 import { faces as faceClient } from './ml/faceClient'
 import { decodeImage, scaledCanvas, toBlob } from './imageUtils'
 import { clusterFaces, suggestMatches, type Suggestion } from './faceLogic'
@@ -68,6 +69,10 @@ export function PeopleProvider({ children }: { children: ReactNode }) {
       setFaces(f); peopleRef.current = p ?? []; setPeopleState(p ?? [])
       setReady(true)
     })()
+    // Dropbox photos' faces and people are loaded from Dropbox after sign-in / cleared on disconnect
+    return onRemoteChange(() => {
+      void Promise.all([DB.allFaces(), DB.kvGet<Person[]>('people')]).then(([f, p]) => { setFaces(f); peopleRef.current = p ?? []; setPeopleState(p ?? []) })
+    })
   }, [])
 
   // drop faces whose photos were deleted (the DB rows are deleted together with the photo)

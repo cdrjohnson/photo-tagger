@@ -227,6 +227,10 @@ pub fn library_save_blobs(
         .into_owned();
       obj.insert("relPath".into(), Value::String(rel));
       obj.insert("hasOriginal".into(), Value::Bool(true));
+    } else if obj.get("dropbox").map(|v| v.is_object()).unwrap_or(false) {
+      // Dropbox-backed photo: the original stays in Dropbox. Keep only thumb + view in .photo-tagger/.
+      obj.remove("relPath");
+      obj.insert("hasOriginal".into(), Value::Bool(false));
     } else if obj.get("relPath").and_then(|v| v.as_str()).is_none() {
       // If no original bytes and no path yet, materialize view as the on-disk file
       let name = original_name.unwrap_or_else(|| format!("{id}.jpg"));
@@ -268,11 +272,11 @@ pub fn library_get_blob(
           .query_row("SELECT json FROM photos WHERE id=?1", params![id], |r| r.get(0))
           .map_err(|_| "photo not found".to_string())?;
         let v: Value = serde_json::from_str(&json).map_err(e)?;
-        let rel = v
-          .get("relPath")
-          .and_then(|x| x.as_str())
-          .ok_or_else(|| "no original path".to_string())?;
-        lib.root.join(rel)
+        // Dropbox-backed photos have no local original
+        match v.get("relPath").and_then(|x| x.as_str()) {
+          Some(rel) => lib.root.join(rel),
+          None => return Ok(None),
+        }
       }
       _ => return Err(format!("unknown store {store}")),
     };

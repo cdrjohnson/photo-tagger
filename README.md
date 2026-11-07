@@ -2,7 +2,7 @@
 
 **Live app: <https://cdrjohnson.github.io/photo-tagger/>** (open it on your phone or laptop; no sign-up, nothing is uploaded)
 
-Bring in photos from your **phone, laptop and Dropbox**, have each one **tagged automatically from what's in it**, then **filter by tag** in a fast, clean interface. Everything runs **in your browser**: the AI model, the tagging and the storage. **No photo ever leaves your device**, and there is no server and no paid API key.
+Bring in photos from your **phone, laptop and Dropbox**, have each one **tagged automatically from what's in it**, then **filter by tag** in a fast, clean interface. Everything runs **in your browser**: the AI model, the tagging and the storage. Your photos are tagged **on your device** — there is no server and no paid API key. If you connect Dropbox, Photo Tagger reads your photos through Dropbox's API and writes their tags back into your Dropbox — nothing about them is kept on your device.
 
 It is an installable web app (PWA) – open it on your laptop or phone, then "install" it for a home-screen icon and offline use.
 
@@ -26,7 +26,7 @@ It is an installable web app (PWA) – open it on your laptop or phone, then "in
 
 ## Features
 
-- **Ingest**: file picker, drag-and-drop, paste, whole folders (desktop), camera roll **or camera** (phones), and **Dropbox** (Dropbox Chooser, needs your own free app key – see [docs/DROPBOX_SETUP.md](docs/DROPBOX_SETUP.md)).
+- **Ingest**: file picker, drag-and-drop, paste, whole folders (desktop), camera roll **or camera** (phones), and **Dropbox as your library**: connect once (OAuth PKCE), browse your Dropbox folders in the app and tag them — photos are downloaded into memory only, and tags/face names are written to `/.photo-tagger/` in your Dropbox; nothing about Dropbox photos is stored locally; **Refresh Dropbox** tags only new photos (needs your own free app key – see [docs/DROPBOX_SETUP.md](docs/DROPBOX_SETUP.md)).
 - **Automatic tags** from the image content with CLIP zero-shot classification over ~90 built-in labels (people, selfie, dog, cat, food, pizza, landscape, mountain, beach, city, night, document, receipt, screenshot, meme, art and more). Related tags are added automatically (dog → pets, animals).
 - **Metadata tags** from EXIF: year taken, camera, and `geotagged` (GPS coordinates are shown on the photo with an OpenStreetMap link).
 - **Quality checks**: `blurry`, `dark`, `bright` (thresholds adjustable).
@@ -57,7 +57,7 @@ Download from [Releases](https://github.com/cdrjohnson/photo-tagger/releases/tag
 2. Unsigned builds may show **SmartScreen** — More info → Run anyway.
 3. On first launch, choose a **library folder**, or **Use folder next to the app** (creates `library/` beside the exe — ideal for portable).
 4. **Portable** builds include a `portable.txt` marker so settings live in `data/` next to the exe (they travel with the folder). Installer builds use the normal app data location.
-5. Adding photos or Dropbox import copies files into the library folder and tags each as it arrives. The web app at <https://cdrjohnson.github.io/photo-tagger/> still works; browser libraries are **not** auto-migrated.
+5. Adding photos from this device copies files into the library folder and tags each as it arrives. Dropbox photos are **not** copied and nothing about them goes into the local `.photo-tagger/` folder; their tags live in `/.photo-tagger/` inside Dropbox. Desktop Dropbox sign-in opens your browser and returns to `http://127.0.0.1:53682/`. The web app at <https://cdrjohnson.github.io/photo-tagger/> still works; browser libraries are **not** auto-migrated.
 
 Linux and macOS desktop builds should be straightforward later (`tauri build` on those OSes); phone apps are a separate step.
 
@@ -97,7 +97,7 @@ npm run screenshots                 # regenerates docs/images/*.png
 node scripts/smoke-live.mjs         # smoke-test the deployed site (real network)
 ```
 
-The e2e suite uses the real model and the sample photos in [`samples/`](samples/) (CC0 / public domain, see [`samples/ATTRIBUTION.md`](samples/ATTRIBUTION.md)). Model files are cached under `.model-cache/` after the first run so later runs are quick. Dropbox is exercised against a stubbed Chooser (a real key is not needed and none is used).
+The e2e suite uses the real model and the sample photos in [`samples/`](samples/) (CC0 / public domain, see [`samples/ATTRIBUTION.md`](samples/ATTRIBUTION.md)). Model files are cached under `.model-cache/` after the first run so later runs are quick. Dropbox is exercised against a stubbed OAuth server and Dropbox API (a real key or account is not needed and none is used).
 
 ## Install on your phone (and laptop)
 
@@ -133,12 +133,12 @@ Your library lives **per browser and per device** (it is stored in that browser'
 
 **Privacy.** Face crops (160 px), face descriptors and names are stored only in this browser's IndexedDB, never uploaded. Turn recognition off in the People view to stop scanning new photos; *Clear all face data* deletes it all (photos and other tags are kept).
 
-**Privacy (photos).** Photos, thumbnails, tags and embeddings never leave the device. The only network requests are: the one-time model download (Hugging Face), the Dropbox Chooser and downloads when *you* use Dropbox import, and OpenStreetMap when you click a location link.
+**Privacy (photos).** Tagging and face recognition run on your device; thumbnails, tags, embeddings and face data never leave it. The only network requests are: the one-time model download (Hugging Face); when *you* connect Dropbox, calls to Dropbox's API to sign in, list the folders you browse and download the images you tag or export (straight from Dropbox to the app, no other server); and OpenStreetMap when you click a location link. Each Dropbox photo is downloaded into memory only, to tag it and find faces, then discarded. Tags, face names and face/CLIP data for Dropbox photos are written into your Dropbox (`/.photo-tagger/`), not to this device; only the app key, the Dropbox sign-in tokens, linked-folder list and settings are stored locally. Photo Tagger never modifies or deletes your photos in Dropbox — it writes/deletes only its own files in `/.photo-tagger/`.
 
 ## Limits worth knowing
 
 - **First tag is slow, later ones are fast.** The model is ~64 MB and must be downloaded and initialised once (a few seconds on broadband; longer on mobile data). Tagging then took about **0.5 s per photo** (including decoding, thumbnails and EXIF) in headless Chromium on the 8-core machine used to build this. Phones are slower – I have not measured one, but expect a few times that – and the work runs in a background worker so the interface stays responsive.
-- **Dropbox needs your own app key** ([setup guide](docs/DROPBOX_SETUP.md)). The Dropbox pop-up and download links need an internet connection.
+- **Dropbox needs your own app key** with the scopes `files.metadata.read`, `files.content.read`, `files.content.write`, `account_info.read`, redirect URIs, and *Full Dropbox* access to see your real folders ([setup guide](docs/DROPBOX_SETUP.md)). Browsing, tagging new Dropbox photos and exporting their originals need an internet connection; Dropbox photos are not available offline (nothing is stored locally).
 - **CLIP is a general-purpose model**: it is great at scenes and common objects, weaker on fine detail (breeds, small text) and sometimes picks a plausible-but-wrong neighbour. Adjust the confidence slider, edit tags by hand, or add custom labels.
 - **Browser storage**: browsers limit how much a site may store. By default only a 2048 px copy + thumbnail is kept per photo (≈0.3–1 MB each); turn on *Keep full-size originals* if you need them. Clearing site data erases the library.
 - **HEIC** photos are only readable where the browser can decode them (Safari/iOS convert them to JPEG when you pick from the camera roll; desktop Chrome cannot decode HEIC).

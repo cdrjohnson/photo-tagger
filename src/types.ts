@@ -44,6 +44,8 @@ export interface Photo {
   /** auto tags the user removed; re-tagging never brings them back */
   rejected: string[]
   source: 'device' | 'dropbox'
+  /** Dropbox-backed photo (v1.0.7+): lives in Dropbox; tags/faces are stored in /.photo-tagger sidecars in Dropbox, nothing locally */
+  dropbox?: DropboxRef
   hasOriginal: boolean
   /** desktop: relative path of the original inside the library folder */
   relPath?: string
@@ -52,6 +54,14 @@ export interface Photo {
   /** face detection has run on this photo */
   facesScanned?: boolean
   faceCount?: number
+}
+
+export interface DropboxRef {
+  /** stable Dropbox file id ("id:…") */
+  id: string
+  path: string
+  rev?: string
+  contentHash?: string
 }
 
 export interface Settings {
