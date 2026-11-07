@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { usePeople } from '../people'
 import { useLibrary } from '../store'
-import type { Face, Person } from '../types'
+import type { Face, Person, Photo } from '../types'
 
 export function PeopleView({ onShowPhotos }: { onShowPhotos: (tag: string) => void }) {
   const lib = useLibrary()
@@ -21,10 +21,12 @@ export function PeopleView({ onShowPhotos }: { onShowPhotos: (tag: string) => vo
   }, [ppl.suggestions])
   const avatar = (p: Person) => ppl.faces.find((f) => f.personId === p.id && f.status === 'confirmed')
   const people = ppl.people.slice().sort((a, b) => (counts.get(b.id) ?? 0) - (counts.get(a.id) ?? 0) || a.name.localeCompare(b.name))
-  const names = ppl.people.map((p) => p.name)
+  // One picker list for every "who is this?" field: people first, then Dropbox tags, your tags, other detected tags
+  const names = useMemo(() => nameOptions(ppl.people, lib.photos), [ppl.people, lib.photos])
 
   return (
     <div className="people" data-testid="people-view">
+      <datalist id="people-names" data-testid="people-names">{names.map((n) => <option key={n} value={n} />)}</datalist>
       <section className="note privacy" data-testid="privacy-note">
         <div>
           <b>🔒 Face recognition stays on this device.</b> Faces are found and compared by a small model running in your browser.
@@ -110,6 +112,19 @@ function FaceImg({ f, children, testId = 'face' }: { f: Face; children?: React.R
   )
 }
 
+/** Same name if it differs only by case, spaces or underscores ("beach house" = "beach_house"). */
+export const nameKey = (s: string) => s.trim().toLowerCase().replace(/[\s_]+/g, ' ')
+export function nameOptions(people: Person[], photos: Photo[]): string[] {
+  const seen = new Map<string, string>()
+  const add = (n: string) => { const k = nameKey(n); if (k && !seen.has(k)) seen.set(k, n.trim()) }
+  people.forEach((p) => add(p.name))
+  const bySrc = (src: string) => [...new Set(photos.flatMap((p) => p.tags.filter((t) => t.source === src).map((t) => t.name)))].sort()
+  for (const src of ['dropbox', 'manual', 'auto']) bySrc(src).forEach(add) // EXIF / quality tags aren't names
+  return [...seen.values()]
+}
+/** Map a typed name onto an existing option with the same key so no second spelling is created. */
+export const canonicalName = (typed: string, options: string[]) => options.find((o) => nameKey(o) === nameKey(typed)) ?? typed.trim()
+
 function Cluster({ faces, names }: { faces: Face[]; names: string[] }) {
   const ppl = usePeople()
   const lib = useLibrary()
@@ -117,7 +132,7 @@ function Cluster({ faces, names }: { faces: Face[]; names: string[] }) {
   const [picked, setPicked] = useState<Set<string>>(new Set())
   const photoName = (f: Face) => lib.photos.find((p) => p.id === f.photoId)?.name ?? ''
   const target = picked.size ? [...picked] : faces.map((f) => f.id)
-  const submit = async () => { if (name.trim()) { await ppl.nameFaces(target, name); setName(''); setPicked(new Set()) } }
+  const submit = async () => { if (name.trim()) { await ppl.nameFaces(target, canonicalName(name, names)); setName(''); setPicked(new Set()) } }
   return (
     <div className="cluster" data-testid="cluster" data-photos={faces.map(photoName).join('|')}>
       <div className="faces">
@@ -133,7 +148,6 @@ function Cluster({ faces, names }: { faces: Face[]; names: string[] }) {
       <form className="row" onSubmit={(e) => { e.preventDefault(); void submit() }}>
         <input list="people-names" data-testid="cluster-name" placeholder={picked.size ? `Who are the ${picked.size} selected?` : faces.length > 1 ? `Who are these ${faces.length}?` : 'Who is this?'}
           value={name} onChange={(e) => setName(e.target.value)} autoCapitalize="words" enterKeyHint="done" />
-        <datalist id="people-names">{names.map((n) => <option key={n} value={n} />)}</datalist>
         <button className="btn primary" data-testid="cluster-save" disabled={!name.trim()}>Name</button>
       </form>
     </div>
@@ -185,7 +199,7 @@ function PersonPanel({ person, onClose, onShowPhotos }: { person: Person; onClos
         ))}
       </div>
       <form className="row wrap" onSubmit={(e) => { e.preventDefault(); void ppl.rename(person.id, name) }}>
-        <input data-testid="person-rename" value={name} onChange={(e) => setName(e.target.value)} aria-label="Name" />
+        <input list="people-names" data-testid="person-rename" value={name} onChange={(e) => setName(e.target.value)} aria-label="Name" />
         <button className="btn" data-testid="person-rename-save" disabled={!name.trim() || name === person.name}>Rename</button>
       </form>
       {others.length > 0 && (

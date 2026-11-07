@@ -742,6 +742,7 @@ await test('Dropbox: face recognition runs on Dropbox-backed photos (People clus
   const c4 = await browser.newContext({ viewport: { width: 1280, height: 860 } })
   await routeModel(c4).catch(() => {})
   const st = await stubDropbox(c4)
+  st.fileTags.set('id:f2', new Set(['family_trip'])) // a tag the user already applied in Dropbox
   const p4 = await c4.newPage()
   try {
     await p4.goto(URL_BASE)
@@ -774,6 +775,24 @@ await test('Dropbox: face recognition runs on Dropbox-backed photos (People clus
     await p4.waitForFunction(() => document.querySelectorAll('[data-testid=cluster]').length > 0, null, { timeout: 60_000 }) // faces read back from Dropbox
     const clusters = await p4.getByTestId('cluster').evaluateAll((els) => els.map((e) => e.dataset.photos.split('|').sort().join('|')))
     ok(clusters.includes('biden-2013.jpg|biden-2021.jpg'), 'Biden cluster from Dropbox photos: ' + clusters.join(' / '))
+    // "Who is this?" picker offers people + Photo Tagger tags + Dropbox tags (one shared datalist)
+    const opts = () => p4.locator('#people-names option').evaluateAll((els) => els.map((e) => e.value))
+    eq(await p4.locator('datalist#people-names').count(), 1, 'one shared datalist')
+    const obama = p4.locator('[data-testid=cluster]', { has: p4.locator('.pick[title="obama-portrait.jpg"]') })
+    await obama.getByTestId('cluster-name').fill('Barack Obama'); await obama.getByTestId('cluster-save').click()
+    await p4.locator('[data-testid=person-card][data-person="Barack Obama"]').waitFor()
+    const o = await opts()
+    const ptTag = ((sidecarFor(st, 'f3')?.photo.tags ?? []).find((t) => t.source === 'auto')?.name)
+    ok(o[0] === 'Barack Obama', 'people first: ' + o.slice(0, 5))
+    ok(o.includes('family_trip'), 'Dropbox tag offered: ' + o)
+    ok(ptTag && o.includes(ptTag), `Photo Tagger tag offered (${ptTag})`)
+    ok(o.indexOf('family_trip') < o.indexOf(ptTag), 'Dropbox tags before detected tags')
+    ok(!o.some((x) => /^\d{4}$/.test(x)), 'no year/EXIF tags offered')
+    // typing a variant of an existing tag uses that exact tag name (no second spelling)
+    const biden = p4.locator('[data-testid=cluster]', { has: p4.locator('.pick[title="biden-2013.jpg"]') })
+    await biden.getByTestId('cluster-name').fill('Family Trip'); await biden.getByTestId('cluster-save').click()
+    await p4.locator('[data-testid=person-card][data-person="family_trip"]').waitFor()
+    eq(await p4.locator('[data-testid=person-card][data-person="Family Trip"]').count(), 0, 'no duplicate spelling created')
     eq(st.writes, 0, 'no Dropbox writes')
   } finally { await c4.close() }
 })
