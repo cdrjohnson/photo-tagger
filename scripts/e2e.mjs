@@ -650,6 +650,39 @@ await test('Dropbox: tag a folder — saved with Dropbox id, thumbnail + preview
   await page.getByTestId('add-btn').click(); await page.getByTestId('add-dropbox-refresh').click()
   await page.waitForFunction(() => (document.querySelector('[data-name="from-dropbox-2.jpg"]')?.dataset.tags || '').split('|').includes('added_in_dropbox'), null, { timeout: 30_000 })
   eq(dbx.downloads, dl, 'no re-download to pick up Dropbox tags')
+  await page.waitForTimeout(500)
+})
+
+await test('Dropbox sync (regression 1.0.13): tags keep syncing both ways once a photo reaches Dropbox\'s 20-tag limit; re-run tagging imports Dropbox edits', async () => {
+  const fileTags = dbx.fileTags.get('id:dbx-a')
+  fileTags.add('someone_elses_tag') // third-party, never imported yet
+  const dt = (t) => page.locator(`[data-testid=detail-tag][data-tag="${t}"]`)
+  await tile('from-dropbox.jpg').click()
+  // fill the photo past 20 tags so the file is at Dropbox's limit
+  await page.getByTestId('detail-tag-input').fill(Array.from({ length: 16 }, (_, i) => `bulk ${i + 1}`).join(', ')); await page.getByTestId('detail-tag-input').press('Enter')
+  await dt('bulk 16').waitFor()
+  await page.evaluate(() => window.__ptFlushDropbox())
+  ok(fileTags.size <= 20, 'never more than 20 tags on the file: ' + fileTags.size)
+  // App → Dropbox: a newly added tag must reach Dropbox even when the file is full
+  await page.getByTestId('detail-tag-input').fill('Latest Tag'); await page.getByTestId('detail-tag-input').press('Enter')
+  await dt('latest tag').waitFor()
+  await page.evaluate(() => window.__ptFlushDropbox())
+  ok(fileTags.has('latest_tag'), 'tag added in Photo Tagger written to Dropbox at the limit: ' + [...fileTags])
+  ok(dbx.tagAdds.some((x) => x.tag_text === 'latest_tag' && x.path === '/Photos/from-dropbox.jpg'), 'tags/add with / path')
+  eq(dbx.tagBad, 0, 'no id: paths')
+  // Dropbox → App via "Re-run tagging": a tag added in Dropbox shows up; a tag removed in Dropbox disappears
+  fileTags.delete('bulk 1'.replace(' ', '_'))
+  fileTags.add('from_dropbox_ui')
+  await page.getByRole('button', { name: 'Re-run tagging' }).click()
+  await dt('from_dropbox_ui').waitFor({ timeout: 30_000 })
+  ok(await page.locator('[data-testid=tag-group][data-source=dropbox] [data-tag="from_dropbox_ui"]').count(), 'shown under From Dropbox')
+  await dt('bulk 1').waitFor({ state: 'detached', timeout: 10_000 })
+  await page.evaluate(() => window.__ptFlushDropbox())
+  ok(!fileTags.has('bulk_1'), 'tag removed in Dropbox is not written back')
+  ok(fileTags.has('someone_elses_tag'), 'third-party tag never stripped: ' + [...fileTags])
+  ok(await page.locator('[data-testid=tag-group][data-source=manual] [data-tag="latest tag"]').count(), 'Photo Tagger tag keeps its group')
+  // cleanup so later tests see a normal photo
+  await page.keyboard.press('Escape')
   ok((await tagsOf('from-dropbox.jpg')).length > 0, 'tagged')
   await tile('from-dropbox.jpg').click()
   await page.getByTestId('dropbox-path').waitFor()

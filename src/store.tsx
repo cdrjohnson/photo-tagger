@@ -862,6 +862,8 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
     try {
       await syncCustomEmbeddings()
       const embs = await DB.allEmbeddings()
+      // pick up tags added/removed in Dropbox first so re-tagging never overwrites them
+      if (photosRef.current.some((p) => p.dropbox)) syncFromRemote(await Remote.importNativeTags())
       const all = photosRef.current.slice()
       await runJob('Re-tagging', all.length, async (step) => {
         for (const p0 of all) {
@@ -891,6 +893,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
 
   const retagPhoto = useCallback(async (id: string) => {
     ml.resetFailed()
+    if (photosRef.current.find((x) => x.id === id)?.dropbox) syncFromRemote(await Remote.importNativeTags([id]))
     const p = photosRef.current.find((x) => x.id === id)
     if (!p) return
     try {

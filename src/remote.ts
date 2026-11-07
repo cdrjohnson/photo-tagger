@@ -5,7 +5,7 @@
  */
 import { activeDropbox, META_ROOT, type DropboxClient } from './dropbox'
 import type { Face, Person, Photo } from './types'
-import { addTag } from './tags'
+import { addTag, removeTag } from './tags'
 
 const photos = new Map<string, Photo>()
 const thumbs = new Map<string, Blob>()
@@ -129,11 +129,14 @@ export async function importNativeTags(ids?: string[]): Promise<string[]> {
   for (const p0 of list) {
     const p = photos.get(p0.id); if (!p) continue
     const native = (tags.get(paths.get(p.id)!) ?? []).filter((t) => toDropboxTag(t) === t && t.length > 0)
-    if (!native.length) continue
     let next = p
+    // a tag Photo Tagger had on the file that is gone now was removed in Dropbox → drop it here too (people stay: faces own them)
+    const prev = owned.get(p.id) ?? []
+    const gone = prev.filter((t) => !native.includes(t))
+    for (const t of gone) for (const x of next.tags) if (x.source !== 'person' && toDropboxTag(x.name) === t) next = removeTag(next, x.name)
     const have = new Set(next.tags.map((t) => toDropboxTag(t.name)))
     for (const t of native) if (!have.has(t)) { next = addTag(next, t, 'dropbox'); have.add(t) }
-    const own = new Set([...(owned.get(p.id) ?? []), ...native.filter((t) => have.has(t))])
+    const own = new Set([...prev.filter((t) => native.includes(t)), ...native.filter((t) => have.has(t))])
     owned.set(p.id, [...own].sort())
     if (next !== p) { photos.set(p.id, next); changed.push(p.id); touch(p.id) }
   }
@@ -152,10 +155,13 @@ async function syncNativeTags(c: DropboxClient, id: string) {
     const path = await tagPath(c, p)
     const current = new Set(await c.getTags(path))
     const ours = new Set((owned.get(id) ?? []).filter((t) => current.has(t)))
-    // remove only stale tags Photo Tagger itself added
-    for (const t of [...ours]) if (!want.includes(t)) { await c.removeTag(path, t); ours.delete(t); current.delete(t) }
+    // Dropbox allows 20 tags per file; tags from you/other apps keep their slots, the rest go to our highest-priority tags.
+    // (Before 1.0.13 the low-priority tags already on a full file blocked every newly added tag.)
+    const fit = want.slice(0, Math.max(0, DBX_TAGS_PER_FILE - [...current].filter((t) => !ours.has(t)).length))
+    // remove only tags Photo Tagger itself added that are stale or crowded out
+    for (const t of [...ours]) if (!fit.includes(t)) { await c.removeTag(path, t); ours.delete(t); current.delete(t) }
     let room = DBX_TAGS_PER_FILE - current.size
-    for (const t of want) {
+    for (const t of fit) {
       if (current.has(t)) continue // already there (ours, or added by you / another app — left alone)
       if (room <= 0) break
       try { await c.addTag(path, t); ours.add(t); current.add(t); room-- } catch (e: any) { if (/too_many_tags/.test(e?.message)) break; if (e?.status !== 409) throw e }
