@@ -282,6 +282,18 @@ export class DropboxClient {
     const j = await this.rpc<any>('files/tags/get', { paths: [path] })
     return (j?.paths_to_tags?.[0]?.tags ?? []).map((t: any) => String(t.tag_text ?? '').toLowerCase()).filter(Boolean)
   }
+  /** Native tags for many files at once (batched). Map keyed by the path/id passed in. */
+  async getTagsMany(paths: string[]): Promise<Map<string, string[]>> {
+    const out = new Map<string, string[]>()
+    for (let i = 0; i < paths.length; i += 20) {
+      const chunk = paths.slice(i, i + 20)
+      const j = await this.rpc<any>('files/tags/get', { paths: chunk })
+      ;(j?.paths_to_tags ?? []).forEach((pt: any, k: number) => {
+        out.set(chunk[k] ?? pt.path, (pt.tags ?? []).map((t: any) => String(t.tag_text ?? '').toLowerCase()).filter(Boolean))
+      })
+    }
+    return out
+  }
   /** Add / remove one native Dropbox tag (metadata only — the file's bytes are untouched). */
   async addTag(path: string, tag: string) { await this.rpc('files/tags/add', { path, tag_text: tag }) }
   async removeTag(path: string, tag: string) {

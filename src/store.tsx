@@ -196,6 +196,12 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
   const dropboxKey = settings.dropboxAppKey || ENV_DROPBOX_KEY
 
   // ---------- Dropbox session ----------
+  /** Copy photos whose tags changed in the Dropbox layer (native tag import) into app state. */
+  const syncFromRemote = (ids: string[]) => {
+    if (!ids.length) return
+    const byId = new Map(Remote.remotePhotos().filter((p) => ids.includes(p.id)).map((p) => [p.id, p]))
+    setPhotosBoth((all) => all.map((p) => byId.get(p.id) ?? p))
+  }
   const reloadPhotos = async () => {
     const ps = await DB.allPhotos()
     photosRef.current = ps; setPhotos(ps)
@@ -206,7 +212,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
       dbxClientRef.current = c
       setActiveDropbox(c)
       // Dropbox photos + their tags/faces are read from Dropbox (sidecars), never from local storage
-      void Remote.loadFromDropbox(c).then(reloadPhotos).then(Remote.notifyRemote).catch((e: any) => toast(`Could not load tags from Dropbox: ${e?.message || e}`, 'error'))
+      void Remote.loadFromDropbox(c).then(reloadPhotos).then(Remote.notifyRemote).then(() => Remote.importNativeTags()).then(syncFromRemote).catch((e: any) => toast(`Could not load tags from Dropbox: ${e?.message || e}`, 'error'))
     } else {
       dbxClientRef.current = null
       setActiveDropbox(null)
@@ -727,14 +733,20 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
       for (const p of photosRef.current) if (p.dropbox?.id) seen.add(p.dropbox.id)
       for (const n of nearRef.current) if (n.prep?.photo.dropbox?.id) seen.add(n.prep.photo.dropbox.id)
       const files: DropboxFile[] = []
+      const alreadyIds: string[] = []
       let already = 0
       for (const t of targets) {
         const entries = await c.listFolder(t.path, { recursive: t.recursive, signal: ac.signal })
         for (const e of entries) {
           if (e.kind !== 'file' || !isDropboxImage(e.name) || e.pathLower.startsWith('/.photo-tagger')) continue
-          if (seen.has(e.id)) { already++; continue }
+          if (seen.has(e.id)) { already++; alreadyIds.push(e.id); continue }
           seen.add(e.id); files.push(e)
         }
+      }
+      // Pick up Dropbox tags added since the last visit (no re-download / re-tagging needed)
+      if (alreadyIds.length) {
+        const dset = new Set(alreadyIds)
+        syncFromRemote(await Remote.importNativeTags(photosRef.current.filter((p) => p.dropbox && dset.has(p.dropbox.id)).map((p) => p.id)))
       }
       if (!files.length) {
         dropboxAbortRef.current = null
@@ -758,6 +770,10 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
             const result = await ingestOneFile(file, 'dropbox', { id: f.id, path: f.path, rev: f.rev, contentHash: f.contentHash })
             if (result === 'error') failed++
             else imported++
+            if (result === 'added') {
+              const np = photosRef.current.find((p) => p.dropbox?.id === f.id)
+              if (np) syncFromRemote(await Remote.importNativeTags([np.id]))
+            }
             done++
             bumpJob({ label: `Tagging from Dropbox · ${f.name}`, done, failed })
           } catch (e: any) {

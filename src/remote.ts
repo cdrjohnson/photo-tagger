@@ -5,6 +5,7 @@
  */
 import { activeDropbox, META_ROOT, type DropboxClient } from './dropbox'
 import type { Face, Person, Photo } from './types'
+import { addTag } from './tags'
 
 const photos = new Map<string, Photo>()
 const thumbs = new Map<string, Blob>()
@@ -97,6 +98,33 @@ export function desiredDropboxTags(p: Photo): string[] {
   return out
 }
 const syncedKey = new Map<string, string>()
+
+/**
+ * Pull the file's existing native Dropbox tags into Photo Tagger as editable manual tags.
+ * Tags already matching a photo tag (after toDropboxTag) aren't duplicated. Every native tag that now
+ * corresponds to a photo tag counts as Photo Tagger-managed, so removing the chip removes it in Dropbox too.
+ * Returns the ids of photos whose tag list changed.
+ */
+export async function importNativeTags(ids?: string[]): Promise<string[]> {
+  const c = activeDropbox(); if (!c) return []
+  const list = (ids ?? [...photos.keys()]).map((id) => photos.get(id)).filter((p): p is Photo => !!p?.dropbox)
+  if (!list.length) return []
+  let tags: Map<string, string[]>
+  try { tags = await c.getTagsMany(list.map((p) => p.dropbox!.id)) } catch { return [] }
+  const changed: string[] = []
+  for (const p0 of list) {
+    const p = photos.get(p0.id); if (!p) continue
+    const native = (tags.get(p.dropbox!.id) ?? []).filter((t) => toDropboxTag(t) === t && t.length > 0)
+    if (!native.length) continue
+    let next = p
+    const have = new Set(next.tags.map((t) => toDropboxTag(t.name)))
+    for (const t of native) if (!have.has(t)) { next = addTag(next, t, 'manual'); have.add(t) }
+    const own = new Set([...(owned.get(p.id) ?? []), ...native.filter((t) => have.has(t))])
+    owned.set(p.id, [...own].sort())
+    if (next !== p) { photos.set(p.id, next); changed.push(p.id); touch(p.id) }
+  }
+  return changed
+}
 /** native tags Photo Tagger added, per photo id (persisted in the sidecar, independent of the app's photo objects) */
 const owned = new Map<string, string[]>()
 let tagErrorShown = false
