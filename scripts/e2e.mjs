@@ -683,6 +683,51 @@ await test('Dropbox sync (regression 1.0.13): tags keep syncing both ways once a
   ok(await page.locator('[data-testid=tag-group][data-source=manual] [data-tag="latest tag"]').count(), 'Photo Tagger tag keeps its group')
   // cleanup so later tests see a normal photo
   await page.keyboard.press('Escape')
+})
+
+await test('Dropbox sync (regression 1.0.14): a tag deleted in Dropbox stays deleted; opening a photo picks up Dropbox changes', async () => {
+  const fileTags = dbx.fileTags.get('id:dbx-a')
+  const dt = (t) => page.locator(`[data-testid=detail-tag][data-tag="${t}"]`)
+  const flush = () => page.evaluate(() => window.__ptFlushDropbox())
+  await tile('from-dropbox.jpg').click()
+  await dt('latest tag').waitFor()
+  ok(fileTags.has('latest_tag'), 'precondition: Photo Tagger-owned tag on the file')
+  // free slots so detected tags are on the file too
+  for (let i = 2; i <= 16; i++) await dt(`bulk ${i}`).getByTestId('remove-tag').click()
+  await flush()
+  const autos = await page.locator('[data-testid=tag-group][data-source=auto] [data-testid=detail-tag]').evaluateAll((els) => els.map((e) => e.dataset.tag))
+  const autoTag = autos.find((t) => fileTags.has(t.replace(/[^a-z0-9]+/g, '_'))) ?? autos[0]
+  const autoDbx = autoTag.replace(/[^a-z0-9]+/g, '_')
+  ok(fileTags.has(autoDbx), 'precondition: auto tag on the file: ' + autoDbx)
+  const n0 = dbx.tagAdds.length
+  // user deletes both in the Dropbox UI
+  fileTags.delete('latest_tag'); fileTags.delete(autoDbx)
+  // an unrelated edit in Photo Tagger triggers a write (no Refresh/import first)
+  await page.getByTestId('detail-tag-input').fill('After Delete'); await page.getByTestId('detail-tag-input').press('Enter')
+  await dt('after delete').waitFor()
+  await flush(); await page.waitForTimeout(300); await flush()
+  ok(!fileTags.has('latest_tag') && !fileTags.has(autoDbx), 'deleted tags not written back: ' + [...fileTags])
+  ok(!dbx.tagAdds.slice(n0).some((x) => x.tag_text === 'latest_tag' || x.tag_text === autoDbx), 'no tags/add for deleted tags')
+  ok(fileTags.has('after_delete'), 'new Photo Tagger tag still written')
+  await dt('latest tag').waitFor({ state: 'detached', timeout: 10_000 })
+  // Re-run tagging must not recreate them either
+  await page.getByRole('button', { name: 'Re-run tagging' }).click()
+  await page.waitForTimeout(3000); await flush()
+  ok(!fileTags.has('latest_tag') && !fileTags.has(autoDbx), 'still deleted after Re-run tagging: ' + [...fileTags])
+  eq(await dt(autoTag).count(), 0, 'auto tag not recreated by re-tag')
+  // opening the photo imports a tag added in Dropbox (no Refresh, no Download original)
+  fileTags.add('opened_tag')
+  await page.keyboard.press('Escape')
+  await tile('from-dropbox.jpg').click()
+  await dt('opened_tag').waitFor({ timeout: 10_000 })
+  // adding the deleted tag again in Photo Tagger writes it again, with a / path
+  await page.getByTestId('detail-tag-input').fill('Latest Tag'); await page.getByTestId('detail-tag-input').press('Enter')
+  await dt('latest tag').waitFor(); await flush()
+  ok(fileTags.has('latest_tag'), 're-added tag written again')
+  ok(fileTags.size <= 20 && fileTags.has('someone_elses_tag'), 'cap + third-party kept: ' + [...fileTags])
+  eq(dbx.tagBad, 0, 'no id: paths')
+  ok(await page.locator('[data-testid=tag-group][data-source=manual] [data-tag="after delete"]').count(), 'Photo Tagger tag keeps its group')
+  await page.keyboard.press('Escape')
   ok((await tagsOf('from-dropbox.jpg')).length > 0, 'tagged')
   await tile('from-dropbox.jpg').click()
   await page.getByTestId('dropbox-path').waitFor()

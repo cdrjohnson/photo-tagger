@@ -49,6 +49,8 @@ export interface Photo {
   dropbox?: DropboxRef
   /** native Dropbox file tags Photo Tagger itself added (so only these are ever removed) */
   dropboxTags?: string[]
+  /** Dropbox tags removed on the Dropbox side; never written back until the tag is added again */
+  dropboxRemoved?: string[]
   hasOriginal: boolean
   /** desktop: relative path of the original inside the library folder */
   relPath?: string

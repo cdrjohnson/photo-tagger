@@ -60,6 +60,8 @@ export function Detail({ list, index, onIndex, onClose, allTags }: {
 
   // Reset fit when navigating to another photo
   useEffect(() => { atFitRef.current = true; setNat(null); setPan({ x: 0, y: 0 }) }, [p?.id])
+  // opening a Dropbox photo picks up tags added/removed in Dropbox (no polling)
+  useEffect(() => { if (p?.dropbox) void lib.pullDropboxTags(p.id) }, [p?.id]) // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { computeFit() }, [computeFit])
   useEffect(() => {
     const el = stageRef.current

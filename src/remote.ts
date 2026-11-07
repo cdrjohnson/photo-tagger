@@ -16,6 +16,18 @@ let people: Person[] = []
 const listeners = new Set<() => void>()
 export const onRemoteChange = (fn: () => void) => { listeners.add(fn); return () => { listeners.delete(fn) } }
 const emit = () => listeners.forEach((f) => f())
+const photoListeners = new Set<(ids: string[]) => void>()
+/** photos changed inside remote.ts (e.g. a tag deleted in Dropbox) — the store reloads them */
+export const onRemotePhotos = (fn: (ids: string[]) => void) => { photoListeners.add(fn); return () => { photoListeners.delete(fn) } }
+const emitPhotos = (ids: string[]) => { if (ids.length) photoListeners.forEach((f) => f(ids)) }
+/** tags Photo Tagger had on the file that are gone now were deleted in Dropbox: drop the chips (people stay — faces own them) and never write them back */
+function applyRemoteRemovals(p: Photo, gone: string[]): Photo {
+  if (!gone.length) return p
+  let next = p
+  for (const t of gone) for (const x of next.tags) if (x.source !== 'person' && toDropboxTag(x.name) === t) next = removeTag(next, x.name)
+  const sup = [...new Set([...(p.dropboxRemoved ?? []), ...gone])].sort()
+  return { ...next, dropboxRemoved: sup }
+}
 
 export const metaPath = (p: { dropbox?: { id: string } }) => `${META_ROOT}/meta/${p.dropbox!.id.replace(/^id:/, '').replace(/[^A-Za-z0-9_-]/g, '_')}.json`
 const PEOPLE_PATH = `${META_ROOT}/people.json`
@@ -94,7 +106,8 @@ export function desiredDropboxTags(p: Photo): string[] {
   const rank = (s: string) => (s === 'person' ? 0 : s === 'manual' || s === 'dropbox' ? 1 : s === 'auto' ? 2 : 3)
   const sorted = [...p.tags].sort((a, b) => rank(a.source) - rank(b.source) || (b.score ?? 0) - (a.score ?? 0))
   const out: string[] = []
-  for (const t of sorted) { const d = toDropboxTag(t.name); if (d && !out.includes(d)) out.push(d) }
+  const sup = new Set(p.dropboxRemoved ?? [])
+  for (const t of sorted) { const d = toDropboxTag(t.name); if (d && !sup.has(d) && !out.includes(d)) out.push(d) }
   return out
 }
 const syncedKey = new Map<string, string>()
@@ -129,11 +142,10 @@ export async function importNativeTags(ids?: string[]): Promise<string[]> {
   for (const p0 of list) {
     const p = photos.get(p0.id); if (!p) continue
     const native = (tags.get(paths.get(p.id)!) ?? []).filter((t) => toDropboxTag(t) === t && t.length > 0)
-    let next = p
-    // a tag Photo Tagger had on the file that is gone now was removed in Dropbox → drop it here too (people stay: faces own them)
     const prev = owned.get(p.id) ?? []
-    const gone = prev.filter((t) => !native.includes(t))
-    for (const t of gone) for (const x of next.tags) if (x.source !== 'person' && toDropboxTag(x.name) === t) next = removeTag(next, x.name)
+    let next = applyRemoteRemovals(p, prev.filter((t) => !native.includes(t)))
+    // a suppressed tag that is back on the file was re-added in Dropbox
+    if (next.dropboxRemoved?.some((t) => native.includes(t))) next = { ...next, dropboxRemoved: next.dropboxRemoved.filter((t) => !native.includes(t)) }
     const have = new Set(next.tags.map((t) => toDropboxTag(t.name)))
     for (const t of native) if (!have.has(t)) { next = addTag(next, t, 'dropbox'); have.add(t) }
     const own = new Set([...prev.filter((t) => native.includes(t)), ...native.filter((t) => have.has(t))])
@@ -146,14 +158,21 @@ export async function importNativeTags(ids?: string[]): Promise<string[]> {
 const owned = new Map<string, string[]>()
 let tagErrorShown = false
 async function syncNativeTags(c: DropboxClient, id: string) {
-  const p = photos.get(id)
+  let p = photos.get(id)
   if (!p?.dropbox) return
-  const want = desiredDropboxTags(p)
+  let want = desiredDropboxTags(p)
   const key = want.join('|') + '#' + (owned.get(id) ?? []).join('|')
   if (syncedKey.get(id) === key) return
   try {
     const path = await tagPath(c, p)
     const current = new Set(await c.getTags(path))
+    // tags we had written that are gone from the file were deleted in Dropbox — honor that instead of writing them back
+    const gone = (owned.get(id) ?? []).filter((t) => !current.has(t))
+    if (gone.length) {
+      p = applyRemoteRemovals(photos.get(id) ?? p, gone)
+      photos.set(id, p); dirty.add(id); emitPhotos([id])
+      want = desiredDropboxTags(p)
+    }
     const ours = new Set((owned.get(id) ?? []).filter((t) => current.has(t)))
     // Dropbox allows 20 tags per file; tags from you/other apps keep their slots, the rest go to our highest-priority tags.
     // (Before 1.0.13 the low-priority tags already on a full file blocked every newly added tag.)

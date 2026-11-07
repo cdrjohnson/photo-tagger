@@ -45,6 +45,8 @@ export interface Library {
   deletePhotos(ids: string[]): Promise<void>
   retagAll(): Promise<void>
   retagPhoto(id: string): Promise<void>
+  /** read this Dropbox photo's tags from Dropbox now (detail view open) */
+  pullDropboxTags(id: string): Promise<void>
   retryPending(): Promise<void>
   saveSettings(s: Partial<Settings>): Promise<void>
   addCustomLabel(label: string, prompt?: string): Promise<void>
@@ -202,6 +204,12 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
     const byId = new Map(Remote.remotePhotos().filter((p) => ids.includes(p.id)).map((p) => [p.id, p]))
     setPhotosBoth((all) => all.map((p) => byId.get(p.id) ?? p))
   }
+  const syncFromRemoteRef = useRef(syncFromRemote); syncFromRemoteRef.current = syncFromRemote
+  useEffect(() => Remote.onRemotePhotos((ids) => syncFromRemoteRef.current(ids)), [])
+  const pullDropboxTags = useCallback(async (id: string) => {
+    if (!photosRef.current.find((x) => x.id === id)?.dropbox) return
+    syncFromRemoteRef.current(await Remote.importNativeTags([id]))
+  }, [])
   const reloadPhotos = async () => {
     const ps = await DB.allPhotos()
     photosRef.current = ps; setPhotos(ps)
@@ -823,7 +831,12 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
   }, [setPhotosBoth])
 
   const addTags = useCallback(
-    (ids: string[], names: string[]) => updatePhotos(ids, (p) => names.reduce((a, n) => addTag(a, n, 'manual'), p)),
+    (ids: string[], names: string[]) => updatePhotos(ids, (p) => {
+      const n2 = names.reduce((a, n) => addTag(a, n, 'manual'), p)
+      // adding a tag again in Photo Tagger lifts a Dropbox-side deletion
+      const back = new Set(names.map(Remote.toDropboxTag))
+      return n2.dropboxRemoved?.some((t) => back.has(t)) ? { ...n2, dropboxRemoved: n2.dropboxRemoved.filter((t) => !back.has(t)) } : n2
+    }),
     [updatePhotos],
   )
   const removeTags = useCallback(
@@ -1046,7 +1059,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
     dropboxKey,
     dropbox: { connected: !!dbxSession, account: dbxSession?.name || dbxSession?.email || '', folders: dbxFolders, connecting: dbxConnecting },
     connectDropbox, disconnectDropbox, listDropbox, processDropboxFolder, refreshDropbox, forgetDropboxFolder,
-    addFiles, cancelDropboxDownload, updatePhotos, addTags, removeTags, deletePhotos, retagAll, retagPhoto, retryPending,
+    addFiles, cancelDropboxDownload, updatePhotos, addTags, removeTags, deletePhotos, retagAll, retagPhoto, pullDropboxTags, retryPending,
     saveSettings, addCustomLabel, removeCustomLabel, toggleLabel, resetVocabulary, exportData, importTags,
     clearEverything, toast, preloadModel, setAfterIngest,
     nearDupes, resolveNearDupe, resolveAllNearDupes, findDuplicates, dismissDupePair,
@@ -1054,7 +1067,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
     libraryPath, isDesktop: DB.isDesktop(), chooseLibraryFolder, changeLibraryFolder, portable, useLibraryBesideApp,
     savePhotosToDisk, downloadPhotosZip,
   }), [ready, photos, settings, custom, job, model, toasts, dropboxKey, dbxSession, dbxFolders, dbxConnecting, connectDropbox, disconnectDropbox, listDropbox, processDropboxFolder, refreshDropbox, forgetDropboxFolder, addFiles, cancelDropboxDownload, updatePhotos, addTags, removeTags,
-    deletePhotos, retagAll, retagPhoto, retryPending, saveSettings, addCustomLabel, removeCustomLabel, toggleLabel, resetVocabulary, exportData,
+    deletePhotos, retagAll, retagPhoto, pullDropboxTags, retryPending, saveSettings, addCustomLabel, removeCustomLabel, toggleLabel, resetVocabulary, exportData,
     importTags, clearEverything, toast, preloadModel, setAfterIngest, nearDupes, resolveNearDupe, resolveAllNearDupes, findDuplicates,
     dismissDupePair, folderName, chooseSaveFolder, clearSaveFolderFn, savePhotosToDisk, downloadPhotosZip, libraryPath, chooseLibraryFolder, changeLibraryFolder, portable, useLibraryBesideApp])
 
