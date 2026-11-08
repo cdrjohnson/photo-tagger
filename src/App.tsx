@@ -386,8 +386,8 @@ const Tile = memo(function Tile({ p, i, selected, selecting, onTile, onLong, onC
   const fired = useRef(false)
   const start = () => { fired.current = false; timer.current = window.setTimeout(() => { fired.current = true; onLong(i, p.id) }, 550) }
   const stop = () => clearTimeout(timer.current)
-  // two visible slots: your/detected/Dropbox tags first, then people, then photo info/quality to fill them
-  const pref = (t: Photo['tags'][number]) => (t.source === 'auto' || t.source === 'manual' || t.source === 'dropbox' ? 0 : t.source === 'person' ? 1 : 2)
+  // two visible slots: named people first, then your/detected/Dropbox tags, then photo info/quality (stable sort keeps order within each)
+  const pref = (t: Photo['tags'][number]) => (t.source === 'person' ? 0 : t.source === 'auto' || t.source === 'manual' || t.source === 'dropbox' ? 1 : 2)
   const shown = [...p.tags].sort((a, b) => pref(a) - pref(b)).slice(0, 2)
   const rest = p.tags.filter((t) => !shown.includes(t))
   const warn = [p.quality.blurry && 'blurry', p.quality.dark && 'dark', p.quality.bright && 'bright'].filter(Boolean) as string[]

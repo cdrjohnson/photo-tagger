@@ -92,7 +92,7 @@ The bar at the bottom lets you **Select all** photos matching the current filter
 
 ## 6. People (face naming)
 
-**Photo tiles** show two tags — your own, detected or Dropbox tags first, then people, then date/camera or quality to fill both slots (a photo with only two tags shows both). Only when there are more than two does a **+N** button on the tile opens a list of the rest (people, dates/camera, quality, Dropbox, your own and detected tags). Remove any of them with **×** right there without opening the photo; Escape or a click elsewhere closes it. Add new tags in the photo's detail panel.
+**Photo tiles** show two tags — **named people first**, then your own, detected or Dropbox tags, then date/camera or quality to fill both slots (a photo with only two tags shows both). Only when there are more than two does a **+N** button on the tile opens a list of the rest (people, dates/camera, quality, Dropbox, your own and detected tags). Remove any of them with **×** right there without opening the photo; Escape or a click elsewhere closes it. Add new tags in the photo's detail panel.
 
 Open the **People** tab at the top. The red badge counts suggestions waiting for you.
 

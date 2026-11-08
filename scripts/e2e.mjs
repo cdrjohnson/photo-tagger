@@ -1263,6 +1263,15 @@ await test('faces: confirm and reject suggestions; rejections stick across reloa
     const rows = await page.locator('[data-testid=photo-tile]').evaluateAll((els) => els.map((e) => ({ n: e.dataset.tags.split('|').filter(Boolean).length, chips: [...e.querySelectorAll('.cap > span')].map((c) => c.textContent), more: !!e.querySelector('[data-testid=tile-more]') })))
     ok(rows.every((r) => r.chips.length === Math.min(2, r.n) && r.more === r.n > 2), 'caption rule holds with people: ' + JSON.stringify(rows.filter((r) => !(r.chips.length === Math.min(2, r.n) && r.more === r.n > 2))))
     ok(rows.some((r) => r.n >= 1), 'tiles checked')
+    // 1.0.21: named people come first in the caption
+    const order = await page.locator('[data-testid=photo-tile]').evaluateAll((els) => els.map((e) => ({ name: e.dataset.name, chips: [...e.querySelectorAll('.cap > span')].map((c) => c.textContent) })))
+    const people = await page.evaluate(() => new Promise((res) => { const r = indexedDB.open('photo-tagger'); r.onsuccess = () => { const q = r.result.transaction('photos').objectStore('photos').getAll(); q.onsuccess = () => { res(q.result.map((p) => ({ name: p.name, persons: p.tags.filter((t) => t.source === 'person').map((t) => t.name), others: p.tags.filter((t) => t.source !== 'person').length }))); r.result.close() } } }))
+    const withBoth = people.filter((p) => p.persons.length && p.others)
+    ok(withBoth.length > 0, 'a photo has a person and other tags')
+    for (const p of withBoth) {
+      const chips = order.find((o) => o.name === p.name)?.chips ?? []
+      eq(chips.slice(0, Math.min(2, p.persons.length)), p.persons.slice(0, 2), 'person names first on ' + p.name)
+    }
     await page.getByTestId('view-people').click()
   }
   const id21 = await photoIdOf('biden-2021.jpg'), id09 = await photoIdOf('biden-2009.jpg')
