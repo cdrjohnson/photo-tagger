@@ -26,7 +26,7 @@ export function SettingsDialog({ initialTab = 'general', note, onClose }: { init
           <button className="btn icon" onClick={close} aria-label="Close settings" data-testid="settings-close">✕</button>
         </div>
         <div className="tabs" role="tablist">
-          {([['general', 'General'], ['dropbox', 'Dropbox'], ['vocab', 'Labels'], ['data', 'Data']] as const).map(([k, l]) => (
+          {([['general', 'General'], ['dropbox', 'Dropbox'], ['vocab', 'Tags'], ['data', 'Data']] as const).map(([k, l]) => (
             <button key={k} role="tab" aria-selected={tab === k} className={tab === k ? 'on' : ''} data-testid={`tab-${k}`} onClick={() => setTab(k)}>{l}</button>
           ))}
         </div>
@@ -154,8 +154,8 @@ function Vocab({ onDirty }: { onDirty: () => void }) {
   return (
     <>
       <p className="muted">
-        Photos are matched against this list of labels. Switch labels off if you never want them, or add your own (for example “bike race”, “my dog Rex”,
-        “whiteboard notes”). The first custom label downloads a text model (≈72&nbsp;MB, once).
+        Photos are matched against this list of tags. Switch tags off if you never want them detected, or add your own (for example “bike race”, “my dog Rex”,
+        “whiteboard notes”). The first custom tag downloads a text model (≈72&nbsp;MB, once).
       </p>
       <form className="add-label" onSubmit={async (e) => {
         e.preventDefault()
@@ -164,13 +164,13 @@ function Vocab({ onDirty }: { onDirty: () => void }) {
         await lib.addCustomLabel(label, prompt)
         setBusy(false); setLabel(''); setPrompt('')
       }}>
-        <input data-testid="custom-label" placeholder="New label, e.g. lighthouse" value={label} onChange={(e) => setLabel(e.target.value)} />
+        <input data-testid="custom-label" placeholder="New tag, e.g. lighthouse" value={label} onChange={(e) => setLabel(e.target.value)} />
         <input data-testid="custom-prompt" placeholder="Optional description, e.g. a photo of a lighthouse by the sea" value={prompt} onChange={(e) => setPrompt(e.target.value)} />
-        <button className="btn primary" data-testid="custom-add" disabled={busy || !label.trim()}>{busy ? 'Adding…' : 'Add label'}</button>
+        <button className="btn primary" data-testid="custom-add" disabled={busy || !label.trim()}>{busy ? 'Adding…' : 'Add tag'}</button>
       </form>
       {lib.custom.length > 0 && (
         <div className="vocab-group">
-          <h4>Your labels</h4>
+          <h4>Your tags</h4>
           <div className="chips">
             {lib.custom.map((c) => (
               <span key={c.id} className="chip src-manual static" data-testid="custom-chip">{c.label}
@@ -185,8 +185,8 @@ function Vocab({ onDirty }: { onDirty: () => void }) {
         <p className="muted small" id="retag-all-help-text" data-testid="retag-all-help">Re-analyzes every photo in the library and updates detected tags (faces aren't re-scanned). Dropbox photos pick up tag changes made in Dropbox, then Photo Tagger's tags are saved back. Adding or removing a tag on a photo already updates Dropbox — no re-tag needed.</p>
       </div>
       <div className="row wrap">
-        <input className="grow" placeholder="Filter labels…" value={q} onChange={(e) => setQ(e.target.value)} />
-        <button className="btn" onClick={() => { void lib.resetVocabulary(); onDirty() }}>Reset labels</button>
+        <input className="grow" placeholder="Filter tags…" value={q} onChange={(e) => setQ(e.target.value)} />
+        <button className="btn" onClick={() => { void lib.resetVocabulary(); onDirty() }} title="Puts the built-in tag list back and removes your custom tags from it. Tags already on photos stay.">Reset tag list</button>
       </div>
       {[...groups.entries()].map(([g, ls]) => (
         <div key={g} className="vocab-group">
@@ -270,7 +270,7 @@ function Data() {
       <p className="muted">Each save writes a <code>photos/</code> folder (image + <code>.json</code> sidecar per photo) plus <code>photo-tagger.json</code> and <code>photo-tagger.csv</code>. Person tags are included. Use Select to save only the current selection.</p>
 
       <h3>Export tags only</h3>
-      <p className="muted">Exports tags and metadata only (not the images). JSON keeps everything including your custom labels; CSV is handy for spreadsheets.</p>
+      <p className="muted">Exports tags and metadata only (not the images). JSON keeps everything including your custom tags; CSV is handy for spreadsheets.</p>
       <div className="row wrap">
         <button className="btn" data-testid="export-json" onClick={() => lib.exportData('json')}>Export JSON</button>
         <button className="btn" data-testid="export-csv" onClick={() => lib.exportData('csv')}>Export CSV</button>

@@ -6,6 +6,9 @@ import { PeopleView } from './components/PeopleView'
 import { DupeReview } from './components/DupeReview'
 import { DropboxBrowser } from './components/DropboxBrowser'
 import { RemoveConfirm } from './components/RemoveConfirm'
+
+/** set only by the automated test harness (to load fixture photos); never in normal use */
+const E2E = typeof window !== 'undefined' && !!(window as any).__PT_E2E__
 import { usePeople } from './people'
 import { filterPhotos, tagStats, photoTime } from './filter'
 import { useInView, useTheme, useThumb } from './hooks'
@@ -27,7 +30,6 @@ export default function App() {
   const [allTags, setAllTags] = useState(false)
   const [moreFilters, setMoreFilters] = useState(false)
   const [bulk, setBulk] = useState(false)
-  const [dragging, setDragging] = useState(false)
   const [cancelDropboxConfirm, setCancelDropboxConfirm] = useState(false)
   const [dbxBrowser, setDbxBrowser] = useState(false)
   const [removeAsk, setRemoveAsk] = useState(false)
@@ -35,9 +37,6 @@ export default function App() {
     if (cancelDropboxConfirm && !lib.job?.cancellable) setCancelDropboxConfirm(false)
   }, [cancelDropboxConfirm, lib.job?.cancellable])
   const [theme, cycleTheme] = useTheme()
-  const fileRef = useRef<HTMLInputElement>(null)
-  const camRef = useRef<HTMLInputElement>(null)
-  const dirRef = useRef<HTMLInputElement>(null)
   const lastClicked = useRef<number | null>(null)
   const headRef = useRef<HTMLElement>(null)
   useEffect(() => {
@@ -56,36 +55,6 @@ export default function App() {
   const visibleStats = allTags ? stats : stats.filter((s, i) => i < FEW || filters.tags.includes(s.name))
   const hasFilters = filters.tags.length > 0 || filters.query || filters.from || filters.to || filters.quality !== 'any'
   const advancedCount = [filters.from, filters.to, filters.quality !== 'any' ? 'q' : ''].filter(Boolean).length
-
-  // ----- drag & drop -----
-  useEffect(() => {
-    let depth = 0
-    const has = (e: DragEvent) => e.dataTransfer?.types?.includes('Files')
-    const enter = (e: DragEvent) => { if (has(e)) { depth++; setDragging(true) } }
-    const leave = () => { depth = Math.max(0, depth - 1); if (!depth) setDragging(false) }
-    const over = (e: DragEvent) => { if (has(e)) e.preventDefault() }
-    const drop = (e: DragEvent) => {
-      if (!has(e)) return
-      e.preventDefault(); depth = 0; setDragging(false)
-      void lib.addFiles([...(e.dataTransfer?.files ?? [])])
-    }
-    window.addEventListener('dragenter', enter); window.addEventListener('dragleave', leave)
-    window.addEventListener('dragover', over); window.addEventListener('drop', drop)
-    return () => {
-      window.removeEventListener('dragenter', enter); window.removeEventListener('dragleave', leave)
-      window.removeEventListener('dragover', over); window.removeEventListener('drop', drop)
-    }
-  }, [lib])
-
-  // paste images (desktop)
-  useEffect(() => {
-    const paste = (e: ClipboardEvent) => {
-      const files = [...(e.clipboardData?.files ?? [])].filter((f) => f.type.startsWith('image/'))
-      if (files.length) void lib.addFiles(files)
-    }
-    window.addEventListener('paste', paste)
-    return () => window.removeEventListener('paste', paste)
-  }, [lib])
 
   useEffect(() => { setSel((s) => { const ids = new Set(lib.photos.map((p) => p.id)); const n = new Set([...s].filter((x) => ids.has(x))); return n.size === s.size ? s : n }) }, [lib.photos])
   useEffect(() => { if (!addMenu) return; const c = () => setAddMenu(false); window.addEventListener('click', c); return () => window.removeEventListener('click', c) }, [addMenu])
@@ -124,7 +93,6 @@ export default function App() {
     return [...m.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
   }, [selPhotos])
 
-  const pick = (ref: React.RefObject<HTMLInputElement | null>) => { setAddMenu(false); ref.current?.click() }
   const onFiles = (e: React.ChangeEvent<HTMLInputElement>) => { const f = [...(e.target.files ?? [])]; e.target.value = ''; void lib.addFiles(f) }
   const doDropbox = async () => {
     setAddMenu(false)
@@ -156,10 +124,7 @@ export default function App() {
             <button className="btn primary" data-testid="add-btn" aria-haspopup="menu" aria-expanded={addMenu} onClick={() => setAddMenu((v) => !v)}>＋ <span className="hide-sm">Add photos</span></button>
             {addMenu && (
               <div className="menu" role="menu">
-                <button role="menuitem" data-testid="add-photos" onClick={() => pick(fileRef)}>📁 Choose photos<small>Gallery, camera roll or files</small></button>
-                <button role="menuitem" data-testid="add-camera" onClick={() => pick(camRef)}>📷 Take a photo<small>Use the camera</small></button>
-                <button role="menuitem" className="desktop-only" data-testid="add-folder" onClick={() => pick(dirRef)}>🗂 Add a folder<small>All images inside</small></button>
-                <button role="menuitem" data-testid="add-dropbox" onClick={doDropbox}>📦 From Dropbox<small>{lib.dropbox.connected ? 'Browse and tag your Dropbox folders' : lib.dropboxKey ? 'Connect Dropbox first' : 'Needs an app key'}</small></button>
+                <button role="menuitem" className="menu-primary" data-testid="add-dropbox" onClick={doDropbox}>📦 From Dropbox<small>{lib.dropbox.connected ? 'Browse and tag your Dropbox folders' : lib.dropboxKey ? 'Connect Dropbox first' : 'Needs an app key'}</small></button>
                 {lib.dropbox.connected && lib.dropbox.folders.length > 0 && (
                   <button role="menuitem" data-testid="add-dropbox-refresh" onClick={() => { setAddMenu(false); void lib.refreshDropbox() }}>↻ Refresh Dropbox<small>Tag new photos in linked folders</small></button>
                 )}
@@ -170,9 +135,8 @@ export default function App() {
           <button className="btn icon" data-testid="theme" onClick={cycleTheme} aria-label={`Theme: ${theme}`} title={`Theme: ${theme}`}>{theme === 'dark' ? '🌙' : theme === 'light' ? '☀️' : '🌓'}</button>
           <button className="btn icon" data-testid="open-settings" onClick={() => setSettings({})} aria-label="Settings" title="Settings">⚙️</button>
         </div>
-        <input ref={fileRef} type="file" accept="image/*" multiple hidden data-testid="file-input" onChange={onFiles} />
-        <input ref={camRef} type="file" accept="image/*" capture="environment" hidden data-testid="camera-input" onChange={onFiles} />
-        <input ref={dirRef} type="file" hidden multiple {...({ webkitdirectory: '', directory: '' } as object)} data-testid="folder-input" onChange={onFiles} />
+        {/* photos are added from Dropbox only (1.0.17); this hidden input exists solely for the automated test harness's fixture photos */}
+        {E2E && <input type="file" accept="image/*" multiple hidden data-testid="file-input" onChange={onFiles} />}
       </header>
 
       {(j || m.state === 'loading' || lib.pendingCount > 0) && (
@@ -273,14 +237,11 @@ export default function App() {
               <div className="empty-art" aria-hidden>🖼️</div>
               <h1>Tag and find your photos — privately</h1>
               <p>{lib.isDesktop
-                ? <>Add photos from this device (copied into your library folder) or connect Dropbox and tag your folders there — Dropbox photos and their tags stay in Dropbox. Everything is tagged on-device.</>
-                : <>Add photos from this device or your Dropbox. A small AI model running <b>in your browser</b> labels what’s in each one. Nothing is uploaded anywhere.</>}</p>
+                ? <>Add photos <b>from Dropbox</b>: browse your Dropbox, pick folders or individual photos, and Photo Tagger tags them on this computer — the photos and their tags stay in Dropbox.</>
+                : <>Add photos <b>from Dropbox</b> and tag them where they already live. A small AI model running <b>in your browser</b> tags what’s in each one; your photos aren't uploaded to any tagging service.</>}</p>
               <div className="row center wrap">
-                <button className="btn primary big" data-testid="empty-add" onClick={() => fileRef.current?.click()}>Choose photos</button>
-                <button className="btn big touch-only" onClick={() => camRef.current?.click()}>Take a photo</button>
-                <button className="btn big" onClick={doDropbox}>From Dropbox</button>
+                <button className="btn primary big" data-testid="empty-dropbox" onClick={doDropbox}>📦 From Dropbox</button>
               </div>
-              <p className="muted desktop-only">…or drag and drop images anywhere on this page.</p>
               <p className="muted small">The first import downloads the ≈64&nbsp;MB tagging model once; after that it works offline.</p>
             </div>
           ) : filtered.length === 0 ? (
@@ -355,7 +316,6 @@ export default function App() {
           onConfirm={async () => { setRemoveAsk(false); await lib.deletePhotos([...sel]); exitSelect() }} />
       )}
       <DupeReview />
-      {dragging && <div className="dropzone" data-testid="dropzone"><div>Drop photos to add them</div></div>}
 
       <div className="toasts" aria-live="polite">
         {lib.toasts.map((t) => <div key={t.id} className={`toast ${t.kind}`}>{t.text}</div>)}

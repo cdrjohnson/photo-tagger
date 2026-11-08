@@ -26,7 +26,7 @@ It is an installable web app (PWA) – open it on your laptop or phone, then "in
 
 ## Features
 
-- **Ingest**: file picker, drag-and-drop, paste, whole folders (desktop), camera roll **or camera** (phones), and **Dropbox as your library**: connect once (OAuth PKCE), browse your Dropbox folders in the app and tag them — photos are downloaded into memory only, and tags/face names are written to `/.photo-tagger/` in your Dropbox and added to each photo as native **Dropbox tags** (so Dropbox search finds them); nothing about Dropbox photos is stored locally; **Refresh Dropbox** tags only new photos (needs your own free app key – see [docs/DROPBOX_SETUP.md](docs/DROPBOX_SETUP.md)).
+- **Ingest**: **Dropbox only** (since 1.0.17 — no local file picker, folder, camera, drag-and-drop or paste). **Dropbox as your library**: connect once (OAuth PKCE), browse your Dropbox folders in the app and tag them — photos are downloaded into memory only, and tags/face names are written to `/.photo-tagger/` in your Dropbox and added to each photo as native **Dropbox tags** (so Dropbox search finds them); nothing about Dropbox photos is stored locally; **Refresh Dropbox** tags only new photos (needs your own free app key – see [docs/DROPBOX_SETUP.md](docs/DROPBOX_SETUP.md)).
 - **Automatic tags** from the image content with CLIP zero-shot classification over ~90 built-in labels (people, selfie, dog, cat, food, pizza, landscape, mountain, beach, city, night, document, receipt, screenshot, meme, art and more). Related tags are added automatically (dog → pets, animals).
 - **Metadata tags** from EXIF: year taken, camera, and `geotagged` (GPS coordinates are shown on the photo with an OpenStreetMap link).
 - **Quality checks**: `blurry`, `dark`, `bright` (thresholds adjustable).
@@ -109,7 +109,7 @@ The live link above is already HTTPS. Installing needs the app to be served over
    - **Android (Chrome):** ⋮ menu → **Install app** (or *Add to Home screen*).
    - **Laptop (Chrome / Edge):** click the install icon at the right of the address bar.
 3. Open it once while online and add a photo, so the model downloads. From then on it works offline.
-4. Tip: on a phone, *Add photos → Choose photos* opens your camera roll (or Files), and *Take a photo* opens the camera.
+4. Tip: *Add photos → From Dropbox* is how photos get in (connect Dropbox first).
 
 Your library lives **per browser and per device** (it is stored in that browser's IndexedDB). To move tags between devices, use **Settings → Data → Export / Import** and add the same photos on both.
 

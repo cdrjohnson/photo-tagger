@@ -22,6 +22,9 @@ const ok = (c, m) => { if (!c) throw new Error(m) }
 
 const srv = await startPreview()
 const { browser, context } = await launch()
+// the app has no local "add photos" UI any more (Dropbox only); the harness loads fixture photos through a test-only input
+await context.addInitScript(() => { window.__PT_E2E__ = true })
+{ const nc = browser.newContext.bind(browser); browser.newContext = async (o) => { const c = await nc(o); await c.addInitScript(() => { window.__PT_E2E__ = true }); return c } }
 await makeScreenshotSample(browser)
 const FILES = ['dog.jpg', 'cat.jpg', 'beach.jpg', 'city.jpg', 'pizza.jpg', 'mountain.jpg', 'person.jpg', 'document.jpg',
   'blurry-mountain.jpg', 'dark-city.jpg', 'bright-beach.jpg', 'geotagged-cat.jpg', 'screenshot.png']
@@ -552,8 +555,13 @@ await test('vocabulary: add a custom label (text model loads on demand) and appl
   await page.getByTestId('custom-prompt').fill('a photo of a city skyline')
   await page.getByTestId('custom-add').click()
   await page.locator('[data-testid=custom-chip]', { hasText: 'skyline' }).waitFor({ timeout: 300_000 })
-  await page.waitForFunction(() => !document.querySelector('[data-testid=custom-add]')?.disabled || document.querySelector('[data-testid=custom-add]')?.textContent === 'Add label', null, { timeout: 300_000 })
-  ok(await page.getByTestId('retag-all-group').getByTestId('retag-all').count() === 1 && await page.getByTestId('retag-all-group').getByRole('button', { name: 'Reset labels' }).count() === 0, 'help grouped with Re-tag library only')
+  await page.waitForFunction(() => !document.querySelector('[data-testid=custom-add]')?.disabled || document.querySelector('[data-testid=custom-add]')?.textContent === 'Add tag', null, { timeout: 300_000 })
+  ok(await page.getByTestId('retag-all-group').getByTestId('retag-all').count() === 1 && await page.getByTestId('retag-all-group').getByRole('button', { name: 'Reset tag list' }).count() === 0, 'help grouped with Re-tag library only')
+  { // Settings tabs: "Tags" (not Labels), each tab its own non-overlapping box
+    const boxes = await page.locator('.tabs button').evaluateAll((els) => els.map((e) => { const r = e.getBoundingClientRect(); return { t: e.textContent.trim(), l: r.left, r: r.right } }))
+    ok(boxes.some((b) => b.t === 'Tags') && !boxes.some((b) => b.t === 'Labels'), 'tab is called Tags: ' + boxes.map((b) => b.t))
+    ok(boxes.every((b, i) => i === 0 || b.l >= boxes[i - 1].r), 'tabs do not overlap: ' + JSON.stringify(boxes))
+  }
   ok(await page.getByTestId('retag-all-help').isVisible() && /every photo/.test(await page.getByTestId('retag-all-help').innerText()), 'Re-tag library explained next to the button')
   await page.getByTestId('retag-all').click()
   await settled()
@@ -1408,21 +1416,20 @@ const merrors = []
 m.on('pageerror', (e) => merrors.push(e.message))
 const noOverflow = async (label) => ok(await m.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), `horizontal overflow on ${label}`)
 
-await test('mobile: empty state, camera/camera-roll inputs, no horizontal overflow', async () => {
+await test('mobile: empty state, Dropbox-only add, no horizontal overflow', async () => {
   await m.goto(URL_BASE)
   await m.getByTestId('empty').waitFor()
   await noOverflow('empty')
   await m.getByTestId('add-btn').click()
-  ok(await m.getByTestId('add-camera').isVisible(), 'camera option visible on touch devices')
-  ok(!(await m.getByTestId('add-folder').isVisible()), 'folder option hidden on touch devices')
-  eq(await m.getByTestId('camera-input').getAttribute('capture'), 'environment')
-  eq(await m.getByTestId('file-input').getAttribute('accept'), 'image/*')
+  ok(await m.getByTestId('add-dropbox').isVisible(), 'From Dropbox is the add action')
+  eq([await m.getByTestId('add-photos').count(), await m.getByTestId('add-camera').count(), await m.getByTestId('add-folder').count(), await m.getByTestId('camera-input').count()], [0, 0, 0, 0], 'no local add options (1.0.17)')
+  eq(await m.getByTestId('empty-add').count(), 0, 'no Choose photos on the empty screen')
+  ok(await m.getByTestId('empty-dropbox').isVisible(), 'From Dropbox is the empty-screen button')
   await m.keyboard.press('Escape'); await m.mouse.click(5, 300)
 })
 
-await test('mobile: ingest via camera input, grid is 3 columns, filters collapse into a panel', async () => {
-  await m.getByTestId('camera-input').setInputFiles(sample('pizza.jpg'))
-  await m.getByTestId('file-input').setInputFiles(['dog.jpg', 'beach.jpg', 'city.jpg', 'blurry-mountain.jpg'].map(sample))
+await test('mobile: ingest (fixture photos), grid is 3 columns, filters collapse into a panel', async () => {
+  await m.getByTestId('file-input').setInputFiles(['pizza.jpg', 'dog.jpg', 'beach.jpg', 'city.jpg', 'blurry-mountain.jpg'].map(sample))
   {
     const t0 = Date.now()
     while (Date.now() - t0 < 300_000) {

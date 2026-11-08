@@ -32,15 +32,13 @@ Photo Tagger looks at each photo, writes down what's in it as **tags** ("dog", "
 
 Tap **＋ Add photos** (top right):
 
+Photos are added **from Dropbox** only (since 1.0.17 there's no Choose photos / Take a photo / Add a folder / drag-and-drop). Photos you added from this device in earlier versions stay in the app until you remove them.
+
 | Option | What it does |
 | --- | --- |
-| **Choose photos** | Opens your camera roll / gallery (on a phone) or a file picker (on a computer). Select as many as you like. |
-| **Take a photo** | Phones: opens the camera and adds the shot. |
-| **Add a folder** | Computers: adds every image inside a folder. |
 | **From Dropbox** | Opens Photo Tagger's own Dropbox browser (after a one-time connect: see [Dropbox setup](DROPBOX_SETUP.md)). Browse folders with the breadcrumbs, then **Tag new photos here** (tick **Include subfolders** for everything below). To bring in only some photos, pick them like in a file manager: click one, **Ctrl/⌘-click** to add or remove others, **Shift-click** for a range (Shift-clicking an already selected photo deselects that range), or **drag** down the list; **Select all** (or Ctrl/⌘+A) and **Deselect all** are above the button, which then reads **Tag N selected photo(s)** — only those are tagged, subfolders aren't included, and the folder is not added to the linked folders that **Refresh** re-checks. The banner tracks progress (n/N, Cancel). Photos are downloaded into memory only; tags and faces are written to `/.photo-tagger/` in your Dropbox, nothing is stored on this device. |
 | **Refresh Dropbox** | Re-checks the Dropbox folders you've tagged before and tags only photos that are new since last time. |
 
-On a computer you can also **drag and drop** images anywhere on the page, or paste an image from the clipboard.
 
 ![Add menu](images/desktop-add-menu.png)
 
@@ -134,25 +132,25 @@ While tagging a Dropbox folder, watch the **banner under the header**: “Taggin
 
 Dropbox photos show Dropbox's thumbnails (fetched live, kept in memory). **Download original** / Save fetches the original from Dropbox at that moment. **Remove from app** deletes only Photo Tagger's tag file in `/.photo-tagger/` — never the photo. Face recognition (People) works on Dropbox photos exactly like on others.
 
-### Labels (the vocabulary)
-![Labels](images/desktop-labels.png)
+### Tags (the vocabulary)
+![Tags](images/desktop-labels.png)
 
-The photos are matched against a list of labels. You can:
-- **Switch labels off** you don't want (for example `wedding`).
-- **Add your own**: type a name ("lighthouse", "bike race", "my dog Rex") and, if you like, a short description such as *a photo of a lighthouse by the sea* – a good description improves accuracy. The first custom label downloads a small text model (about 72 MB, once).
+The photos are matched against a list of tags (Settings → **Tags**). You can:
+- **Switch tags off** you don't want (for example `wedding`).
+- **Add your own**: type a name ("lighthouse", "bike race", "my dog Rex") and, if you like, a short description such as *a photo of a lighthouse by the sea* – a good description improves accuracy. The first custom tag downloads a small text model (about 72 MB, once).
 - **Re-tag library now** applies changes immediately (also done automatically when you close Settings). This is quick, because the app remembers what each photo "looks like".
-- **Reset labels** puts the built-in list back.
+- **Reset tag list** puts the built-in list back (it doesn't remove tags already on your photos).
 
 ### Data
 
 - **Duplicates** – exact copies (same bytes, even renamed) are skipped when you add photos. Near-duplicates open a review: **Skip new**, **Keep both**, or **Mark as duplicate**. **Find duplicates in library** scans what you already have. The **Near-duplicate sensitivity** slider (0–20, default 8) is the maximum dHash distance; lower = stricter.
 - **Save photos to a drive** – copies the photos (original if kept, otherwise the 2048 px version) plus tags onto disk. On Chrome/Edge desktop you pick a folder (remembered for next time; optional auto-save of newly tagged photos). On Safari, Firefox and phones you get a **zip** download instead. Layout: `photos/` with each image and a `.json` sidecar, plus `photo-tagger.json` and `photo-tagger.csv`. The in-browser library remains the working copy — this is backup/export, not two-way sync. Use **Select** to save only the current selection.
-- **Export tags** – JSON or CSV of tags and metadata only (not the images). JSON keeps custom labels; CSV is handy for spreadsheets.
+- **Export tags** – JSON or CSV of tags and metadata only (not the images). JSON keeps custom tags; CSV is handy for spreadsheets.
 - **Import tags** – matches photos by file name (and size). Add the photos first, then import.
 - **Delete all local data** – wipes this app’s IndexedDB in this browser (your originals elsewhere are untouched).
 
 
-- **Export JSON / CSV** – saves every photo's tags and metadata (not the images). JSON also keeps your custom labels.
+- **Export JSON / CSV** – saves every photo's tags and metadata (not the images). JSON also keeps your custom tags.
 - **Import JSON or CSV** – add the photos to the app first, then import. Photos are matched by file name (and size); tags are merged with the ones already there. CSV needs `name` and `tags` columns, tags separated by `;`.
 - **Delete all local data** – wipes this app's photos, tags and settings from this browser (asks you to click twice).
 
