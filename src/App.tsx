@@ -5,6 +5,7 @@ import { TagInput } from './components/TagInput'
 import { PeopleView } from './components/PeopleView'
 import { DupeReview } from './components/DupeReview'
 import { DropboxBrowser } from './components/DropboxBrowser'
+import { RemoveConfirm } from './components/RemoveConfirm'
 import { usePeople } from './people'
 import { filterPhotos, tagStats, photoTime } from './filter'
 import { useInView, useTheme, useThumb } from './hooks'
@@ -29,6 +30,7 @@ export default function App() {
   const [dragging, setDragging] = useState(false)
   const [cancelDropboxConfirm, setCancelDropboxConfirm] = useState(false)
   const [dbxBrowser, setDbxBrowser] = useState(false)
+  const [removeAsk, setRemoveAsk] = useState(false)
   useEffect(() => {
     if (cancelDropboxConfirm && !lib.job?.cancellable) setCancelDropboxConfirm(false)
   }, [cancelDropboxConfirm, lib.job?.cancellable])
@@ -94,11 +96,15 @@ export default function App() {
   const inSelection = selectMode || sel.size > 0
   const onTile = useCallback((i: number, id: string, e: { shiftKey: boolean }) => {
     if (inSelection) {
+      // read the anchor now: the state updater may run after lastClicked is moved below
+      const anchor = lastClicked.current
       setSel((s) => {
         const n = new Set(s)
-        if (e.shiftKey && lastClicked.current != null) {
-          const [a, b] = [lastClicked.current, i].sort((x, y) => x - y)
-          for (let k = a; k <= b; k++) n.add(filtered[k].id)
+        if (e.shiftKey && anchor != null) {
+          const [a, b] = [anchor, i].sort((x, y) => x - y)
+          // the Shift-clicked photo decides: unselected → select the range, selected → deselect it
+          const remove = s.has(id)
+          for (let k = a; k <= b; k++) { if (remove) n.delete(filtered[k].id); else n.add(filtered[k].id) }
         } else if (n.has(id)) n.delete(id)
         else n.add(id)
         return n
@@ -293,11 +299,12 @@ export default function App() {
           <button className="btn icon" onClick={exitSelect} aria-label="Cancel selection" data-testid="sel-cancel">✕</button>
           <b data-testid="sel-count">{sel.size} selected</b>
           <button className="btn small" data-testid="sel-all" onClick={() => setSel(new Set(filtered.map((p) => p.id)))}>All {filtered.length}</button>
+          <button className="btn small" data-testid="sel-none" disabled={!sel.size} onClick={() => { setSelectMode(true); setSel(new Set()) }}>None</button>
           <span className="spacer" />
           <button className="btn primary" disabled={!sel.size} data-testid="bulk-tag" onClick={() => setBulk(true)}>Tags…</button>
           <button className="btn" disabled={!sel.size} data-testid="sel-export" onClick={() => lib.exportData('json', selIds)}>Export tags</button>
           <button className="btn" disabled={!sel.size} data-testid="sel-save" onClick={() => void (lib.folderSupported ? lib.savePhotosToDisk(selIds) : lib.downloadPhotosZip(selIds))}>{lib.folderSupported ? 'Save to folder…' : 'Download zip…'}</button>
-          <button className="btn danger" disabled={!sel.size} data-testid="sel-delete" onClick={async () => { if (confirm(`Remove ${sel.size} photo(s) from this app? The photos themselves aren't deleted — originals elsewhere (including Dropbox) are not affected.`)) { await lib.deletePhotos(selIds); exitSelect() } }} title="Removes the selected photos from Photo Tagger. Originals elsewhere (including Dropbox) are not touched.">Remove from app</button>
+          <button className="btn danger" disabled={!sel.size} data-testid="sel-delete" onClick={() => setRemoveAsk(true)} title="Removes the selected photos from Photo Tagger. Originals elsewhere (including Dropbox) are not touched.">Remove from app</button>
         </div>
       )}
 
@@ -343,6 +350,10 @@ export default function App() {
         </div>
       )}
 
+      {removeAsk && sel.size > 0 && (
+        <RemoveConfirm count={sel.size} onCancel={() => setRemoveAsk(false)}
+          onConfirm={async () => { setRemoveAsk(false); await lib.deletePhotos([...sel]); exitSelect() }} />
+      )}
       <DupeReview />
       {dragging && <div className="dropzone" data-testid="dropzone"><div>Drop photos to add them</div></div>}
 
@@ -413,7 +424,9 @@ const Tile = memo(function Tile({ p, i, selected, selecting, onTile, onLong, onC
   const fired = useRef(false)
   const start = () => { fired.current = false; timer.current = window.setTimeout(() => { fired.current = true; onLong(i, p.id) }, 550) }
   const stop = () => clearTimeout(timer.current)
-  const shown = p.tags.filter((t) => t.source === 'auto' || t.source === 'manual' || t.source === 'dropbox').slice(0, 2)
+  // two visible slots: your/detected/Dropbox tags first, then people, then photo info/quality to fill them
+  const pref = (t: Photo['tags'][number]) => (t.source === 'auto' || t.source === 'manual' || t.source === 'dropbox' ? 0 : t.source === 'person' ? 1 : 2)
+  const shown = [...p.tags].sort((a, b) => pref(a) - pref(b)).slice(0, 2)
   const rest = p.tags.filter((t) => !shown.includes(t))
   const warn = [p.quality.blurry && 'blurry', p.quality.dark && 'dark', p.quality.bright && 'bright'].filter(Boolean) as string[]
   return (

@@ -35,6 +35,7 @@ export interface Library {
   listDropbox(path: string): Promise<DropboxEntry[]>
   /** Tag every new image in a Dropbox folder; originals are not kept locally. */
   processDropboxFolder(path: string, recursive: boolean): Promise<void>
+  processDropboxFiles(files: DropboxFile[]): Promise<void>
   /** Re-scan remembered Dropbox folders and process only files not yet in the library. */
   refreshDropbox(): Promise<void>
   forgetDropboxFolder(path: string): Promise<void>
@@ -722,15 +723,16 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
     }
   }, [finishPhoto])
 
-  const processDropbox = useCallback(async (targets: LinkedFolder[]) => {
+  const processDropbox = useCallback(async (targets: LinkedFolder[], picked?: DropboxFile[]) => {
     const c = dbxClientRef.current
     if (!c) { toast('Connect Dropbox first (Settings → Dropbox)', 'error'); return }
     if (dropboxAbortRef.current) { toast('A Dropbox job is already running'); return }
     const ac = new AbortController()
     dropboxAbortRef.current = ac
-    setJobBoth({ label: 'Listing Dropbox folder…', total: 0, done: 0, failed: 0, cancellable: true })
+    setJobBoth({ label: picked ? 'Preparing selected Dropbox photos…' : 'Listing Dropbox folder…', total: 0, done: 0, failed: 0, cancellable: true })
     try {
-      // Remember the folder(s) so Refresh finds new files later
+      // Remember the folder(s) so Refresh finds new files later (hand-picked files never link their folder)
+      if (!picked) {
       const linked = [...dbxFoldersRef.current]
       for (const t of targets) {
         const i = linked.findIndex((f) => f.path.toLowerCase() === t.path.toLowerCase())
@@ -738,14 +740,16 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
         else linked.push({ path: t.path, recursive: t.recursive })
       }
       await saveFolders(linked)
+      }
       const seen = new Set<string>()
       for (const p of photosRef.current) if (p.dropbox?.id) seen.add(p.dropbox.id)
       for (const n of nearRef.current) if (n.prep?.photo.dropbox?.id) seen.add(n.prep.photo.dropbox.id)
       const files: DropboxFile[] = []
       const alreadyIds: string[] = []
       let already = 0
-      for (const t of targets) {
-        const entries = await c.listFolder(t.path, { recursive: t.recursive, signal: ac.signal })
+      const sources: (() => Promise<DropboxEntry[]>)[] = picked ? [async () => picked] : targets.map((t) => () => c.listFolder(t.path, { recursive: t.recursive, signal: ac.signal }))
+      for (const src of sources) {
+        const entries = await src()
         for (const e of entries) {
           if (e.kind !== 'file' || !isDropboxImage(e.name) || e.pathLower.startsWith('/.photo-tagger')) continue
           if (seen.has(e.id)) { already++; alreadyIds.push(e.id); continue }
@@ -814,6 +818,8 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
   }, [ingestOneFile, toast])
 
   const processDropboxFolder = useCallback((path: string, recursive: boolean) => processDropbox([{ path, recursive }]), [processDropbox])
+  /** tag only these hand-picked files (same pipeline; the folder is not linked for Refresh) */
+  const processDropboxFiles = useCallback((files: DropboxFile[]) => processDropbox([], files), [processDropbox])
   const refreshDropbox = useCallback(async () => {
     if (!dbxFoldersRef.current.length) { toast('No Dropbox folders linked yet — open From Dropbox and tag a folder'); return }
     await processDropbox(dbxFoldersRef.current)
@@ -1068,7 +1074,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
     pendingCount: photos.filter((p) => p.status === 'pending').length,
     dropboxKey,
     dropbox: { connected: !!dbxSession, account: dbxSession?.name || dbxSession?.email || '', folders: dbxFolders, connecting: dbxConnecting },
-    connectDropbox, disconnectDropbox, listDropbox, processDropboxFolder, refreshDropbox, forgetDropboxFolder,
+    connectDropbox, disconnectDropbox, listDropbox, processDropboxFolder, processDropboxFiles, refreshDropbox, forgetDropboxFolder,
     addFiles, cancelDropboxDownload, updatePhotos, addTags, removeTags, deletePhotos, retagAll, retagPhoto, pullDropboxTags, retryPending,
     saveSettings, addCustomLabel, removeCustomLabel, toggleLabel, resetVocabulary, exportData, importTags,
     clearEverything, toast, preloadModel, setAfterIngest,
@@ -1076,7 +1082,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
     folderSupported: canPickFolder, folderName, chooseSaveFolder, clearSaveFolder: clearSaveFolderFn,
     libraryPath, isDesktop: DB.isDesktop(), chooseLibraryFolder, changeLibraryFolder, portable, useLibraryBesideApp,
     savePhotosToDisk, downloadPhotosZip,
-  }), [ready, photos, settings, custom, job, model, toasts, dropboxKey, dbxSession, dbxFolders, dbxConnecting, connectDropbox, disconnectDropbox, listDropbox, processDropboxFolder, refreshDropbox, forgetDropboxFolder, addFiles, cancelDropboxDownload, updatePhotos, addTags, removeTags,
+  }), [ready, photos, settings, custom, job, model, toasts, dropboxKey, dbxSession, dbxFolders, dbxConnecting, connectDropbox, disconnectDropbox, listDropbox, processDropboxFolder, processDropboxFiles, refreshDropbox, forgetDropboxFolder, addFiles, cancelDropboxDownload, updatePhotos, addTags, removeTags,
     deletePhotos, retagAll, retagPhoto, pullDropboxTags, retryPending, saveSettings, addCustomLabel, removeCustomLabel, toggleLabel, resetVocabulary, exportData,
     importTags, clearEverything, toast, preloadModel, setAfterIngest, nearDupes, resolveNearDupe, resolveAllNearDupes, findDuplicates,
     dismissDupePair, folderName, chooseSaveFolder, clearSaveFolderFn, savePhotosToDisk, downloadPhotosZip, libraryPath, chooseLibraryFolder, changeLibraryFolder, portable, useLibraryBesideApp])

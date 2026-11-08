@@ -37,7 +37,7 @@ Tap **＋ Add photos** (top right):
 | **Choose photos** | Opens your camera roll / gallery (on a phone) or a file picker (on a computer). Select as many as you like. |
 | **Take a photo** | Phones: opens the camera and adds the shot. |
 | **Add a folder** | Computers: adds every image inside a folder. |
-| **From Dropbox** | Opens Photo Tagger's own Dropbox browser (after a one-time connect: see [Dropbox setup](DROPBOX_SETUP.md)). Browse folders with the breadcrumbs, then **Tag new photos here** (tick **Include subfolders** for everything below). The banner tracks progress (n/N, Cancel). Photos are downloaded into memory only; tags and faces are written to `/.photo-tagger/` in your Dropbox, nothing is stored on this device. |
+| **From Dropbox** | Opens Photo Tagger's own Dropbox browser (after a one-time connect: see [Dropbox setup](DROPBOX_SETUP.md)). Browse folders with the breadcrumbs, then **Tag new photos here** (tick **Include subfolders** for everything below). To bring in only some photos, pick them like in a file manager: click one, **Ctrl/⌘-click** to add or remove others, **Shift-click** for a range (Shift-clicking an already selected photo deselects that range), or **drag** down the list; **Select all** (or Ctrl/⌘+A) and **Deselect all** are above the button, which then reads **Tag N selected photo(s)** — only those are tagged, subfolders aren't included, and the folder is not added to the linked folders that **Refresh** re-checks. The banner tracks progress (n/N, Cancel). Photos are downloaded into memory only; tags and faces are written to `/.photo-tagger/` in your Dropbox, nothing is stored on this device. |
 | **Refresh Dropbox** | Re-checks the Dropbox folders you've tagged before and tags only photos that are new since last time. |
 
 On a computer you can also **drag and drop** images anywhere on the page, or paste an image from the clipboard.
@@ -86,15 +86,15 @@ Tap a photo to open it. From here you can:
 
 ## 5. Work on many photos at once
 
-Tap **Select** (or press and hold a photo on a phone, or tick the circle that appears on a tile). On a computer, **Shift-click** selects a range.
+Tap **Select** (or press and hold a photo on a phone, or tick the circle that appears on a tile). On a computer, **Shift-click** selects a range — or, if the photo you Shift-click is already selected, deselects that range. **None** (next to **All**) clears the selection but keeps you in select mode; **✕** leaves select mode.
 
 ![Bulk tagging](images/desktop-bulk.png)
 
-The bar at the bottom lets you **Select all** photos matching the current filter, edit **Tags…** (add tags to all selected photos, or remove a tag from all of them), **Export** just those photos' tags, or **Remove from app** (removes them from Photo Tagger only; the photos themselves aren't deleted).
+The bar at the bottom lets you **Select all** photos matching the current filter, edit **Tags…** (add tags to all selected photos, or remove a tag from all of them), **Export** just those photos' tags, or **Remove from app** (removes them from Photo Tagger only; the photos themselves aren't deleted). Remove from app always asks first in a small dialog — **Cancel** is the default, so nothing is removed until you click **Remove from app** there.
 
 ## 6. People (face naming)
 
-**Photo tiles** show the first two tags; if there are more, a **+N** button on the tile opens a list of the rest (people, dates/camera, quality, Dropbox, your own and detected tags). Remove any of them with **×** right there without opening the photo; Escape or a click elsewhere closes it. Add new tags in the photo's detail panel.
+**Photo tiles** show two tags — your own, detected or Dropbox tags first, then people, then date/camera or quality to fill both slots (a photo with only two tags shows both). Only when there are more than two does a **+N** button on the tile opens a list of the rest (people, dates/camera, quality, Dropbox, your own and detected tags). Remove any of them with **×** right there without opening the photo; Escape or a click elsewhere closes it. Add new tags in the photo's detail panel.
 
 Open the **People** tab at the top. The red badge counts suggestions waiting for you.
 

@@ -5,6 +5,7 @@ import { getBlob } from '../storage'
 import { fetchDropboxOriginal } from '../dropbox'
 import type { Photo } from '../types'
 import { TagInput } from './TagInput'
+import { RemoveConfirm } from './RemoveConfirm'
 import { usePeople } from '../people'
 
 const fmtSize = (n: number) => (n > 1e6 ? `${(n / 1e6).toFixed(1)} MB` : `${Math.round(n / 1e3)} KB`)
@@ -21,6 +22,7 @@ export function Detail({ list, index, onIndex, onClose, allTags }: {
   list: Photo[]; index: number; onIndex: (i: number) => void; onClose: () => void; allTags: string[]
 }) {
   const lib = useLibrary()
+  const [removeAsk, setRemoveAsk] = useState(false)
   const ppl = usePeople()
   const p = list[index]
   const url = useViewUrl(p?.id)
@@ -293,14 +295,16 @@ export function Detail({ list, index, onIndex, onClose, allTags }: {
         </div>
         <div className="row wrap">
           <button className="btn" onClick={download} data-testid="download">{p.hasOriginal || p.dropbox ? 'Download original' : 'Download copy'}</button>
-          <button className="btn danger" data-testid="delete-photo" onClick={async () => {
+          <button className="btn danger" data-testid="delete-photo" onClick={() => setRemoveAsk(true)} title={p.dropbox ? 'Removes it from Photo Tagger (and its tags file in /.photo-tagger). The photo stays in your Dropbox.' : 'Removes it from Photo Tagger. Originals elsewhere are not touched.'}>Remove from app</button>
+        </div>
+      </aside>
+      {removeAsk && <RemoveConfirm count={1} onCancel={() => setRemoveAsk(false)} onConfirm={async () => {
+        setRemoveAsk(false)
             const next = list[index + 1] ?? list[index - 1]
             await lib.deletePhotos([p.id])
             if (!next) onClose()
             else onIndex(Math.min(index, list.length - 2))
-          }} title={p.dropbox ? 'Removes it from Photo Tagger (and its tags file in /.photo-tagger). The photo stays in your Dropbox.' : 'Removes it from Photo Tagger. Originals elsewhere are not touched.'}>Remove from app</button>
-        </div>
-      </aside>
+      }} />}
     </div>
   )
 }

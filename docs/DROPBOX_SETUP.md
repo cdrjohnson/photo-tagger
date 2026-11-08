@@ -63,7 +63,7 @@ The sign-in (access + refresh token) is stored only on this device — in the br
 
 ## 5. Browse and tag
 
-**Add photos → From Dropbox** opens Photo Tagger's Dropbox browser: breadcrumbs, subfolders and images (other files are hidden). Open a folder and click **Tag new photos here**. Turn on **Include subfolders** to take everything below it (off by default so you don't tag your whole Dropbox by accident).
+**Add photos → From Dropbox** opens Photo Tagger's Dropbox browser: breadcrumbs, subfolders and images (other files are hidden). Open a folder and click **Tag new photos here**. Turn on **Include subfolders** to take everything below it (off by default so you don't tag your whole Dropbox by accident). To bring in only some photos, pick them like in a file manager: click one, **Ctrl/⌘-click** to add or remove others, **Shift-click** for a range (Shift-clicking an already selected photo deselects that range), or **drag** down the list; **Select all** (or Ctrl/⌘+A) and **Deselect all** are above the button, which then reads **Tag N selected photo(s)** — only those are tagged, subfolders aren't included, and the folder is not added to the linked folders that **Refresh** re-checks.
 
 Each image is downloaded **into memory**, tagged and scanned for faces; its tags and face data are written to `/.photo-tagger/` in your Dropbox, and the bytes are dropped. Photos are identified by their Dropbox file id, so a photo is never processed twice. The folder is remembered: **Add photos → Refresh Dropbox** re-checks your linked folders and tags only new photos.
 

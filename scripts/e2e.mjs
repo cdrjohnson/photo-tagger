@@ -31,15 +31,17 @@ const FILES = ['dog.jpg', 'cat.jpg', 'beach.jpg', 'city.jpg', 'pizza.jpg', 'moun
 const SAMPLE_BY_ID = {
   'id:dbx-a': 'dropbox-import-a.jpg', 'id:dbx-b': 'dropbox-import-b.jpg', 'id:dbx-c': 'dropbox-import-g.jpg',
   'id:slow-a': 'dropbox-import-e.jpg', 'id:slow-b': 'dropbox-import-f.jpg',
+  'id:p1': 'dropbox-import-c.jpg', 'id:p2': 'dropbox-import-d.jpg', 'id:p3': 'dropbox-import-h.jpg', 'id:p4': 'dropbox-import-i.jpg',
   'id:f1': 'obama-portrait.jpg', 'id:f2': 'biden-2013.jpg', 'id:f3': 'biden-2021.jpg',
 }
 const dbxFile = (id, name, dir) => ({ '.tag': 'file', id, name, path_display: `${dir}/${name}`, path_lower: `${dir}/${name}`.toLowerCase(), rev: 'r' + id.slice(3), size: 1000, content_hash: 'h' + id, client_modified: '2024-05-01T10:00:00Z' })
 const dbxDir = (name, dir) => ({ '.tag': 'folder', id: 'id:dir-' + name, name, path_display: `${dir}/${name}`, path_lower: `${dir}/${name}`.toLowerCase() })
 const DBX_TREE = {
-  '': [dbxDir('Photos', ''), dbxDir('Docs', ''), dbxDir('Slow', ''), dbxDir('Faces', ''), { '.tag': 'file', id: 'id:txt', name: 'readme.txt', path_display: '/readme.txt', path_lower: '/readme.txt', rev: 'r1', size: 5 }],
+  '': [dbxDir('Photos', ''), dbxDir('Docs', ''), dbxDir('Slow', ''), dbxDir('Faces', ''), dbxDir('Picks', ''), { '.tag': 'file', id: 'id:txt', name: 'readme.txt', path_display: '/readme.txt', path_lower: '/readme.txt', rev: 'r1', size: 5 }],
   '/photos': [dbxDir('Trip', '/Photos'), dbxFile('id:dbx-a', 'from-dropbox.jpg', '/Photos'), dbxFile('id:dbx-b', 'from-dropbox-2.jpg', '/Photos'), { '.tag': 'file', id: 'id:pdf', name: 'notes.pdf', path_display: '/Photos/notes.pdf', path_lower: '/photos/notes.pdf', rev: 'r2', size: 5 }],
   '/photos/trip': [dbxFile('id:dbx-c', 'trip.jpg', '/Photos/Trip')],
   '/docs': [],
+  '/picks': ['pick-1.jpg', 'pick-2.jpg', 'pick-3.jpg', 'pick-4.jpg'].map((n, i) => dbxFile('id:p' + (i + 1), n, '/Picks')),
   '/slow': [dbxFile('id:slow-a', 'cancel-stop-a.jpg', '/Slow'), dbxFile('id:slow-b', 'cancel-stop-b.jpg', '/Slow')],
   '/faces': [dbxFile('id:f1', 'obama-portrait.jpg', '/Faces'), dbxFile('id:f2', 'biden-2013.jpg', '/Faces'), dbxFile('id:f3', 'biden-2021.jpg', '/Faces')],
 }
@@ -47,7 +49,7 @@ const idByPath = (p) => Object.values(DBX_TREE).flat().find((x) => x.path_lower 
 const CORS = { 'access-control-allow-origin': '*', 'access-control-allow-headers': 'authorization, content-type, dropbox-api-arg', 'access-control-allow-methods': 'POST, OPTIONS', 'access-control-expose-headers': 'dropbox-api-result' }
 async function stubDropbox(ctx) {
   // writes = any write/delete outside Photo Tagger's /.photo-tagger metadata folder (must stay 0)
-  const st = { token: [], downloads: {}, lists: [], revoked: 0, writes: 0, expireOnce: false, flakyOnce: new Set(), refreshes: 0, meta: new Map(), uploads: 0, metaDeletes: 0, thumbs: 0, fileTags: new Map([['id:dbx-a', new Set(['family_trip'])]]), tagAdds: [], tagRemoves: [], tagGets: [], tagBad: 0 }
+  const st = { token: [], downloads: {}, lists: [], revoked: 0, writes: 0, expireOnce: false, flakyOnce: new Set(), refreshes: 0, meta: new Map(), uploads: 0, metaDeletes: 0, thumbs: 0, fileTags: new Map([['id:dbx-a', new Set(['family_trip'])]]), tagAdds: [], tagRemoves: [], tagGets: [], tagBad: 0, thumbLog: [], thumbFailOnce: {}, thumbFailSmall: new Set() }
   const metaEntry = (path) => ({ '.tag': 'file', id: 'id:meta-' + path, name: path.split('/').pop(), path_display: path, path_lower: path.toLowerCase(), rev: 'm', size: 1 })
   await ctx.route('https://www.dropbox.com/oauth2/authorize**', (r) => {
     const u = new URL(r.request().url())
@@ -140,7 +142,11 @@ async function stubDropbox(ctx) {
     }
     if (url.pathname === '/2/files/get_thumbnail_v2') {
       st.thumbs++
-      const f = SAMPLE_BY_ID[arg.resource?.path]
+      const rid = String(arg.resource?.path ?? '').startsWith('/') ? idByPath(arg.resource.path) : arg.resource?.path
+      st.thumbLog.push([arg.resource?.path, arg.size])
+      if ((st.thumbFailOnce[rid] ?? 0) > 0) { st.thumbFailOnce[rid]--; return r.fulfill({ status: 500, headers: CORS, body: 'flaky' }) }
+      if (st.thumbFailSmall.has(rid) && arg.size === 'w480h320') return r.fulfill({ status: 409, headers: CORS, contentType: 'application/json', body: '{"error_summary":"unsupported_image/"}' })
+      const f = SAMPLE_BY_ID[rid]
       if (!f) return r.fulfill({ status: 409, headers: CORS, body: '{}' })
       return r.fulfill({ status: 200, headers: { ...CORS, 'content-type': 'application/octet-stream' }, body: await fs.readFile(sample(f)) })
     }
@@ -317,6 +323,38 @@ await test('grid tile: two tags shown, +N lists and removes the rest without ope
   eq(await page.getByTestId('detail').count(), 0, 'still not opened after remove')
   await page.keyboard.press('Escape'); await menu.waitFor({ state: 'detached' })
   eq(await page.locator('[data-testid=photo-tile].sel').count(), 0, 'selection untouched')
+  // caption fill rule (1.0.17): every tile with 1–2 tags shows them all and no +N; with more, two chips + "+N"
+  const bad = await page.locator('[data-testid=photo-tile]').evaluateAll((els) => els.map((e) => {
+    const n = e.dataset.tags.split('|').filter(Boolean).length, chips = e.querySelectorAll('.cap > span').length, more = e.querySelector('[data-testid=tile-more]')
+    return { name: e.dataset.name, ok: chips === Math.min(2, n) && (!!more === n > 2) }
+  }).filter((x) => !x.ok).map((x) => x.name))
+  eq(bad, [], 'tiles fill two chips from any tag kind; +N only beyond two')
+})
+
+await test('selection: None clears but stays in select mode; Shift-click selects or deselects a range', async () => {
+  const tiles = page.getByTestId('photo-tile')
+  await tiles.nth(0).getByTestId('tile-check').click({ force: true })
+  await page.getByTestId('sel-all').click()
+  ok((await page.locator('[data-testid=photo-tile].sel').count()) > 3, 'All selects')
+  await page.getByTestId('sel-none').click()
+  eq(await page.locator('[data-testid=photo-tile].sel').count(), 0, 'None clears')
+  ok(await page.getByTestId('sel-all').isVisible(), 'still in select mode')
+  ok(await page.getByTestId('sel-none').isDisabled(), 'None disabled with nothing selected')
+  await tiles.nth(0).click(); await tiles.nth(3).click({ modifiers: ['Shift'] })
+  eq(await page.locator('[data-testid=photo-tile].sel').count(), 4, 'Shift-click on unselected selects the range')
+  await tiles.nth(1).click(); // deselect #1 → anchor 1
+  await tiles.nth(3).click({ modifiers: ['Shift'] })
+  eq(await page.locator('[data-testid=photo-tile].sel').count(), 1, 'Shift-click on selected deselects the range (only #0 left)')
+  ok(await tiles.nth(0).evaluate((e) => e.classList.contains('sel')), 'outside the range untouched')
+  const nTiles = await tiles.count()
+  await page.getByTestId('sel-delete').click()
+  await page.getByTestId('remove-confirm').waitFor()
+  ok(/Remove this photo from the app/.test(await page.getByTestId('remove-confirm').innerText()), 'in-app confirm, not a browser popup')
+  await page.keyboard.press('Enter') // focus is on Cancel
+  await page.getByTestId('remove-confirm').waitFor({ state: 'detached' })
+  eq(await tiles.count(), nTiles, 'Enter/Cancel removes nothing')
+  await page.getByTestId('sel-cancel').click()
+  eq(await page.getByTestId('sel-all').count(), 0, '✕ leaves select mode')
 })
 
 await test('detail view: edit tags by hand, navigate, persists across reload', async () => {
@@ -590,7 +628,7 @@ await test('Dropbox: in-app browser lists folders and images (paginated), skips 
   await page.getByTestId('dropbox-browser').waitFor()
   await page.locator('[data-testid=dropbox-folder][data-name="Photos"]').waitFor()
   ok(dbx.refreshes >= 1, 'expired token was refreshed')
-  eq(await page.getByTestId('dropbox-folder').evaluateAll((els) => els.map((e) => e.dataset.name)), ['Docs', 'Faces', 'Photos', 'Slow'], 'root folders (from 2 pages)')
+  eq(await page.getByTestId('dropbox-folder').evaluateAll((els) => els.map((e) => e.dataset.name)), ['Docs', 'Faces', 'Photos', 'Picks', 'Slow'], 'root folders (from 2 pages)')
   eq(await page.getByTestId('dropbox-file').count(), 0, 'readme.txt skipped')
   await page.locator('[data-testid=dropbox-folder][data-name="Photos"]').click()
   await page.locator('[data-testid=dropbox-file][data-name="from-dropbox-2.jpg"]').waitFor()
@@ -829,10 +867,19 @@ await test('Dropbox: Refresh re-lists linked folders and skips already-seen file
   eq([...dbx.meta.keys()].filter((k) => k.includes('dbx-a')).length, 1, 'one sidecar per Dropbox file')
   // Reopen: tags come back from Dropbox, nothing local
   const tagsBefore = (await tagsOf('from-dropbox.jpg')).sort()
+  // blank-tile regression (1.0.17): first thumbnail requests fail for one file, the small size always fails for another
+  dbx.thumbFailOnce['id:dbx-a'] = 3; dbx.thumbFailSmall.add('id:dbx-c')
   await page.reload(); await page.getByTestId('grid').waitFor()
   await tile('from-dropbox.jpg').waitFor({ timeout: 30_000 })
   eq((await tagsOf('from-dropbox.jpg')).sort(), tagsBefore, 'tags read back from Dropbox after reload')
   ok(await tile('trip.jpg').count(), 'all Dropbox photos listed after reload')
+  for (const n of ['from-dropbox.jpg', 'trip.jpg']) {
+    await tile(n).locator('img').waitFor({ timeout: 30_000 })
+    ok(await tile(n).locator('img').evaluate((i) => i.complete ? i.naturalWidth > 0 : new Promise((r) => { i.onload = () => r(i.naturalWidth > 0); i.onerror = () => r(false) })), n + ' tile shows its image after thumbnail failures')
+  }
+  ok(dbx.thumbLog.some(([path, size]) => path === '/Photos/Trip/trip.jpg' && size === 'w480h320'), 'retried by / path')
+  ok(dbx.thumbLog.some(([path, size]) => path === 'id:dbx-c' && size === 'w2048h1536'), 'fell back to the editor-size preview')
+  dbx.thumbFailSmall.clear()
   await assertNothingLocal(page)
   const linked = await idb(page, `return new Promise((res) => { const q = db.transaction('kv').objectStore('kv').get('dropboxFolders'); q.onsuccess = () => res(q.result) })`)
   eq(linked.map((f) => [f.path, f.recursive]), [['/Photos', true]], 'linked folder remembered')
@@ -854,11 +901,52 @@ await test('Dropbox: Cancel stops remaining work; already-processed photos stay'
   await settled()
 })
 
+await test('Dropbox: pick individual files (click, Ctrl-click, Shift-click, drag, Select all / Deselect all); only those are tagged, folder not linked', async () => {
+  await page.getByTestId('add-btn').click(); await page.getByTestId('add-dropbox').click()
+  await page.locator('[data-testid=dropbox-folder][data-name="Picks"]').click()
+  const row = (n) => page.locator(`[data-testid=dropbox-file][data-name="pick-${n}.jpg"]`)
+  const count = () => page.locator('[data-testid=dropbox-file][data-picked="1"]').count()
+  await row(4).waitFor()
+  await page.getByTestId('dropbox-select-all').click(); eq(await count(), 4, 'Select all')
+  await page.getByTestId('dropbox-deselect-all').click(); eq(await count(), 0, 'Deselect all')
+  ok(await page.getByTestId('dropbox-browser').isVisible(), 'browser stays open')
+  await row(1).click(); await row(3).click({ modifiers: ['Control'] }); eq(await count(), 2, 'Ctrl-click adds')
+  await row(4).click({ modifiers: ['Shift'] }); eq(await count(), 3, 'Shift-click selects range 3–4')
+  await row(4).click({ modifiers: ['Shift'] }); eq(await count(), 1, 'Shift-click on a selected file deselects the range')
+  await row(2).click(); eq(await count(), 1, 'plain click selects only that file')
+  // drag-paint 2 → 4
+  const b2 = await row(2).boundingBox(), b4 = await row(4).boundingBox()
+  await page.mouse.move(b2.x + 40, b2.y + b2.height / 2); await page.mouse.down()
+  await page.mouse.move(b4.x + 40, b4.y + b4.height / 2, { steps: 8 }); await page.mouse.up()
+  eq(await count(), 3, 'drag selects 2–4')
+  await page.keyboard.press('Control+a'); eq(await count(), 4, 'Ctrl+A selects all')
+  await row(1).click(); await row(2).click({ modifiers: ['Control'] })
+  ok(await row(2).getByTestId('dropbox-file-check').isChecked(), 'checkbox in sync')
+  eq(await page.getByTestId('dropbox-selected-count').innerText(), '2 selected')
+  ok(/Tag 2 selected photo/.test(await page.getByTestId('dropbox-process').innerText()), 'button tags only the selection')
+  await page.getByTestId('dropbox-process').click()
+  await waitTile('pick-1.jpg', page, 60_000); await waitTile('pick-2.jpg', page, 60_000)
+  await settled(); await keepDupes()
+  eq([await tile('pick-3.jpg').count(), await tile('pick-4.jpg').count()], [0, 0], 'unselected files not tagged')
+  ok(!dbx.downloads['id:p3'] && !dbx.downloads['id:p4'], 'unselected files never downloaded')
+  const linked = await idb(page, `return new Promise((res) => { const q = db.transaction('kv').objectStore('kv').get('dropboxFolders'); q.onsuccess = () => res(q.result) })`)
+  ok(!linked.some((f) => f.path.toLowerCase() === '/picks'), 'picked files do not link the folder: ' + JSON.stringify(linked))
+})
+
 await test('Dropbox: Remove from app deletes only the Photo Tagger sidecar, never the Dropbox photo', async () => {
   await page.evaluate(() => window.__ptFlushDropbox())
   ok(sidecarFor(dbx, 'slow-a'), 'sidecar exists before remove')
   await tile('cancel-stop-a.jpg').click()
   await page.getByTestId('delete-photo').click()
+  await page.getByTestId('remove-confirm').waitFor()
+  ok(await page.getByTestId('remove-cancel').evaluate((b) => b === document.activeElement), 'Cancel has focus, not Remove')
+  await page.keyboard.press('Escape'); await page.getByTestId('remove-confirm').waitFor({ state: 'detached' })
+  ok(await page.getByTestId('detail').isVisible(), 'Escape closes only the dialog')
+  await page.getByTestId('delete-photo').click(); await page.getByTestId('remove-cancel').click()
+  await page.waitForTimeout(500)
+  ok(await tile('cancel-stop-a.jpg').count(), 'Cancel keeps the photo')
+  await page.getByTestId('delete-photo').click()
+  await page.getByTestId('remove-confirm-btn').click()
   await tile('cancel-stop-a.jpg').waitFor({ state: 'detached' })
   for (let i = 0; i < 30 && sidecarFor(dbx, 'slow-a'); i++) await page.waitForTimeout(100)
   ok(!sidecarFor(dbx, 'slow-a'), 'sidecar removed')
@@ -1036,6 +1124,7 @@ await test('delete a photo from the detail view', async () => {
     : (await names())[0]
   await tile(target).click()
   await page.getByTestId('delete-photo').click()
+  await page.getByTestId('remove-confirm-btn').click()
   await page.waitForFunction((n) => document.querySelectorAll('[data-testid=photo-tile]').length === n, before - 1)
   eq(dbx.writes, 0, 'removing a Dropbox-backed photo never calls Dropbox')
 })
@@ -1104,6 +1193,13 @@ await test('faces: name one face, the others are suggested; threshold slider cha
 const photoIdOf = (n) => page.evaluate((n) => new Promise((res) => { const r = indexedDB.open('photo-tagger'); r.onsuccess = () => { const q = r.result.transaction('photos').objectStore('photos').getAll(); q.onsuccess = () => { res(q.result.find((p) => p.name === n)?.id); r.result.close() } } }), n)
 
 await test('faces: confirm and reject suggestions; rejections stick across reload and looser thresholds', async () => {
+  { // caption rule with people present: a tile whose only tags are people still shows them as chips
+    await page.getByTestId('view-photos').click(); await page.getByTestId('photo-tile').first().waitFor()
+    const rows = await page.locator('[data-testid=photo-tile]').evaluateAll((els) => els.map((e) => ({ n: e.dataset.tags.split('|').filter(Boolean).length, chips: [...e.querySelectorAll('.cap > span')].map((c) => c.textContent), more: !!e.querySelector('[data-testid=tile-more]') })))
+    ok(rows.every((r) => r.chips.length === Math.min(2, r.n) && r.more === r.n > 2), 'caption rule holds with people: ' + JSON.stringify(rows.filter((r) => !(r.chips.length === Math.min(2, r.n) && r.more === r.n > 2))))
+    ok(rows.some((r) => r.n >= 1), 'tiles checked')
+    await page.getByTestId('view-people').click()
+  }
   const id21 = await photoIdOf('biden-2021.jpg'), id09 = await photoIdOf('biden-2009.jpg')
   const lay = await page.locator('[data-testid=suggestion]').first().evaluate((el) => { const i = el.querySelector('img').getBoundingClientRect(), b = el.querySelector('[data-testid=suggest-yes]').getBoundingClientRect(); return { imgBottom: i.bottom, btnTop: b.top, w: i.width } })
   ok(lay.btnTop >= lay.imgBottom - 0.5 && lay.w >= 100, 'Yes/No sit below a larger face, not over it: ' + JSON.stringify(lay))

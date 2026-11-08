@@ -289,3 +289,8 @@ button.dbx-row:hover { background: var(--panel2); }
 /* a button with its own explanation directly under it */
 .action-help { display: grid; justify-items: start; gap: 4px; margin-bottom: 4px; }
 .action-help > p { margin: 0; max-width: 46ch; }
+
+.dbx-row.pickable { cursor: pointer; user-select: none; touch-action: pan-y; }
+.dbx-row.pickable.on { background: rgba(79,70,229,.14); }
+.dbx-row.pickable input { pointer-events: none; margin: 0 4px 0 0; }
+.dbx-pick-bar { padding: 6px 2px; align-items: center; }

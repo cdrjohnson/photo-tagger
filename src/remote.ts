@@ -231,9 +231,32 @@ export async function getBlob(store: 'thumbs' | 'views' | 'originals', id: strin
   const cache = store === 'thumbs' ? thumbs : views
   const hit = cache.get(id); if (hit) return hit
   const c = activeDropbox(); if (!c) return undefined
-  const b = await c.thumbnail(p.dropbox!.id, store === 'thumbs' ? 'w480h320' : 'w2048h1536')
-  if (b) { cache.set(id, b.type ? b : new Blob([b], { type: 'image/jpeg' })); return cache.get(id) }
+  const asImg = (b: Blob) => (b.type ? b : new Blob([b], { type: 'image/jpeg' }))
+  const fetchSize = async (size: string) => {
+    // by id first, then by '/…' path (some Dropbox endpoints only take paths)
+    let b = await thumbSlot(() => c.thumbnail(p.dropbox!.id, size))
+    if (!b && p.dropbox!.path?.startsWith('/')) b = await thumbSlot(() => c.thumbnail(p.dropbox!.path, size))
+    return b
+  }
+  if (store === 'thumbs') {
+    const b = await fetchSize('w480h320')
+    if (b) { thumbs.set(id, asImg(b)); return thumbs.get(id) }
+    // the grid's small size failed: show the same preview the editor uses
+    const v = views.get(id) ?? (await fetchSize('w2048h1536'))
+    if (v) { views.set(id, asImg(v)); return views.get(id) }
+    return undefined
+  }
+  const b = await fetchSize('w2048h1536')
+  if (b) { views.set(id, asImg(b)); return views.get(id) }
   return undefined
+}
+/** at most 4 Dropbox thumbnail requests at a time, so a big grid doesn't stampede the API */
+let thumbActive = 0
+const thumbQueue: (() => void)[] = []
+async function thumbSlot<T>(fn: () => Promise<T>): Promise<T> {
+  if (thumbActive >= 4) await new Promise<void>((r) => thumbQueue.push(r))
+  thumbActive++
+  try { return await fn() } finally { thumbActive--; thumbQueue.shift()?.() }
 }
 
 /** Forget everything held in memory (on disconnect / app wipe). Dropbox is untouched. */

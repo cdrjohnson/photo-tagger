@@ -7,12 +7,14 @@ const inflight = new Map<string, Promise<string | undefined>>()
 /** Object URL for a stored thumbnail (cached for the session). Loads when `enabled`. */
 export function useThumb(id: string, enabled = true): string | undefined {
   const [url, setUrl] = useState<string | undefined>(cache.get(id))
+  const [attempt, setAttempt] = useState(0)
   useEffect(() => {
     if (!enabled || cache.has(id)) { if (cache.has(id)) setUrl(cache.get(id)); return }
     let off = false
+    let timer = 0
     let p = inflight.get(id)
     if (!p) {
-      p = getBlob('thumbs', id).then((b) => {
+      p = getBlob('thumbs', id).catch(() => undefined).then((b) => {
         if (!b) return undefined
         const u = URL.createObjectURL(b)
         cache.set(id, u)
@@ -20,9 +22,14 @@ export function useThumb(id: string, enabled = true): string | undefined {
       }).finally(() => inflight.delete(id))
       inflight.set(id, p)
     }
-    p.then((u) => { if (!off) setUrl(u) })
-    return () => { off = true }
-  }, [id, enabled])
+    p.then((u) => {
+      if (off) return
+      if (u) setUrl(u)
+      // an empty result is not final: retry a few times with backoff while the tile is on screen
+      else if (attempt < 4) timer = window.setTimeout(() => setAttempt((a) => a + 1), 800 * 2 ** attempt)
+    })
+    return () => { off = true; clearTimeout(timer) }
+  }, [id, enabled, attempt])
   return url
 }
 

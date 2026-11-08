@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from 'react'
-import type { DropboxEntry } from '../dropbox'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import type { DropboxEntry, DropboxFile } from '../dropbox'
 import { useLibrary } from '../store'
 
 /** Photo Tagger's own Dropbox folder browser (replaces the Chooser pop-up). */
@@ -9,17 +9,24 @@ export function DropboxBrowser({ onClose }: { onClose: () => void }) {
   const [entries, setEntries] = useState<DropboxEntry[] | null>(null)
   const [error, setError] = useState('')
   const [recursive, setRecursive] = useState(false)
+  const [picked, setPicked] = useState<Set<string>>(new Set())
+  const anchor = useRef<number | null>(null)
+  const selectAllRef = useRef<() => void>(() => {})
   const inLibrary = useMemo(() => new Set(lib.photos.map((p) => p.dropbox?.id).filter(Boolean) as string[]), [lib.photos])
 
   useEffect(() => {
     let off = false
-    setEntries(null); setError('')
+    setEntries(null); setError(''); setPicked(new Set()); anchor.current = null
     lib.listDropbox(path).then((e) => { if (!off) setEntries(e) }).catch((e: any) => { if (!off) setError(e?.message || 'Could not list this folder') })
     return () => { off = true }
   }, [path, lib.listDropbox])
 
   useEffect(() => {
-    const k = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    const k = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+      // Ctrl/⌘+A: select all new photos in this folder (not while typing in a field)
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a' && !(e.target instanceof HTMLInputElement && e.target.type !== 'checkbox')) { e.preventDefault(); selectAllRef.current() }
+    }
     window.addEventListener('keydown', k)
     return () => window.removeEventListener('keydown', k)
   }, [onClose])
@@ -27,7 +34,38 @@ export function DropboxBrowser({ onClose }: { onClose: () => void }) {
   const crumbs = path.split('/').filter(Boolean)
   const folders = entries?.filter((e) => e.kind === 'folder') ?? []
   const images = entries?.filter((e) => e.kind === 'file') ?? []
-  const fresh = images.filter((e) => !inLibrary.has(e.id)).length
+  const freshFiles = images.filter((e) => !inLibrary.has(e.id)) as DropboxFile[]
+  const fresh = freshFiles.length
+  const chosen = freshFiles.filter((f) => picked.has(f.id))
+  selectAllRef.current = () => setPicked(new Set(freshFiles.map((f) => f.id)))
+  // modern file-list selection: click = only this, Ctrl/Cmd-click = toggle, Shift-click = range
+  // (deselects the range if that file was already selected), drag across rows = paint a range
+  const drag = useRef<{ from: number; base: Set<string>; remove: boolean } | null>(null)
+  const rangeIds = (a: number, b: number) => { const [x, y] = [a, b].sort((m, n) => m - n); return images.slice(x, y + 1).filter((f) => !inLibrary.has(f.id)).map((f) => f.id) }
+  const apply = (base: Set<string>, ids: string[], remove: boolean) => { const n = new Set(base); ids.forEach((id) => (remove ? n.delete(id) : n.add(id))); return n }
+  const press = (i: number, id: string, e: { shiftKey: boolean; ctrlKey: boolean; metaKey: boolean; onCheckbox?: boolean }) => {
+    const from = anchor.current
+    let next: Set<string>, remove = false, dragFrom = i, base: Set<string>
+    if (e.shiftKey && from != null) {
+      remove = picked.has(id); base = new Set(picked); dragFrom = from
+      next = apply(base, rangeIds(from, i), remove)
+    } else if (e.ctrlKey || e.metaKey || e.onCheckbox) {
+      remove = picked.has(id); base = new Set(picked)
+      next = apply(base, [id], remove)
+      anchor.current = i
+    } else {
+      base = new Set(); next = new Set([id])
+      anchor.current = i
+    }
+    setPicked(next)
+    drag.current = { from: dragFrom, base, remove }
+  }
+  const enter = (i: number) => { const d = drag.current; if (d) setPicked(apply(d.base, rangeIds(d.from, i), d.remove)) }
+  useEffect(() => {
+    const up = () => { drag.current = null }
+    window.addEventListener('pointerup', up); window.addEventListener('pointercancel', up)
+    return () => { window.removeEventListener('pointerup', up); window.removeEventListener('pointercancel', up) }
+  }, [])
   const busy = !!lib.job?.cancellable
 
   return (
@@ -43,26 +81,43 @@ export function DropboxBrowser({ onClose }: { onClose: () => void }) {
             <span key={i}> / <button className="linkish" data-testid="dropbox-crumb" onClick={() => setPath('/' + crumbs.slice(0, i + 1).join('/'))}>{c}</button></span>
           ))}
         </nav>
-        <div className="dbx-list" data-testid="dropbox-list">
+        <div className="dbx-list" data-testid="dropbox-list" role="listbox" aria-multiselectable="true" aria-label="Folders and photos">
           {error && <p className="note warn" data-testid="dropbox-error">{error}</p>}
           {!entries && !error && <p className="muted">Loading…</p>}
           {entries && !entries.length && <p className="muted">This folder has no subfolders or images.</p>}
           {folders.map((f) => (
             <button key={f.id} className="dbx-row" data-testid="dropbox-folder" data-name={f.name} onClick={() => setPath(f.path)}>📁 <span>{f.name}</span></button>
           ))}
-          {images.map((f) => (
-            <div key={f.id} className="dbx-row file" data-testid="dropbox-file" data-name={f.name}>🖼 <span>{f.name}</span>
-              {inLibrary.has(f.id) && <small className="muted" data-testid="dropbox-in-library">in library</small>}</div>
-          ))}
+          {images.map((f, i) => {
+            const have = inLibrary.has(f.id), on = picked.has(f.id)
+            return have ? (
+              <div key={f.id} className="dbx-row file" data-testid="dropbox-file" data-name={f.name}>🖼 <span>{f.name}</span>
+                <small className="muted" data-testid="dropbox-in-library">in library</small></div>
+            ) : (
+              <div key={f.id} className={`dbx-row file pickable ${on ? 'on' : ''}`} data-testid="dropbox-file" data-name={f.name} data-picked={on ? '1' : '0'}
+                role="option" aria-selected={on} tabIndex={0}
+                onPointerDown={(e) => { if (e.button !== 0) return; e.preventDefault(); (e.currentTarget as HTMLElement).focus(); press(i, f.id, { shiftKey: e.shiftKey, ctrlKey: e.ctrlKey, metaKey: e.metaKey, onCheckbox: (e.target as HTMLElement).tagName === 'INPUT' }) }}
+                onPointerEnter={() => enter(i)}
+                onKeyDown={(e) => { if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); press(i, f.id, { shiftKey: e.shiftKey, ctrlKey: true, metaKey: false }); drag.current = null } }}>
+                <input type="checkbox" tabIndex={-1} checked={on} readOnly aria-label={`Select ${f.name}`} data-testid="dropbox-file-check" /> 🖼 <span>{f.name}</span></div>
+            )
+          })}
+          {fresh > 0 && (
+            <div className="row wrap dbx-pick-bar">
+              <small className="muted grow" data-testid="dropbox-selected-count">{chosen.length ? `${chosen.length} selected` : 'Pick photos: click, Ctrl/⌘-click to add, Shift-click or drag for a range'}</small>
+              <button className="btn small" data-testid="dropbox-select-all" onClick={() => setPicked(new Set(freshFiles.map((f) => f.id)))}>Select all</button>
+              <button className="btn small" data-testid="dropbox-deselect-all" disabled={!chosen.length} onClick={() => setPicked(new Set())}>Deselect all</button>
+            </div>
+          )}
         </div>
-        <label className="check">
-          <input type="checkbox" checked={recursive} onChange={(e) => setRecursive(e.target.checked)} data-testid="dropbox-recursive" />
-          <span>Include subfolders <small>Off by default so you don’t tag your whole Dropbox by accident.</small></span>
+        <label className="check" style={chosen.length ? { opacity: 0.55 } : undefined}>
+          <input type="checkbox" disabled={chosen.length > 0} checked={recursive} onChange={(e) => setRecursive(e.target.checked)} data-testid="dropbox-recursive" />
+          <span>Include subfolders <small>Off by default so you don’t tag your whole Dropbox by accident. Only for tagging the whole folder, not picked photos.</small></span>
         </label>
         <div className="row wrap">
           <button className="btn primary" data-testid="dropbox-process" disabled={busy || !!error || !entries}
-            onClick={() => { void lib.processDropboxFolder(path, recursive); onClose() }}>
-            Tag {recursive ? 'this folder and subfolders' : `${fresh} new photo(s) here`}
+            onClick={() => { void (chosen.length ? lib.processDropboxFiles(chosen) : lib.processDropboxFolder(path, recursive)); onClose() }}>
+            {chosen.length ? `Tag ${chosen.length} selected photo(s)` : `Tag ${recursive ? 'this folder and subfolders' : `${fresh} new photo(s) here`}`}
           </button>
           {lib.dropbox.folders.length > 0 && (
             <button className="btn" data-testid="dropbox-refresh" disabled={busy} onClick={() => { void lib.refreshDropbox(); onClose() }}>
