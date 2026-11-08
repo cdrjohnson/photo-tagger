@@ -12,6 +12,7 @@ let current = ''
 const T0 = Date.now()
 let beforeEach = async () => {}
 async function test(name, fn) {
+  if (process.env.ONLY && !name.includes(process.env.ONLY)) return
   current = name
   const t = Date.now()
   try { await beforeEach(); await fn(); results.push({ name, ok: true, ms: Date.now() - t }); console.log(`  ✓ ${name} (${((Date.now() - t) / 1000).toFixed(1)}s)`) }
@@ -1583,6 +1584,42 @@ await test('Settings → Tags lists every library tag (searchable), adds list en
   await page.getByTestId('detail-tag-input-suggestions').locator('[data-tag="yacht club"]').waitFor()
   await page.getByTestId('detail-tag-input').fill('')
   await page.keyboard.press('Escape')
+})
+
+await test('large library (665 photos): grid is virtualized but the whole library scrolls into view', async () => {
+  const c5 = await browser.newContext({ viewport: { width: 1280, height: 860 } })
+  await routeModel(c5)
+  const p5 = await c5.newPage()
+  try {
+    await p5.goto(URL_BASE); await p5.getByTestId('empty').waitFor()
+    await p5.getByTestId('file-input').setInputFiles([sample('cat.jpg')])
+    await waitTile('cat.jpg', p5)
+    await p5.waitForFunction(() => document.querySelector('[data-testid=photo-tile]')?.dataset.status !== 'pending', null, { timeout: 180_000 })
+    await idb(p5, `return new Promise((res) => { const st = db.transaction('photos', 'readwrite').objectStore('photos'); const q = st.getAll(); q.onsuccess = () => { const p = q.result[0]; for (let i = 1; i < arg; i++) st.put({ ...p, id: 'bulk-' + i, name: 'bulk-' + String(i).padStart(3, '0') + '.jpg', addedAt: p.addedAt - i * 1000, takenAt: (p.takenAt || p.addedAt) - i * 86400000, facesScanned: true, contentHash: 'bulk' + i, phash: undefined }); st.transaction.oncomplete = () => res() } })`, 665)
+    await p5.reload()
+    await p5.waitForFunction(() => /665/.test(document.querySelector('[data-testid=count]')?.textContent || ''), null, { timeout: 60_000 })
+    ok(/665 photos/.test(await p5.getByTestId('count').innerText()), 'count shows all: ' + await p5.getByTestId('count').innerText())
+    const g = p5.getByTestId('grid')
+    await g.locator('[data-testid=photo-tile]').first().waitFor()
+    const info = await g.evaluate((el) => { const cols = getComputedStyle(el).gridTemplateColumns.split(' ').length; const t = el.querySelector('[data-testid=photo-tile]').getBoundingClientRect().height; return { cols, h: el.getBoundingClientRect().height, tile: t, mounted: el.querySelectorAll('[data-testid=photo-tile]').length } })
+    const needed = Math.ceil(665 / info.cols) * info.tile
+    ok(info.h >= needed, `grid tall enough for all rows: ${info.h} >= ${needed} (${info.cols} cols)`)
+    ok(info.h > 860 * 5, 'much taller than one viewport')
+    ok(info.mounted < 665, `virtualized: only ${info.mounted} tiles mounted`)
+    const firstName = await g.locator('[data-testid=photo-tile]').first().getAttribute('data-name')
+    // scroll the window to the bottom: the last photos mount and are visible
+    await p5.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight))
+    await p5.waitForFunction((f) => { const ts = [...document.querySelectorAll('[data-testid=photo-tile]')]; return ts.length > 0 && ts.length < 665 && !ts.some((t) => t.dataset.name === f) }, firstName, { timeout: 10_000 }).catch(() => {})
+    const names = await g.locator('[data-testid=photo-tile]').evaluateAll((els) => els.map((e) => e.dataset.name))
+    ok(!names.includes(firstName), 'first tile unmounted after scrolling to the end')
+    const last = await p5.evaluate(() => { const ts = [...document.querySelectorAll('[data-testid=photo-tile]')]; const t = ts[ts.length - 1]; const r = t.getBoundingClientRect(); return { r: { top: r.top, bottom: r.bottom }, vh: window.innerHeight } })
+    ok(last.r.top < last.vh && last.r.bottom > 0, 'last tile is on screen: ' + JSON.stringify(last))
+    // middle of the library also reachable
+    await p5.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight / 2))
+    await p5.waitForTimeout(300)
+    const mid = await p5.evaluate(() => [...document.querySelectorAll('[data-testid=photo-tile]')].filter((t) => { const r = t.getBoundingClientRect(); return r.bottom > 0 && r.top < window.innerHeight }).length)
+    ok(mid > 0, 'tiles visible mid-scroll')
+  } finally { await c5.close() }
 })
 
 await test('no page errors on desktop', async () => { eq(errors, []) })

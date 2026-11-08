@@ -321,7 +321,6 @@ export default function App() {
 }
 
 
-const TILE_MIN = 170
 const PhotoGrid = memo(function PhotoGrid({ filtered, sel, inSelection, onTile, onLong, onCheck }: {
   filtered: Photo[]
   sel: Set<string>; inSelection: boolean
@@ -331,35 +330,53 @@ const PhotoGrid = memo(function PhotoGrid({ filtered, sel, inSelection, onTile, 
 }) {
   const ref = useRef<HTMLDivElement>(null)
   const [range, setRange] = useState({ start: 0, end: 80 })
-  useEffect(() => {
-    const el = ref.current
-    if (!el) return
-    const update = () => {
-      const cols = Math.max(1, Math.floor(el.clientWidth / (TILE_MIN + 8)))
-      const rowH = (el.clientWidth / cols) + 8
-      const scrollParent = el.closest('main') || document.documentElement
-      const top = scrollParent === document.documentElement ? window.scrollY : (scrollParent as HTMLElement).scrollTop
-      const viewH = scrollParent === document.documentElement ? window.innerHeight : (scrollParent as HTMLElement).clientHeight
-      const startRow = Math.max(0, Math.floor(top / rowH) - 2)
-      const endRow = Math.ceil((top + viewH) / rowH) + 2
-      setRange({ start: startRow * cols, end: Math.min(filtered.length, endRow * cols) })
-    }
-    update()
-    const scrollParent = el.closest('main') || window
-    scrollParent.addEventListener('scroll', update, { passive: true })
-    window.addEventListener('resize', update)
-    return () => {
-      scrollParent.removeEventListener('scroll', update as any)
-      window.removeEventListener('resize', update)
-    }
-  }, [filtered.length])
+  const [geo, setGeo] = useState({ cols: 1, rowH: 0 })
   // Small libraries: render all (keeps e2e simple)
   const virtual = filtered.length > 120
-  const start = virtual ? range.start : 0
-  const end = virtual ? range.end : filtered.length
-  const topPad = virtual && start > 0 ? Math.floor(start / Math.max(1, Math.floor((ref.current?.clientWidth || 800) / (TILE_MIN + 8)))) * ((ref.current?.clientWidth || 800) / Math.max(1, Math.floor((ref.current?.clientWidth || 800) / (TILE_MIN + 8))) + 8) : 0
+  useEffect(() => {
+    const el = ref.current
+    if (!el || !virtual) return
+    let raf = 0
+    const update = () => {
+      cancelAnimationFrame(raf)
+      raf = requestAnimationFrame(() => {
+        // measure the real CSS grid (columns differ by breakpoint; tiles are square + caption)
+        const cs = getComputedStyle(el)
+        const cols = Math.max(1, cs.gridTemplateColumns.split(' ').filter(Boolean).length)
+        const gap = parseFloat(cs.rowGap) || 0
+        const tile = el.querySelector<HTMLElement>('[data-testid=photo-tile]')
+        const padL = parseFloat(cs.paddingLeft) || 0, padR = parseFloat(cs.paddingRight) || 0
+        const colW = (el.clientWidth - padL - padR - gap * (cols - 1)) / cols
+        const rowH = (tile ? tile.getBoundingClientRect().height : colW) + gap
+        // grid top relative to the viewport (the window scrolls, under a sticky header)
+        const top = el.getBoundingClientRect().top
+        const startRow = Math.max(0, Math.floor(-top / rowH) - 2)
+        const endRow = Math.ceil((window.innerHeight - top) / rowH) + 2
+        setGeo((g) => (g.cols === cols && Math.abs(g.rowH - rowH) < 0.5 ? g : { cols, rowH }))
+        setRange((r) => {
+          const n = { start: startRow * cols, end: Math.min(filtered.length, Math.max(endRow, 1) * cols) }
+          return r.start === n.start && r.end === n.end ? r : n
+        })
+      })
+    }
+    update()
+    window.addEventListener('scroll', update, { passive: true })
+    window.addEventListener('resize', update)
+    const ro = new ResizeObserver(update); ro.observe(el)
+    return () => {
+      cancelAnimationFrame(raf)
+      window.removeEventListener('scroll', update)
+      window.removeEventListener('resize', update)
+      ro.disconnect()
+    }
+  }, [filtered.length, virtual])
+  const start = virtual ? Math.min(range.start, filtered.length) : 0
+  const end = virtual ? Math.min(range.end, filtered.length) : filtered.length
+  const rows = (n: number) => Math.ceil(n / geo.cols)
+  const topPad = virtual && geo.rowH ? Math.floor(start / geo.cols) * geo.rowH : 0
+  const bottomPad = virtual && geo.rowH ? Math.max(0, rows(filtered.length) - rows(end)) * geo.rowH : 0
   return (
-    <div className="grid" data-testid="grid" ref={ref} style={virtual ? { paddingTop: topPad } : undefined}>
+    <div className="grid" data-testid="grid" ref={ref} style={virtual ? { paddingTop: topPad, paddingBottom: bottomPad } : undefined}>
       {filtered.slice(start, end).map((p, j) => {
         const i = start + j
         return <Tile key={p.id} p={p} i={i} selected={sel.has(p.id)} selecting={inSelection} onTile={onTile} onLong={onLong} onCheck={onCheck} />
