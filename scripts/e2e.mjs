@@ -152,6 +152,7 @@ async function stubDropbox(ctx) {
     }
     st.downloads[id] = (st.downloads[id] || 0) + 1
     if (st.flakyOnce.has(id)) { st.flakyOnce.delete(id); return r.abort('failed') } // transient — app should retry
+    if (st.failDownload) return r.fulfill({ status: 409, headers: CORS, contentType: 'application/json', body: '{"error_summary":"path/not_found/"}' })
     if (id === 'id:slow-b') await new Promise((res) => setTimeout(res, 8_000))
     const file = SAMPLE_BY_ID[id]
     if (!file) return r.fulfill({ status: 409, headers: CORS, contentType: 'application/json', body: '{"error_summary":"path/not_found/"}' })
@@ -727,6 +728,51 @@ await test('Dropbox sync (regression 1.0.14): a tag deleted in Dropbox stays del
   ok(fileTags.size <= 20 && fileTags.has('someone_elses_tag'), 'cap + third-party kept: ' + [...fileTags])
   eq(dbx.tagBad, 0, 'no id: paths')
   ok(await page.locator('[data-testid=tag-group][data-source=manual] [data-tag="after delete"]').count(), 'Photo Tagger tag keeps its group')
+  await page.keyboard.press('Escape')
+})
+
+await test('Dropbox sync (regression 1.0.15): Dropbox tags with spaces/punctuation show up and stay deleted; Re-run tagging and Download original show status', async () => {
+  const fileTags = dbx.fileTags.get('id:dbx-a')
+  const dt = (t) => page.locator(`[data-testid=detail-tag][data-tag="${t}"]`)
+  const flush = () => page.evaluate(() => window.__ptFlushDropbox())
+  const toastHas = (re) => page.locator('.toast', { hasText: re }).first().waitFor({ timeout: 30_000 })
+  fileTags.add('Road Trip'); fileTags.add('#sea-side'); fileTags.add('#test')
+  await tile('from-dropbox.jpg').click()
+  await dt('road_trip').waitFor({ timeout: 10_000 }); await dt('sea_side').waitFor(); await dt('test').waitFor()
+  ok(await page.locator('[data-testid=tag-group][data-source=dropbox] [data-tag="test"]').count(), '#test shown as test under From Dropbox')
+  ok(await page.locator('[data-testid=tag-group][data-source=dropbox] [data-tag="road_trip"]').count(), 'shown under From Dropbox')
+  await flush()
+  ok(!fileTags.has('road_trip') && !fileTags.has('sea_side'), 'no normalized duplicate written: ' + [...fileTags])
+  // user deletes it in Dropbox (exact spelling) → never written back, chip goes away
+  const n0 = dbx.tagAdds.length
+  fileTags.delete('Road Trip'); fileTags.delete('#test')
+  await page.getByTestId('detail-tag-input').fill('Status Check'); await page.getByTestId('detail-tag-input').press('Enter')
+  await dt('status check').waitFor(); await flush(); await page.waitForTimeout(300); await flush()
+  ok(![...fileTags].some((t) => /road.?trip/i.test(t)), 'deleted Dropbox tag stays deleted: ' + [...fileTags])
+  ok(!dbx.tagAdds.slice(n0).some((x) => x.tag_text === 'road_trip' || x.tag_text === 'test'), 'no tags/add for road_trip / test')
+  ok(![...fileTags].some((t) => /^#?test$/i.test(t)), '#test stays deleted')
+  await dt('test').waitFor({ state: 'detached', timeout: 10_000 })
+  await dt('road_trip').waitFor({ state: 'detached', timeout: 10_000 })
+  // removing the punctuated one in the app removes the exact text from Dropbox
+  await dt('sea_side').getByTestId('remove-tag').click(); await flush()
+  ok(!fileTags.has('#sea-side'), 'exact Dropbox spelling removed: ' + [...fileTags])
+  // Re-run tagging on a Dropbox photo really runs and reports status
+  await page.evaluate(() => window.__ptDropEmbeddings?.())
+  const dl = dbx.downloads['id:dbx-a'] || 0
+  await page.getByRole('button', { name: 'Re-run tagging' }).click()
+  await page.getByTestId('job-label').filter({ hasText: /Re-tag/ }).first().waitFor({ timeout: 10_000 })
+  await toastHas(/Re-tagged from-dropbox\.jpg/)
+  // Download original: success and failure are both reported
+  await page.getByTestId('download').click()
+  await toastHas(/Downloaded from-dropbox\.jpg/)
+  dbx.failDownload = true
+  try {
+    await page.getByTestId('download').click()
+    await toastHas(/Could not download from-dropbox\.jpg/)
+  } finally { dbx.failDownload = false }
+  eq(dbx.tagBad, 0, 'no id: paths')
+  ok(fileTags.size <= 20 && fileTags.has('someone_elses_tag'), 'cap + third-party kept')
+  void dl
   await page.keyboard.press('Escape')
   ok((await tagsOf('from-dropbox.jpg')).length > 0, 'tagged')
   await tile('from-dropbox.jpg').click()

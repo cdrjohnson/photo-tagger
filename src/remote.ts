@@ -3,7 +3,7 @@
  * and persists tags / faces / embeddings as JSON sidecars under /.photo-tagger/meta/ in the user's Dropbox.
  * Nothing about these photos is written to IndexedDB or the desktop library folder.
  */
-import { activeDropbox, META_ROOT, type DropboxClient } from './dropbox'
+import { activeDropbox, META_ROOT, toDropboxTagText, type DropboxClient } from './dropbox'
 import type { Face, Person, Photo } from './types'
 import { addTag, removeTag } from './tags'
 
@@ -96,11 +96,7 @@ export function flush(): Promise<void> {
 /** Dropbox tag rules: lowercase, [a-z0-9_] only, 1..32 chars, at most 20 tags per file. */
 export const DBX_TAG_MAX_LEN = 32
 export const DBX_TAGS_PER_FILE = 20
-export function toDropboxTag(name: string): string {
-  const t = name.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
-    .replace(/[^a-z0-9_]+/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '')
-  return t.slice(0, DBX_TAG_MAX_LEN).replace(/_$/, '')
-}
+export const toDropboxTag = toDropboxTagText
 /** Tags we want on the file, most important first: people, then your own tags, then auto tags by confidence, then EXIF/quality. */
 export function desiredDropboxTags(p: Photo): string[] {
   const rank = (s: string) => (s === 'person' ? 0 : s === 'manual' || s === 'dropbox' ? 1 : s === 'auto' ? 2 : 3)
@@ -166,6 +162,9 @@ async function syncNativeTags(c: DropboxClient, id: string) {
   try {
     const path = await tagPath(c, p)
     const current = new Set(await c.getTags(path))
+    // older sidecars have no ownership record: tags we want that are already on the file count as ours,
+    // so deleting one in Dropbox later is recognized (first-time missing tags are simply written)
+    if (!(owned.get(id) ?? []).length) owned.set(id, want.filter((t) => current.has(t)).sort())
     // tags we had written that are gone from the file were deleted in Dropbox — honor that instead of writing them back
     const gone = (owned.get(id) ?? []).filter((t) => !current.has(t))
     if (gone.length) {

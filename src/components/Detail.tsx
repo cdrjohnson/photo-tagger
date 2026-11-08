@@ -184,12 +184,17 @@ export function Detail({ list, index, onIndex, onClose, allTags }: {
   const retagOne = () => lib.retagPhoto(p.id)
 
   const download = async () => {
-    const blob = (p.dropbox && !p.hasOriginal ? await fetchDropboxOriginal(p) : undefined)
-      ?? (await getBlob('originals', p.id)) ?? (await getBlob('views', p.id))
-    if (!blob) return
-    const u = URL.createObjectURL(blob)
-    const a = document.createElement('a'); a.href = u; a.download = p.name; a.click()
-    setTimeout(() => URL.revokeObjectURL(u), 2000)
+    lib.toast(`Downloading ${p.name}…`)
+    try {
+      // a Dropbox photo's original lives only in Dropbox — never hand out the preview instead
+      const blob = p.dropbox && !p.hasOriginal ? await fetchDropboxOriginal(p)
+        : (await getBlob('originals', p.id)) ?? (await getBlob('views', p.id))
+      if (!blob) { lib.toast(`Could not download ${p.name}${p.dropbox ? ' from Dropbox' : ''} — check your connection and try again`, 'error'); return }
+      const u = URL.createObjectURL(blob)
+      const a = document.createElement('a'); a.href = u; a.download = p.name; a.click()
+      setTimeout(() => URL.revokeObjectURL(u), 2000)
+      lib.toast(`Downloaded ${p.name}`, 'ok')
+    } catch (e: any) { lib.toast(`Could not download ${p.name}: ${e?.message || e}`, 'error') }
   }
 
   const pct = Math.round(zoom * 100)

@@ -280,7 +280,7 @@ export class DropboxClient {
   /** Native Dropbox tags currently on a file (any source). */
   async getTags(path: string): Promise<string[]> {
     const j = await this.rpc<any>('files/tags/get', { paths: [path] })
-    return (j?.paths_to_tags?.[0]?.tags ?? []).map((t: any) => String(t.tag_text ?? '').toLowerCase()).filter(Boolean)
+    return this.norm(path, j?.paths_to_tags?.[0]?.tags)
   }
   /** Current path of a file id (files/get_metadata). The Tags API only accepts real '/…' paths, never 'id:…'. */
   async pathFor(id: string): Promise<string> {
@@ -296,14 +296,31 @@ export class DropboxClient {
       const chunk = paths.slice(i, i + 20)
       const j = await this.rpc<any>('files/tags/get', { paths: chunk })
       ;(j?.paths_to_tags ?? []).forEach((pt: any, k: number) => {
-        out.set(chunk[k] ?? pt.path, (pt.tags ?? []).map((t: any) => String(t.tag_text ?? '').toLowerCase()).filter(Boolean))
+        out.set(chunk[k] ?? pt.path, this.norm(chunk[k] ?? pt.path, pt.tags))
       })
     }
     return out
   }
   /** Add / remove one native Dropbox tag (metadata only — the file's bytes are untouched). */
   async addTag(path: string, tag: string) { await this.rpc('files/tags/add', { path, tag_text: tag }) }
+  /** normalized tag → exact text on the file, per path (so removing "family_trip" removes "Family Trip") */
+  private rawTags = new Map<string, string>()
+  private norm(path: string, tags: any): string[] {
+    const out: string[] = []
+    for (const t of tags ?? []) {
+      const raw = String(t?.tag_text ?? ''); const n = toDropboxTagText(raw)
+      if (!n) continue
+      if (raw !== n) this.rawTags.set(path + '\n' + n, raw)
+      if (!out.includes(n)) out.push(n)
+    }
+    return out
+  }
   async removeTag(path: string, tag: string) {
+    const raw = this.rawTags.get(path + '\n' + tag)
+    if (raw) { await this.removeTag0(path, raw); this.rawTags.delete(path + '\n' + tag) }
+    await this.removeTag0(path, tag)
+  }
+  private async removeTag0(path: string, tag: string) {
     try { await this.rpc('files/tags/remove', { path, tag_text: tag }) } catch (e: any) { if (!(e?.status === 409 && /tag_not_present/.test(e.message))) throw e }
   }
 
@@ -324,6 +341,12 @@ export const setActiveDropbox = (c: DropboxClient | null) => { active = c }
 export const activeDropbox = () => active
 
 /** Fetch the full original of a Dropbox-backed photo for export (not stored). */
+/** A tag name the way Dropbox search / Photo Tagger write it ("Family Trip", "#family-trip" → family_trip) */
+export function toDropboxTagText(name: string): string {
+  const t = name.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+    .replace(/[^a-z0-9_]+/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '')
+  return t.slice(0, 32).replace(/_$/, '')
+}
 export async function fetchDropboxOriginal(p: { name: string; dropbox?: { id: string } }): Promise<Blob | undefined> {
   if (!p.dropbox || !active) return undefined
   try { return await active.download({ id: p.dropbox.id, name: p.name }) } catch { return undefined }

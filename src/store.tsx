@@ -9,6 +9,7 @@ import { buildZip, canPickFolder, clearSavedFolder, downloadBlob, ensurePermissi
 import { qualityFlags } from './imageUtils'
 import { completeWebRedirect, DropboxClient, ENV_DROPBOX_KEY, isDropboxImage, setActiveDropbox, startDropboxAuth, type DropboxEntry, type DropboxFile, type DropboxSession } from './dropbox'
 import * as Remote from './remote'
+import { fetchDropboxOriginal } from './dropbox'
 import { parseImport, toCSV, toJSON, download } from './exportImport'
 import { DEFAULT_SETTINGS, type CustomLabel, type DropboxRef, type Photo, type Settings, type Tag } from './types'
 
@@ -869,6 +870,21 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
     await DB.kvSet('customEmb', Object.fromEntries([...customEmb.current].map(([k, v]) => [k, Array.from(v)])))
   }, [ensureModel])
 
+  /** CLIP embedding for a photo: stored one, else from its view image, else (Dropbox) a temporary in-memory download of the original */
+  const embeddingFor = useCallback(async (p: Photo): Promise<Float32Array> => {
+    let blob: Blob | undefined = await DB.getBlob('views', p.id)
+    if (!blob && p.dropbox) {
+      blob = await fetchDropboxOriginal(p)
+      if (!blob) throw new Error('could not download it from Dropbox')
+    }
+    if (!blob) throw new Error('no image is available for it')
+    await ensureModel()
+    const px = await pixelsFromBlob(blob) // bytes are dropped after this
+    const e = await ml.embedImage(px.rgb, px.width, px.height)
+    await DB.putEmbedding(p.id, e)
+    return e
+  }, [ensureModel])
+
   const retagAll = useCallback(async () => {
     ml.resetFailed()
     const s = settingsRef.current
@@ -878,53 +894,47 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
       // pick up tags added/removed in Dropbox first so re-tagging never overwrites them
       if (photosRef.current.some((p) => p.dropbox)) syncFromRemote(await Remote.importNativeTags())
       const all = photosRef.current.slice()
+      const failedNames: string[] = []
       await runJob('Re-tagging', all.length, async (step) => {
         for (const p0 of all) {
           // refresh quality flags from stored measurements (thresholds may have changed)
           const q = qualityFlags(p0.quality.sharpness, p0.quality.brightness, s)
           let p: Photo = { ...p0, quality: q, tags: [...p0.tags.filter((t) => t.source !== 'quality'), ...exifAndQualityTags({ ...p0, quality: q }).filter((t) => t.source === 'quality')] }
           let e = embs.get(p.id)
-          if (!e) {
-            const v = await DB.getBlob('views', p.id)
-            if (v) {
-              await ensureModel()
-              const px = await pixelsFromBlob(v)
-              e = await ml.embedImage(px.rgb, px.width, px.height)
-              await DB.putEmbedding(p.id, e)
-            }
-          }
+          if (!e) { try { e = await embeddingFor(p) } catch { e = undefined } }
           if (e) await tagWithEmbedding(p, e)
-          else await persist(p)
+          else { await persist(p); failedNames.push(p.name) }
           step(p.name)
         }
       })
-      toast('Library re-tagged', 'ok')
+      if (failedNames.length) toast(`Library re-tagged — ${failedNames.length} photo(s) could not be re-scored (no image available): ${failedNames.slice(0, 3).join(', ')}${failedNames.length > 3 ? '…' : ''}`, 'error')
+      else toast('Library re-tagged', 'ok')
     } catch (e: any) {
       toast(`Re-tagging failed: ${e.message}`, 'error')
     }
-  }, [ensureModel, persist, syncCustomEmbeddings, tagWithEmbedding, toast])
+  }, [embeddingFor, persist, syncCustomEmbeddings, tagWithEmbedding, toast])
 
   const retagPhoto = useCallback(async (id: string) => {
     ml.resetFailed()
-    if (photosRef.current.find((x) => x.id === id)?.dropbox) syncFromRemote(await Remote.importNativeTags([id]))
-    const p = photosRef.current.find((x) => x.id === id)
-    if (!p) return
+    const name = photosRef.current.find((x) => x.id === id)?.name ?? 'photo'
+    setJobBoth({ label: `Re-tagging ${name}…`, total: 1, done: 0, failed: 0 })
+    let ok = false
     try {
+      if (photosRef.current.find((x) => x.id === id)?.dropbox) syncFromRemote(await Remote.importNativeTags([id]))
+      const p = photosRef.current.find((x) => x.id === id)
+      if (!p) throw new Error('photo not found')
       await syncCustomEmbeddings()
-      let e = (await DB.allEmbeddings()).get(id)
-      if (!e) {
-        const v = await DB.getBlob('views', id)
-        if (!v) return
-        await ensureModel()
-        const px = await pixelsFromBlob(v)
-        e = await ml.embedImage(px.rgb, px.width, px.height)
-        await DB.putEmbedding(id, e)
-      }
-      await tagWithEmbedding(p, e)
+      const e = (await DB.allEmbeddings()).get(id) ?? (await embeddingFor(p))
+      await tagWithEmbedding(photosRef.current.find((x) => x.id === id) ?? p, e)
+      ok = true
+      toast(`Re-tagged ${name}`, 'ok')
     } catch (err: any) {
-      toast(`Tagging failed: ${err.message}`, 'error')
+      toast(`Re-tagging ${name} failed: ${err?.message || err}`, 'error')
+    } finally {
+      setJobBoth({ label: ok ? `Re-tagged ${name}` : `Re-tagging ${name} failed`, total: 1, done: 1, failed: ok ? 0 : 1 })
+      endJob()
     }
-  }, [ensureModel, syncCustomEmbeddings, tagWithEmbedding, toast])
+  }, [embeddingFor, syncCustomEmbeddings, tagWithEmbedding, toast])
 
   const retryPending = useCallback(async () => {
     const pend = photosRef.current.filter((p) => p.status === 'pending')
