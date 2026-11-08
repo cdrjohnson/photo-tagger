@@ -35,15 +35,17 @@ const SAMPLE_BY_ID = {
   'id:dbx-a': 'dropbox-import-a.jpg', 'id:dbx-b': 'dropbox-import-b.jpg', 'id:dbx-c': 'dropbox-import-g.jpg',
   'id:slow-a': 'dropbox-import-e.jpg', 'id:slow-b': 'dropbox-import-f.jpg',
   'id:p1': 'dropbox-import-c.jpg', 'id:p2': 'dropbox-import-d.jpg', 'id:p3': 'dropbox-import-h.jpg', 'id:p4': 'dropbox-import-i.jpg',
+  'id:v1': 'dropbox-video-frame.jpg', // Dropbox's preview frame of clip.mp4 (id:v2 has no preview)
   'id:f1': 'obama-portrait.jpg', 'id:f2': 'biden-2013.jpg', 'id:f3': 'biden-2021.jpg',
 }
 const dbxFile = (id, name, dir) => ({ '.tag': 'file', id, name, path_display: `${dir}/${name}`, path_lower: `${dir}/${name}`.toLowerCase(), rev: 'r' + id.slice(3), size: 1000, content_hash: 'h' + id, client_modified: '2024-05-01T10:00:00Z' })
 const dbxDir = (name, dir) => ({ '.tag': 'folder', id: 'id:dir-' + name, name, path_display: `${dir}/${name}`, path_lower: `${dir}/${name}`.toLowerCase() })
 const DBX_TREE = {
-  '': [dbxDir('Photos', ''), dbxDir('Docs', ''), dbxDir('Slow', ''), dbxDir('Faces', ''), dbxDir('Picks', ''), { '.tag': 'file', id: 'id:txt', name: 'readme.txt', path_display: '/readme.txt', path_lower: '/readme.txt', rev: 'r1', size: 5 }],
+  '': [dbxDir('Photos', ''), dbxDir('Docs', ''), dbxDir('Slow', ''), dbxDir('Faces', ''), dbxDir('Picks', ''), dbxDir('Movies', ''), { '.tag': 'file', id: 'id:txt', name: 'readme.txt', path_display: '/readme.txt', path_lower: '/readme.txt', rev: 'r1', size: 5 }],
   '/photos': [dbxDir('Trip', '/Photos'), dbxFile('id:dbx-a', 'from-dropbox.jpg', '/Photos'), dbxFile('id:dbx-b', 'from-dropbox-2.jpg', '/Photos'), { '.tag': 'file', id: 'id:pdf', name: 'notes.pdf', path_display: '/Photos/notes.pdf', path_lower: '/photos/notes.pdf', rev: 'r2', size: 5 }],
   '/photos/trip': [dbxFile('id:dbx-c', 'trip.jpg', '/Photos/Trip')],
   '/docs': [],
+  '/movies': [dbxFile('id:v1', 'clip.mp4', '/Movies'), dbxFile('id:v2', 'noframe.mov', '/Movies')],
   '/picks': ['pick-1.jpg', 'pick-2.jpg', 'pick-3.jpg', 'pick-4.jpg'].map((n, i) => dbxFile('id:p' + (i + 1), n, '/Picks')),
   '/slow': [dbxFile('id:slow-a', 'cancel-stop-a.jpg', '/Slow'), dbxFile('id:slow-b', 'cancel-stop-b.jpg', '/Slow')],
   '/faces': [dbxFile('id:f1', 'obama-portrait.jpg', '/Faces'), dbxFile('id:f2', 'biden-2013.jpg', '/Faces'), dbxFile('id:f3', 'biden-2021.jpg', '/Faces')],
@@ -647,7 +649,7 @@ await test('Dropbox: in-app browser lists folders and images (paginated), skips 
   await page.getByTestId('dropbox-browser').waitFor()
   await page.locator('[data-testid=dropbox-folder][data-name="Photos"]').waitFor()
   ok(dbx.refreshes >= 1, 'expired token was refreshed')
-  eq(await page.getByTestId('dropbox-folder').evaluateAll((els) => els.map((e) => e.dataset.name)), ['Docs', 'Faces', 'Photos', 'Picks', 'Slow'], 'root folders (from 2 pages)')
+  eq(await page.getByTestId('dropbox-folder').evaluateAll((els) => els.map((e) => e.dataset.name)), ['Docs', 'Faces', 'Movies', 'Photos', 'Picks', 'Slow'], 'root folders (from 2 pages)')
   eq(await page.getByTestId('dropbox-file').count(), 0, 'readme.txt skipped')
   await page.locator('[data-testid=dropbox-folder][data-name="Photos"]').click()
   await page.locator('[data-testid=dropbox-file][data-name="from-dropbox-2.jpg"]').waitFor()
@@ -950,6 +952,50 @@ await test('Dropbox: pick individual files (click, Ctrl-click, Shift-click, drag
   ok(!dbx.downloads['id:p3'] && !dbx.downloads['id:p4'], 'unselected files never downloaded')
   const linked = await idb(page, `return new Promise((res) => { const q = db.transaction('kv').objectStore('kv').get('dropboxFolders'); q.onsuccess = () => res(q.result) })`)
   ok(!linked.some((f) => f.path.toLowerCase() === '/picks'), 'picked files do not link the folder: ' + JSON.stringify(linked))
+})
+
+await test('Dropbox picker: lazy thumbnails, date/size, in-library rows show a disabled checked box; videos tagged from the preview only', async () => {
+  const thumbs0 = dbx.thumbLog.length
+  await page.getByTestId('add-btn').click(); await page.getByTestId('add-dropbox').click()
+  await page.locator('[data-testid=dropbox-folder][data-name="Picks"]').click()
+  const row = (n) => page.locator(`[data-testid=dropbox-file][data-name="${n}"]`)
+  await row('pick-4.jpg').waitFor()
+  await page.waitForFunction(() => [...document.querySelectorAll('[data-testid=dropbox-thumb]')].every((t) => t.dataset.state !== 'waiting'), null, { timeout: 20_000 })
+  eq(await page.locator('[data-testid=dropbox-thumb][data-state=loaded]').count(), 4, 'previews shown')
+  const small = dbx.thumbLog.filter(([p, size]) => size === 'w256h256' && /^id:p\d$|^\/Picks\//.test(p))
+  ok(new Set(small.map(([p]) => p)).size <= 4 && small.length <= 8, 'one small preview per file, cached across visits: ' + JSON.stringify(small)); void thumbs0
+  ok(!dbx.downloads['id:p3'] && !dbx.downloads['id:p4'], 'picker never downloads files')
+  ok(/2024/.test(await row('pick-3.jpg').getByTestId('dropbox-file-meta').innerText()) && /KB/.test(await row('pick-3.jpg').getByTestId('dropbox-file-meta').innerText()), 'date and size shown')
+  const have = row('pick-1.jpg')
+  ok(await have.getByTestId('dropbox-in-library').isVisible() && (await have.getByTestId('dropbox-in-library').innerText()) === 'Already in library', 'Already in library label')
+  ok(await have.getByTestId('dropbox-in-library').evaluate((e) => e.scrollWidth <= e.clientWidth + 1 && e.getBoundingClientRect().right <= e.closest('[data-testid=dropbox-file]').getBoundingClientRect().right + 1), 'label not clipped')
+  const cb = have.getByTestId('dropbox-file-check')
+  ok(await cb.isDisabled() && await cb.isChecked(), 'disabled, checked box for in-library file')
+  await have.click({ force: true }); eq(await page.locator('[data-testid=dropbox-file][data-picked="1"]').count(), 0, 'in-library row not selectable')
+  await page.getByTestId('dropbox-select-all').click(); eq(await page.locator('[data-testid=dropbox-file][data-picked="1"]').count(), 2, 'Select all = new files only')
+  await page.getByTestId('dropbox-deselect-all').click()
+  // videos are listed and tagged from Dropbox's preview frame — never downloaded
+  await page.getByTestId('dropbox-crumb').first().click()
+  await page.locator('[data-testid=dropbox-folder][data-name="Movies"]').click()
+  await row('clip.mp4').waitFor(); await row('noframe.mov').waitFor()
+  await page.getByTestId('dropbox-process').click()
+  await waitTile('clip.mp4', page, 60_000)
+  await page.locator('.toast', { hasText: /1 video\(s\) skipped/ }).first().waitFor({ timeout: 30_000 })
+  await settled(); await keepDupes()
+  eq([dbx.downloads['id:v1'], dbx.downloads['id:v2']], [undefined, undefined], 'video files never downloaded')
+  ok(dbx.thumbLog.some(([p, size]) => p === 'id:v1' && size === 'w2048h1536'), 'tagged from the preview frame')
+  ok((await tagsOf('clip.mp4')).length > 0, 'video got tags')
+  eq(await tile('noframe.mov').count(), 0, 'video without a preview skipped, not hung')
+  await page.evaluate(() => window.__ptFlushDropbox())
+  ok(sidecarFor(dbx, 'v1'), 'sidecar written for the video')
+  ok((dbx.fileTags.get('id:v1')?.size ?? 0) > 0, 'native Dropbox tags written on the video')
+  await tile('clip.mp4').click()
+  ok(await page.getByTestId('download').isDisabled(), 'Download original disabled for videos')
+  const n0 = dbx.downloads['id:v1']
+  await page.getByRole('button', { name: 'Re-run tagging' }).click()
+  await page.locator('.toast', { hasText: /Re-tagged clip\.mp4/ }).first().waitFor({ timeout: 30_000 })
+  eq(dbx.downloads['id:v1'], n0, 'Re-run tagging does not download the video')
+  await page.keyboard.press('Escape')
 })
 
 await test('Dropbox: Remove from app deletes only the Photo Tagger sidecar, never the Dropbox photo', async () => {

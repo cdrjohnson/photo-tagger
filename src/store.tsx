@@ -7,7 +7,7 @@ import { fingerprint, hashesFromBlob, isImageFile, pixelsFromBlob, prepare, type
 import { nearestPhash } from './hashes'
 import { buildZip, canPickFolder, clearSavedFolder, downloadBlob, ensurePermission, getSavedFolder, pickFolder, saveOneToFolder, saveToFolder, type DirHandle } from './folderSave'
 import { qualityFlags } from './imageUtils'
-import { completeWebRedirect, DropboxClient, ENV_DROPBOX_KEY, isDropboxImage, setActiveDropbox, startDropboxAuth, type DropboxEntry, type DropboxFile, type DropboxSession } from './dropbox'
+import { completeWebRedirect, DropboxClient, ENV_DROPBOX_KEY, isDropboxMedia, isDropboxVideo, setActiveDropbox, startDropboxAuth, type DropboxEntry, type DropboxFile, type DropboxSession } from './dropbox'
 import * as Remote from './remote'
 import { fetchDropboxOriginal } from './dropbox'
 import { parseImport, toCSV, toJSON, download } from './exportImport'
@@ -33,6 +33,7 @@ export interface Library {
   connectDropbox(): Promise<void>
   disconnectDropbox(): Promise<void>
   listDropbox(path: string): Promise<DropboxEntry[]>
+  dropboxThumb(f: { id: string; path: string; rev?: string }): Promise<string | null>
   /** Tag every new image in a Dropbox folder; originals are not kept locally. */
   processDropboxFolder(path: string, recursive: boolean): Promise<void>
   processDropboxFiles(files: DropboxFile[]): Promise<void>
@@ -690,11 +691,31 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
     toast('Dropbox disconnected. Your tags stay in Dropbox.')
   }, [toast])
 
+  /** small preview for the Dropbox picker (lazy, at most 4 requests at once, cached per file) */
+  const pickerThumbs = useRef(new Map<string, Promise<string | null>>())
+  const pickerQ = useRef({ active: 0, wait: [] as (() => void)[] })
+  const dropboxThumb = useCallback((f: { id: string; path: string; rev?: string }) => {
+    const key = f.id + '@' + (f.rev ?? '')
+    let pr = pickerThumbs.current.get(key)
+    if (!pr) {
+      pr = (async () => {
+        const c = dbxClientRef.current; if (!c) return null
+        const q = pickerQ.current
+        if (q.active >= 4) await new Promise<void>((r) => q.wait.push(r))
+        q.active++
+        try { const b = await c.preview(f, 'w256h256'); return b ? URL.createObjectURL(b) : null }
+        finally { q.active--; q.wait.shift()?.() }
+      })()
+      pickerThumbs.current.set(key, pr)
+      pr.then((u) => { if (!u) pickerThumbs.current.delete(key) })
+    }
+    return pr
+  }, [])
   const listDropbox = useCallback(async (path: string) => {
     const c = dbxClientRef.current
     if (!c) throw new Error('Dropbox is not connected')
     const all = await c.listFolder(path)
-    return all.filter((e) => !e.pathLower.startsWith('/.photo-tagger') && (e.kind === 'folder' || isDropboxImage(e.name)))
+    return all.filter((e) => !e.pathLower.startsWith('/.photo-tagger') && (e.kind === 'folder' || isDropboxMedia(e.name)))
       .sort((x, y) => (x.kind === y.kind ? x.name.localeCompare(y.name, undefined, { numeric: true }) : x.kind === 'folder' ? -1 : 1))
   }, [])
 
@@ -751,7 +772,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
       for (const src of sources) {
         const entries = await src()
         for (const e of entries) {
-          if (e.kind !== 'file' || !isDropboxImage(e.name) || e.pathLower.startsWith('/.photo-tagger')) continue
+          if (e.kind !== 'file' || !isDropboxMedia(e.name) || e.pathLower.startsWith('/.photo-tagger')) continue
           if (seen.has(e.id)) { already++; alreadyIds.push(e.id); continue }
           seen.add(e.id); files.push(e)
         }
@@ -770,6 +791,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
       }
       setJobBoth({ label: 'Tagging from Dropbox…', total: files.length, done: 0, failed: 0, cancellable: true })
       let next = 0, done = 0, failed = 0, imported = 0
+      const noPreview: string[] = []
       const worker = async () => {
         while (true) {
           if (ac.signal.aborted) return
@@ -778,8 +800,14 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
           const f = files[i]
           bumpJob({ label: `Tagging from Dropbox · ${f.name}`, done, failed })
           try {
-            // Original bytes live only in memory for this step, then are dropped
-            const file = await downloadWithRetry(c, f, ac.signal)
+            // Photos: original bytes live only in memory for this step, then are dropped.
+            // Videos: only Dropbox's preview frame is used — the movie is never downloaded.
+            let file: File
+            if (isDropboxVideo(f.name)) {
+              const frame = await c.preview(f, 'w2048h1536')
+              if (!frame) { noPreview.push(f.name); done++; bumpJob({ label: `No preview yet · ${f.name}`, done, failed }); continue }
+              file = new File([frame], f.name, { type: 'image/jpeg' })
+            } else file = await downloadWithRetry(c, f, ac.signal)
             const result = await ingestOneFile(file, 'dropbox', { id: f.id, path: f.path, rev: f.rev, contentHash: f.contentHash })
             if (result === 'error') failed++
             else imported++
@@ -797,6 +825,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
         }
       }
       await Promise.all(Array.from({ length: Math.min(3, files.length) }, () => worker()))
+      if (noPreview.length) toast(`${noPreview.length} video(s) skipped — Dropbox has no preview frame for them yet (the video isn't downloaded to tag it). Try again later: ${noPreview.slice(0, 3).join(', ')}${noPreview.length > 3 ? '…' : ''}`, 'error')
       dropboxAbortRef.current = null
       const cancelled = ac.signal.aborted
       setJobBoth({ label: cancelled ? 'Cancelled' : 'Done', total: files.length, done: cancelled ? files.length : done, failed, cancellable: false })
@@ -880,6 +909,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
   const embeddingFor = useCallback(async (p: Photo): Promise<Float32Array> => {
     let blob: Blob | undefined = await DB.getBlob('views', p.id)
     if (!blob && p.dropbox) {
+      if (isDropboxVideo(p.name)) throw new Error("Dropbox has no preview frame for this video yet (videos are tagged from the preview only)")
       blob = await fetchDropboxOriginal(p)
       if (!blob) throw new Error('could not download it from Dropbox')
     }
@@ -1074,7 +1104,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
     pendingCount: photos.filter((p) => p.status === 'pending').length,
     dropboxKey,
     dropbox: { connected: !!dbxSession, account: dbxSession?.name || dbxSession?.email || '', folders: dbxFolders, connecting: dbxConnecting },
-    connectDropbox, disconnectDropbox, listDropbox, processDropboxFolder, processDropboxFiles, refreshDropbox, forgetDropboxFolder,
+    connectDropbox, disconnectDropbox, listDropbox, dropboxThumb, processDropboxFolder, processDropboxFiles, refreshDropbox, forgetDropboxFolder,
     addFiles, cancelDropboxDownload, updatePhotos, addTags, removeTags, deletePhotos, retagAll, retagPhoto, pullDropboxTags, retryPending,
     saveSettings, addCustomLabel, removeCustomLabel, toggleLabel, resetVocabulary, exportData, importTags,
     clearEverything, toast, preloadModel, setAfterIngest,
@@ -1082,7 +1112,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
     folderSupported: canPickFolder, folderName, chooseSaveFolder, clearSaveFolder: clearSaveFolderFn,
     libraryPath, isDesktop: DB.isDesktop(), chooseLibraryFolder, changeLibraryFolder, portable, useLibraryBesideApp,
     savePhotosToDisk, downloadPhotosZip,
-  }), [ready, photos, settings, custom, job, model, toasts, dropboxKey, dbxSession, dbxFolders, dbxConnecting, connectDropbox, disconnectDropbox, listDropbox, processDropboxFolder, processDropboxFiles, refreshDropbox, forgetDropboxFolder, addFiles, cancelDropboxDownload, updatePhotos, addTags, removeTags,
+  }), [ready, photos, settings, custom, job, model, toasts, dropboxKey, dbxSession, dbxFolders, dbxConnecting, connectDropbox, disconnectDropbox, listDropbox, dropboxThumb, processDropboxFolder, processDropboxFiles, refreshDropbox, forgetDropboxFolder, addFiles, cancelDropboxDownload, updatePhotos, addTags, removeTags,
     deletePhotos, retagAll, retagPhoto, pullDropboxTags, retryPending, saveSettings, addCustomLabel, removeCustomLabel, toggleLabel, resetVocabulary, exportData,
     importTags, clearEverything, toast, preloadModel, setAfterIngest, nearDupes, resolveNearDupe, resolveAllNearDupes, findDuplicates,
     dismissDupePair, folderName, chooseSaveFolder, clearSaveFolderFn, savePhotosToDisk, downloadPhotosZip, libraryPath, chooseLibraryFolder, changeLibraryFolder, portable, useLibraryBesideApp])

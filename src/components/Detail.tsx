@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useViewUrl } from '../hooks'
 import { useLibrary } from '../store'
 import { getBlob } from '../storage'
-import { fetchDropboxOriginal } from '../dropbox'
+import { fetchDropboxOriginal, isDropboxVideo } from '../dropbox'
 import type { Photo } from '../types'
 import { TagInput } from './TagInput'
 import { RemoveConfirm } from './RemoveConfirm'
@@ -294,7 +294,9 @@ export function Detail({ list, index, onIndex, onClose, allTags }: {
           <p className="muted small" id="retag-help" data-testid="retag-help">Re-analyzes this photo and updates its detected tags (faces aren't re-scanned). For Dropbox photos it first picks up tag changes made in Dropbox, then saves Photo Tagger's tags back. You don't need it after adding or removing a tag here — that already updates Dropbox.</p>
         </div>
         <div className="row wrap">
-          <button className="btn" onClick={download} data-testid="download">{p.hasOriginal || p.dropbox ? 'Download original' : 'Download copy'}</button>
+          {p.dropbox && isDropboxVideo(p.name)
+            ? <button className="btn" disabled data-testid="download" title="Videos are tagged from Dropbox's preview frame only; open the video in Dropbox to download it.">Download original (open in Dropbox)</button>
+            : <button className="btn" onClick={download} data-testid="download">{p.hasOriginal || p.dropbox ? 'Download original' : 'Download copy'}</button>}
           <button className="btn danger" data-testid="delete-photo" onClick={() => setRemoveAsk(true)} title={p.dropbox ? 'Removes it from Photo Tagger (and its tags file in /.photo-tagger). The photo stays in your Dropbox.' : 'Removes it from Photo Tagger. Originals elsewhere are not touched.'}>Remove from app</button>
         </div>
       </aside>

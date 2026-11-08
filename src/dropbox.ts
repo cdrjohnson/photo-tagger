@@ -45,6 +45,10 @@ export type DropboxEntry = DropboxFolder | DropboxFile
 const IMAGE_EXT = /\.(jpe?g|png|webp|gif|bmp|avif)$/i
 /** Images the browser can decode (HEIC/TIFF are skipped). */
 export const isDropboxImage = (name: string) => IMAGE_EXT.test(name)
+const VIDEO_EXT = /\.(mp4|mov|m4v|avi|mkv|webm|wmv|mpe?g)$/i
+/** Movies: tagged from Dropbox's preview frame only — the video file itself is never downloaded. */
+export const isDropboxVideo = (name: string) => VIDEO_EXT.test(name)
+export const isDropboxMedia = (name: string) => isDropboxImage(name) || isDropboxVideo(name)
 
 /** The redirect URI this copy of the app uses (must be registered exactly in the Dropbox app console). */
 export function redirectUri(): string {
@@ -256,6 +260,11 @@ export class DropboxClient {
     } catch { return null }
   }
 
+  /** Dropbox preview image of a file (photo or video): by id, then by '/…' path. Never the file itself. */
+  async preview(f: { id: string; path?: string }, size: string): Promise<Blob | null> {
+    return (await this.thumbnail(f.id, size)) ?? (f.path?.startsWith('/') ? await this.thumbnail(f.path, size) : null)
+  }
+
   /** Write one of Photo Tagger's own metadata files. Refuses any path outside META_ROOT. */
   async writeMeta(path: string, data: Blob | string) {
     if (!path.startsWith(META_ROOT + '/')) throw new Error('refusing to write outside Photo Tagger metadata folder')
@@ -349,5 +358,6 @@ export function toDropboxTagText(name: string): string {
 }
 export async function fetchDropboxOriginal(p: { name: string; dropbox?: { id: string } }): Promise<Blob | undefined> {
   if (!p.dropbox || !active) return undefined
+  if (isDropboxVideo(p.name)) return undefined // never pull a whole movie
   try { return await active.download({ id: p.dropbox.id, name: p.name }) } catch { return undefined }
 }

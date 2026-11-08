@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { DropboxEntry, DropboxFile } from '../dropbox'
+import { isDropboxVideo, type DropboxEntry, type DropboxFile } from '../dropbox'
 import { useLibrary } from '../store'
 
 /** Photo Tagger's own Dropbox folder browser (replaces the Chooser pop-up). */
@@ -89,17 +89,26 @@ export function DropboxBrowser({ onClose }: { onClose: () => void }) {
             <button key={f.id} className="dbx-row" data-testid="dropbox-folder" data-name={f.name} onClick={() => setPath(f.path)}>📁 <span>{f.name}</span></button>
           ))}
           {images.map((f, i) => {
+            const file = f as DropboxFile
             const have = inLibrary.has(f.id), on = picked.has(f.id)
+            const body = (<>
+              <input type="checkbox" tabIndex={-1} checked={have || on} readOnly disabled={have} aria-label={have ? `${f.name} is already in the library` : `Select ${f.name}`} data-testid="dropbox-file-check" />
+              <PickerThumb f={file} />
+              <span className="dbx-file-text">
+                <span className="dbx-file-name" title={f.name}>{isDropboxVideo(f.name) ? '🎬 ' : ''}{f.name}</span>
+                <small className="muted dbx-file-meta" data-testid="dropbox-file-meta">{[fmtDate(file), fmtBytes(file.size)].filter(Boolean).join(' · ')}</small>
+                {have && <small className="dbx-have" data-testid="dropbox-in-library">Already in library</small>}
+              </span>
+            </>)
             return have ? (
-              <div key={f.id} className="dbx-row file" data-testid="dropbox-file" data-name={f.name}>🖼 <span>{f.name}</span>
-                <small className="muted" data-testid="dropbox-in-library">in library</small></div>
+              <div key={f.id} className="dbx-row file have" data-testid="dropbox-file" data-name={f.name} aria-disabled="true">{body}</div>
             ) : (
               <div key={f.id} className={`dbx-row file pickable ${on ? 'on' : ''}`} data-testid="dropbox-file" data-name={f.name} data-picked={on ? '1' : '0'}
                 role="option" aria-selected={on} tabIndex={0}
                 onPointerDown={(e) => { if (e.button !== 0) return; e.preventDefault(); (e.currentTarget as HTMLElement).focus(); press(i, f.id, { shiftKey: e.shiftKey, ctrlKey: e.ctrlKey, metaKey: e.metaKey, onCheckbox: (e.target as HTMLElement).tagName === 'INPUT' }) }}
                 onPointerEnter={() => enter(i)}
                 onKeyDown={(e) => { if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); press(i, f.id, { shiftKey: e.shiftKey, ctrlKey: true, metaKey: false }); drag.current = null } }}>
-                <input type="checkbox" tabIndex={-1} checked={on} readOnly aria-label={`Select ${f.name}`} data-testid="dropbox-file-check" /> 🖼 <span>{f.name}</span></div>
+                {body}</div>
             )
           })}
           {fresh > 0 && (
@@ -136,5 +145,34 @@ export function DropboxBrowser({ onClose }: { onClose: () => void }) {
         <p className="muted"><small>Photos stay in Dropbox. Each image is downloaded into memory to tag it, then discarded; tags and face names are saved to /.photo-tagger in your Dropbox — nothing is kept on this device.</small></p>
       </div>
     </div>
+  )
+}
+
+const fmtBytes = (n?: number) => (!n ? '' : n > 1e9 ? `${(n / 1e9).toFixed(1)} GB` : n > 1e6 ? `${(n / 1e6).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1e3))} KB`)
+function fmtDate(f: DropboxFile): string {
+  let d = f.clientModified ? new Date(f.clientModified) : null
+  if (!d || isNaN(+d)) { const m = f.name.match(/(\d{4})[-_.]?(\d{2})[-_.]?(\d{2})/); d = m ? new Date(+m[1], +m[2] - 1, +m[3]) : null }
+  return d && !isNaN(+d) ? d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }) : ''
+}
+/** Dropbox preview, fetched only when the row scrolls into view (the list never prefetches a whole folder) */
+function PickerThumb({ f }: { f: DropboxFile }) {
+  const lib = useLibrary()
+  const ref = useRef<HTMLSpanElement>(null)
+  const [url, setUrl] = useState<string | null | undefined>(undefined)
+  useEffect(() => {
+    const el = ref.current; if (!el) return
+    let off = false
+    const io = new IntersectionObserver((es) => {
+      if (!es.some((e) => e.isIntersecting)) return
+      io.disconnect()
+      void lib.dropboxThumb(f).then((u) => { if (!off) setUrl(u) }).catch(() => { if (!off) setUrl(null) })
+    }, { rootMargin: '120px' })
+    io.observe(el)
+    return () => { off = true; io.disconnect() }
+  }, [f.id, f.rev]) // eslint-disable-line react-hooks/exhaustive-deps
+  return (
+    <span ref={ref} className="dbx-thumb" data-testid="dropbox-thumb" data-state={url ? 'loaded' : url === null ? 'failed' : 'waiting'} aria-hidden="true">
+      {url ? <img src={url} alt="" draggable={false} /> : <span className="dbx-thumb-ph">{isDropboxVideo(f.name) ? '🎬' : '🖼'}</span>}
+    </span>
   )
 }
