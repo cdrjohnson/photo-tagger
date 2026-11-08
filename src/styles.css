@@ -234,10 +234,12 @@ dl.meta dt { color: var(--muted); } dl.meta dd { margin: 0; word-break: break-wo
 .face .x { position: absolute; top: 3px; right: 3px; width: 22px; height: 22px; border-radius: 50%; border: 0; background: rgba(0,0,0,.55); color: #fff; cursor: pointer; line-height: 1; padding: 0; }
 .face .pick { position: absolute; inset: 0; background: none; border: 0; cursor: pointer; }
 .face .pick.on { box-shadow: inset 0 0 0 3px var(--accent); background: rgba(79,70,229,.18); }
-.face .yn { position: absolute; left: 0; right: 0; bottom: 0; display: flex; }
-.face .yn button { flex: 1; border: 0; padding: 4px 0; font-weight: 700; cursor: pointer; color: #fff; min-height: 30px; }
-.face .yn button:first-child { background: rgba(6,118,71,.9); }
-.face .yn button:last-child { background: rgba(180,35,24,.9); }
+.suggestion { display: grid; gap: 4px; width: 108px; flex: none; }
+.suggestion .face { width: 108px; height: 108px; }
+.suggestion .yn { display: flex; gap: 4px; }
+.suggestion .yn button { flex: 1; border: 0; border-radius: 8px; padding: 4px 0; font-weight: 700; cursor: pointer; color: #fff; min-height: 32px; }
+.suggestion .yn button:first-child { background: rgb(6,118,71); }
+.suggestion .yn button:last-child { background: rgb(180,35,24); }
 .face .dist { position: absolute; top: 2px; left: 4px; color: #fff; font-size: .65rem; text-shadow: 0 1px 2px #000; }
 .cluster form input { flex: 1; min-width: 0; }
 @media (max-width: 720px) {

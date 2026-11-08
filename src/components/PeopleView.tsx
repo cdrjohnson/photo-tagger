@@ -164,13 +164,16 @@ function Suggestions({ person, faces }: { person: Person; faces: Face[] }) {
       </div>
       <div className="faces">
         {faces.map((f) => (
-          <FaceImg key={f.id} f={f} testId="suggestion">
+          // buttons sit below the face so they never cover it
+          <div key={f.id} className="suggestion" data-testid="suggestion" data-face={f.id} data-photo={f.photoId}>
+            <FaceImg f={f} testId="suggestion-face">
+              <small className="dist">{ppl.suggestions.get(f.id)?.distance.toFixed(2)}</small>
+            </FaceImg>
             <div className="yn">
               <button aria-label={`Yes, this is ${person.name}`} data-testid="suggest-yes" onClick={() => void ppl.confirm([f.id])}>✓</button>
               <button aria-label={`No, not ${person.name}`} data-testid="suggest-no" onClick={() => void ppl.reject([f.id], person.id)}>✕</button>
             </div>
-            <small className="dist">{ppl.suggestions.get(f.id)?.distance.toFixed(2)}</small>
-          </FaceImg>
+          </div>
         ))}
       </div>
     </div>

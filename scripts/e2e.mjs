@@ -493,6 +493,7 @@ await test('vocabulary: add a custom label (text model loads on demand) and appl
   await page.getByTestId('custom-add').click()
   await page.locator('[data-testid=custom-chip]', { hasText: 'skyline' }).waitFor({ timeout: 300_000 })
   await page.waitForFunction(() => !document.querySelector('[data-testid=custom-add]')?.disabled || document.querySelector('[data-testid=custom-add]')?.textContent === 'Add label', null, { timeout: 300_000 })
+  ok(await page.getByTestId('retag-all-help').isVisible() && /every photo/.test(await page.getByTestId('retag-all-help').innerText()), 'Re-tag library explained next to the button')
   await page.getByTestId('retag-all').click()
   await settled()
   await page.waitForFunction(() => document.querySelector('[data-name="city.jpg"]')?.dataset.tags.split('|').includes('skyline'), null, { timeout: 120_000 })
@@ -759,6 +760,7 @@ await test('Dropbox sync (regression 1.0.15): Dropbox tags with spaces/punctuati
   // Re-run tagging on a Dropbox photo really runs and reports status
   await page.evaluate(() => window.__ptDropEmbeddings?.())
   const dl = dbx.downloads['id:dbx-a'] || 0
+  ok(/doesn't need|don't need/.test(await page.getByTestId('retag-help').innerText()) && await page.getByTestId('retag-help').isVisible(), 'Re-run tagging explained next to the button')
   await page.getByRole('button', { name: 'Re-run tagging' }).click()
   await page.getByTestId('job-label').filter({ hasText: /Re-tag/ }).first().waitFor({ timeout: 10_000 })
   await toastHas(/Re-tagged from-dropbox\.jpg/)
@@ -1077,6 +1079,8 @@ const photoIdOf = (n) => page.evaluate((n) => new Promise((res) => { const r = i
 
 await test('faces: confirm and reject suggestions; rejections stick across reload and looser thresholds', async () => {
   const id21 = await photoIdOf('biden-2021.jpg'), id09 = await photoIdOf('biden-2009.jpg')
+  const lay = await page.locator('[data-testid=suggestion]').first().evaluate((el) => { const i = el.querySelector('img').getBoundingClientRect(), b = el.querySelector('[data-testid=suggest-yes]').getBoundingClientRect(); return { imgBottom: i.bottom, btnTop: b.top, w: i.width } })
+  ok(lay.btnTop >= lay.imgBottom - 0.5 && lay.w >= 100, 'Yes/No sit below a larger face, not over it: ' + JSON.stringify(lay))
   await page.locator(`[data-testid=suggestion][data-photo="${id21}"] [data-testid=suggest-yes]`).click()
   await page.waitForFunction(() => document.querySelector('[data-testid=suggestion-count]')?.textContent === '2')
   await page.locator(`[data-testid=suggestion][data-photo="${id09}"] [data-testid=suggest-no]`).click()

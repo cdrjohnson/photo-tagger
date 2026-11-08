@@ -287,8 +287,9 @@ export function Detail({ list, index, onIndex, onClose, allTags }: {
             {p.dropbox && <><dt>Dropbox path</dt><dd data-testid="dropbox-path">{p.dropbox.path}</dd></>}
           </dl>
         </section>
+        <p className="muted small" id="retag-help" data-testid="retag-help">Re-analyzes this photo and updates its detected tags (faces aren't re-scanned). For Dropbox photos it first picks up tag changes made in Dropbox, then saves Photo Tagger's tags back. You don't need it after adding or removing a tag here — that already updates Dropbox.</p>
         <div className="row wrap">
-          <button className="btn" onClick={retagOne}>Re-run tagging</button>
+          <button className="btn" onClick={retagOne} aria-describedby="retag-help" title="Re-analyze this photo and update its tags">Re-run tagging</button>
           <button className="btn" onClick={download} data-testid="download">{p.hasOriginal || p.dropbox ? 'Download original' : 'Download copy'}</button>
           <button className="btn danger" data-testid="delete-photo" onClick={async () => {
             const next = list[index + 1] ?? list[index - 1]
