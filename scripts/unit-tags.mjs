@@ -21,4 +21,12 @@ eq(m.exifAndQualityTags(ph).map((t) => t.name), ['2021', 'samplecam x', 'geotagg
 eq(m.exifAndQualityTags(ph, ['year', 'blurry']).map((t) => t.name), ['samplecam x', 'geotagged', 'bright'], 'disabled ones dropped')
 const ap = m.applyMetaTags({ ...ph, tags: [{ name: '2021', source: 'exif' }, { name: 'jane', source: 'person' }, { name: 'beach', source: 'auto' }] }, ['year', 'camera'])
 eq(ap.tags.map((t) => t.name), ['jane', 'beach', 'geotagged', 'blurry', 'bright'], 'applyMetaTags strips/re-applies only exif+quality')
+// 1.0.25: actual read-back determines landed; missing tags on full files are cap-blocked.
+const verification = await build({ entryPoints: ['src/tagVerification.ts'], bundle: true, format: 'esm', write: false, platform: 'neutral' })
+const v = await import('data:text/javascript;base64,' + Buffer.from(verification.outputFiles[0].text).toString('base64'))
+eq(v.compareDropboxTags(['jane', 'beach', 'beach'], ['jane', 'third_party']), { landed: ['jane'], missing: ['beach'], atCap: [] }, 'landed vs missing, other apps retained')
+eq(v.compareDropboxTags(['jane', 'beach'], ['jane'], 20), { landed: ['jane'], missing: ['beach'], atCap: ['beach'] }, 'full native count caps missing only')
+eq(v.compareDropboxTags([], Array.from({ length: 20 }, (_, i) => 'external_' + i)), { landed: [], missing: [], atCap: [] }, 'no desired tags is all good')
+eq(v.compareDropboxTags(['beach'], ['beach']), { landed: ['beach'], missing: [], atCap: [] }, 'all landed')
+if (!v.tagVerificationError(new Error('403 missing_scope')).includes('Full Dropbox')) throw new Error('scope hint missing')
 console.log('unit-tags: ok')

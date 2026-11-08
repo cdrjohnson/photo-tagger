@@ -89,6 +89,8 @@ async function stubDropbox(ctx) {
     if (url.pathname === '/2/files/tags/get') {
       const b = JSON.parse(req.postData() || '{}')
       if (b.paths.some(badPath)) { st.tagBad++; return regex400() }
+      if (st.tagReadError) return json({ error_summary: 'missing_scope/files.metadata.write/' }, 403)
+      st.tagBatches ??= []; st.tagBatches.push([...b.paths])
       st.tagGets.push(...b.paths)
       return json({ paths_to_tags: b.paths.map((p) => ({ path: p, tags: [...(st.fileTags.get(idByPath(p)) ?? [])].map((t) => ({ '.tag': 'user_generated_tag', tag_text: t })) })) })
     }
@@ -101,7 +103,7 @@ async function stubDropbox(ctx) {
       if (url.pathname.endsWith('add')) {
         if (!/^\w{1,32}$/.test(b.tag_text)) return json({ error_summary: 'other/' }, 400)
         if (set.size >= 20) return json({ error_summary: 'too_many_tags/' }, 409)
-        st.tagAdds.push(b); set.add(b.tag_text.toLowerCase()); return json(null)
+        st.tagAdds.push(b); if (b.tag_text !== st.ackWithoutWrite) set.add(b.tag_text.toLowerCase()); return json(null)
       }
       st.tagRemoves.push(b)
       if (!set.has(b.tag_text)) return json({ error_summary: 'tag_not_present/' }, 409)
@@ -278,6 +280,7 @@ await test('Detection list "Photo metadata" toggles strip and re-apply year/came
   ok(await page.getByTestId('detection-card').locator('h4').first().evaluate((h) => h.textContent === 'Photo metadata'), 'metadata group first')
   for (const id of ['year', 'camera', 'geotagged', 'blurry', 'dark', 'bright']) ok(await page.getByTestId(`meta-${id}`).isChecked(), id + ' on by default')
   await page.getByTestId('meta-year').uncheck(); await page.getByTestId('meta-blurry').uncheck()
+  await page.getByTestId('retag-all').click(); await settled()
   await closeSettings(); await settled()
   await page.waitForFunction(() => !document.querySelector('[data-name="geotagged-cat.jpg"]').dataset.tags.split('|').includes('2021'), null, { timeout: 300_000 })
   const g1 = await tagsOf('geotagged-cat.jpg')
@@ -292,6 +295,7 @@ await test('Detection list "Photo metadata" toggles strip and re-apply year/came
   await page.getByRole('button', { name: 'Reset detection list' }).click()
   await page.waitForFunction(() => document.querySelector('[data-testid=meta-year]')?.checked && document.querySelector('[data-testid=meta-blurry]')?.checked, null, { timeout: 10_000 }).catch(() => {})
   ok(await page.getByTestId('meta-year').isChecked() && await page.getByTestId('meta-blurry').isChecked(), 'reset turns metadata chips back on')
+  await page.getByTestId('retag-all').click(); await settled()
   await closeSettings(); await settled()
   await page.waitForFunction(() => document.querySelector('[data-name="geotagged-cat.jpg"]').dataset.tags.split('|').includes('2021'), null, { timeout: 300_000 })
   ok((await tagsOf('blurry-mountain.jpg')).includes('blurry'), 'blurry re-applied')
@@ -565,15 +569,46 @@ await test('import tags from JSON (restores removed tags) and from CSV (merges n
   ok((await tagsOf('cat.jpg')).includes('cat'), 'existing tags kept')
 })
 
+await test('Settings save immediately: closing after detection/General edits never starts a re-tag job', async () => {
+  const before = await page.locator('[data-testid=photo-tile]').evaluateAll((els) => els.map((e) => [e.dataset.name, e.dataset.tags]))
+  await openSettings('vocab')
+  await page.getByTestId('label-dog').uncheck()
+  await page.getByTestId('meta-year').uncheck()
+  await page.getByTestId('tab-general').click()
+  const original = await page.getByTestId('set-threshold').inputValue()
+  await page.getByTestId('set-threshold').fill('0.4')
+  await page.evaluate(() => {
+    window.__retagSeen = false
+    window.__retagObserver = new MutationObserver(() => { if (/Re-tagging/.test(document.querySelector('[data-testid=job-label]')?.textContent || '')) window.__retagSeen = true })
+    window.__retagObserver.observe(document.body, { subtree: true, childList: true, characterData: true })
+  })
+  await closeSettings(); await page.waitForTimeout(700)
+  ok(!(await page.evaluate(() => window.__retagSeen)), 'no re-tag banner on close')
+  eq(await page.locator('[data-testid=photo-tile]').evaluateAll((els) => els.map((e) => [e.dataset.name, e.dataset.tags])), before, 'existing tags untouched')
+  await openSettings('general')
+  eq(await page.getByTestId('set-threshold').inputValue(), '0.4', 'General slider persisted')
+  await page.getByTestId('set-threshold').fill(original)
+  await page.getByTestId('tab-vocab').click()
+  ok(!(await page.getByTestId('label-dog').isChecked()) && !(await page.getByTestId('meta-year').isChecked()), 'detection + metadata toggles persisted')
+  const saved = await page.evaluate(() => new Promise((resolve) => { const r = indexedDB.open('photo-tagger'); r.onsuccess = () => { const tx = r.result.transaction('kv'); const q = tx.objectStore('kv').get('settings'); q.onsuccess = () => { resolve(q.result); r.result.close() } } }))
+  // UI state has also been written to storage, not merely retained in the dialog.
+  ok(JSON.stringify(saved).includes('year') && JSON.stringify(saved).includes('dog'), 'saved list in IndexedDB')
+  await page.getByTestId('label-dog').check(); await page.getByTestId('meta-year').check()
+  await closeSettings(); await page.waitForTimeout(500)
+  ok(!(await page.evaluate(() => window.__retagSeen)), 'restoring preferences also does not re-tag')
+  await page.evaluate(() => window.__retagObserver.disconnect())
+})
+
 await test('vocabulary: switch a built-in label off and back on, re-tags the library', async () => {
   ok((await tagsOf('dog.jpg')).includes('dog'))
   await openSettings('vocab')
   await page.getByTestId('label-dog').uncheck()
-  await closeSettings() // closing applies changes
+  await page.getByTestId('retag-all').click(); await settled()
+  await closeSettings() // application is now explicit
   await page.waitForFunction(() => !document.querySelector('[data-name="dog.jpg"]')?.dataset.tags.split('|').includes('dog'), null, { timeout: 60_000 })
   const t = await tagsOf('dog.jpg')
   ok(t.includes('my pet'), 'manual tags survive re-tagging')
-  await openSettings('vocab'); await page.getByTestId('label-dog').check(); await closeSettings()
+  await openSettings('vocab'); await page.getByTestId('label-dog').check(); await page.getByTestId('retag-all').click(); await settled(); await closeSettings()
   await page.waitForFunction(() => document.querySelector('[data-name="dog.jpg"]')?.dataset.tags.split('|').includes('dog'), null, { timeout: 60_000 })
   ok(!(await tagsOf('dog.jpg')).includes('animals'), 'a tag you removed by hand stays removed')
 })
@@ -895,6 +930,55 @@ await test('Dropbox sync (regression 1.0.15): Dropbox tags with spaces/punctuati
   await page.locator('[data-testid=detail] img').first().waitFor({ state: 'visible', timeout: 15_000 }) // detail shows the local preview
   eq(await page.getByTestId('delete-photo').textContent(), 'Remove from app')
   await page.keyboard.press('Escape')
+})
+
+await test('Verify Dropbox tags: flush, read-back only (not add ACK), landed/missing/cap/errors, selected and whole-library results', async () => {
+  await page.evaluate(() => window.__ptFlushDropbox())
+  const fileId = 'id:dbx-b', name = 'from-dropbox-2.jpg'
+  const closeVerify = () => page.getByRole('button', { name: 'Close verification', exact: true }).click()
+  const row = () => page.locator(`[data-testid=verify-row][data-name="${name}"]`)
+  // One normal pending edit and one API "success" which did not actually store the tag.
+  dbx.ackWithoutWrite = 'ackfake_missing'
+  await tile(name).click()
+  await page.getByTestId('detail-tag-input').fill('verify_recent, ackfake_missing'); await page.getByTestId('detail-tag-input').press('Enter')
+  await page.locator('[data-testid=detail-tag][data-tag="ackfake_missing"]').waitFor()
+  await page.keyboard.press('Escape')
+  await page.getByTestId('select-mode').click(); await tile(name).click()
+  const mediaBefore = JSON.stringify(dbx.downloads)
+  await page.getByTestId('verify-dropbox-selected').click()
+  await row().waitFor()
+  ok(/verify_recent/.test(await row().getByTestId('verify-landed').innerText()), 'pending tag flushed and landed')
+  ok(/ackfake_missing/.test(await row().getByTestId('verify-missing').innerText()), 'ACK alone is not landed')
+  eq(JSON.stringify(dbx.downloads), mediaBefore, 'verification fetched no media')
+  await closeVerify()
+  // Restore the acknowledged tag then simulate a full Dropbox file: all missing tags are cap-blocked.
+  dbx.ackWithoutWrite = undefined
+  const saved = new Set(dbx.fileTags.get(fileId)); saved.add('ackfake_missing')
+  dbx.fileTags.set(fileId, new Set(Array.from({ length: 20 }, (_, i) => 'external_' + i)))
+  await page.getByTestId('verify-dropbox-selected').click(); await row().waitFor()
+  ok(/20 tags/.test(await row().getByTestId('verify-cap').innerText()), 'cap explanation on file')
+  ok(/verify_recent/.test(await row().getByTestId('verify-cap').innerText()), 'missing desired tag is cap-blocked')
+  eq(dbx.fileTags.get(fileId).size, 20, 'third-party slots untouched')
+  await closeVerify(); dbx.fileTags.set(fileId, saved)
+  // All-good empty/missing state, with no toast-only result.
+  await page.getByTestId('verify-dropbox-selected').click(); await row().waitFor()
+  await page.getByTestId('verify-all-good').waitFor()
+  ok(/Every desired tag/.test(await page.getByTestId('verify-all-good').innerText()), 'all good is explicit')
+  await closeVerify()
+  dbx.tagReadError = true
+  await page.getByTestId('verify-dropbox-selected').click(); await row().waitFor()
+  ok(/files.metadata.write/.test(await row().innerText()) && /Full Dropbox/.test(await row().innerText()), 'scope/access guidance in results')
+  await closeVerify(); dbx.tagReadError = false
+  await page.getByTestId('sel-cancel').click()
+  // Whole Dropbox-backed library, discoverable in the library-tag card.
+  await openSettings('vocab')
+  await page.getByTestId('verify-dropbox-library').click()
+  await page.getByTestId('verify-summary').waitFor()
+  ok((await page.getByTestId('verify-row').count()) >= 2, 'whole-library list contains every Dropbox file')
+  ok(dbx.tagBatches.every((p) => p.length <= 20 && p.every((x) => x.startsWith('/'))), 'Tags API batching uses <=20 real paths')
+  await page.keyboard.press('Escape')
+  ok(await page.getByTestId('settings').isVisible(), 'Escape closes results only, not Settings')
+  await closeSettings()
 })
 
 await test('Dropbox: Refresh re-lists linked folders and skips already-seen file ids; subfolders opt-in', async () => {
@@ -1584,6 +1668,23 @@ await test('Settings → Tags lists every library tag (searchable), adds list en
   await page.getByTestId('detail-tag-input-suggestions').locator('[data-tag="yacht club"]').waitFor()
   await page.getByTestId('detail-tag-input').fill('')
   await page.keyboard.press('Escape')
+})
+
+await test('New photos use the saved detection list without re-tagging existing photos on close', async () => {
+  const c6 = await browser.newContext({ viewport: { width: 1280, height: 860 } }); await routeModel(c6)
+  const p6 = await c6.newPage()
+  try {
+    await p6.goto(URL_BASE); await p6.getByTestId('empty').waitFor()
+    await p6.getByTestId('open-settings').click(); await p6.getByTestId('tab-vocab').click()
+    await p6.getByTestId('meta-year').uncheck(); await p6.getByTestId('label-cat').uncheck()
+    await p6.getByTestId('settings-close').click()
+    await p6.getByTestId('file-input').setInputFiles([sample('geotagged-cat.jpg')])
+    await waitTile('geotagged-cat.jpg', p6)
+    await p6.waitForFunction(() => document.querySelector('[data-testid=photo-tile]')?.dataset.status === 'ready', null, { timeout: 180_000 })
+    const tags = (await p6.getByTestId('photo-tile').getAttribute('data-tags')).split('|')
+    ok(!tags.includes('2021') && !tags.includes('cat'), 'new photo honors disabled year and CLIP cat: ' + tags)
+    ok(tags.includes('geotagged') && tags.includes('samplecam sample phone 1'), 'other metadata stays enabled')
+  } finally { await c6.close() }
 })
 
 await test('large library (665 photos): grid is virtualized but the whole library scrolls into view', async () => {

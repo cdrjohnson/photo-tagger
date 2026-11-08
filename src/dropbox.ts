@@ -314,7 +314,11 @@ export class DropboxClient {
   async addTag(path: string, tag: string) { await this.rpc('files/tags/add', { path, tag_text: tag }) }
   /** normalized tag → exact text on the file, per path (so removing "family_trip" removes "Family Trip") */
   private rawTags = new Map<string, string>()
+  /** Native count before normalizing / deduplicating names (the 20-tag cap counts native tags). */
+  private nativeTagCounts = new Map<string, number>()
+  tagCount(path: string): number { return this.nativeTagCounts.get(path) ?? 0 }
   private norm(path: string, tags: any): string[] {
+    this.nativeTagCounts.set(path, (tags ?? []).length)
     const out: string[] = []
     for (const t of tags ?? []) {
       const raw = String(t?.tag_text ?? ''); const n = toDropboxTagText(raw)

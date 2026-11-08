@@ -4,15 +4,14 @@ import { DEFAULT_LABELS } from '../labels'
 import { DESKTOP_REDIRECT_URI, DROPBOX_SCOPES, ENV_DROPBOX_KEY, WEB_REDIRECT_URI, redirectUri } from '../dropbox'
 import { useLibrary } from '../store'
 import { usePeople } from '../people'
+import { VerifyDropboxTags } from './VerifyDropboxTags'
 
 type Tab = 'general' | 'dropbox' | 'vocab' | 'data'
 const fmtMB = (n: number) => `${(n / 1e6).toFixed(0)} MB`
 
 export function SettingsDialog({ initialTab = 'general', note, onClose }: { initialTab?: Tab; note?: string; onClose: () => void }) {
-  const lib = useLibrary()
   const [tab, setTab] = useState<Tab>(initialTab)
-  const [dirty, setDirty] = useState(false)
-  const close = () => { onClose(); if (dirty) void lib.retagAll() }
+  const close = onClose
 
   useEffect(() => {
     const k = (e: KeyboardEvent) => { if (e.key === 'Escape') close() }
@@ -34,9 +33,9 @@ export function SettingsDialog({ initialTab = 'general', note, onClose }: { init
         </div>
         <div className="settings-body">
           {note && <p className="note warn" data-testid="settings-note">{note}</p>}
-          {tab === 'general' && <General onDirty={() => setDirty(true)} />}
+          {tab === 'general' && <General onDirty={() => { /* settings save immediately; re-tagging is explicit */ }} />}
           {tab === 'dropbox' && <DropboxTab />}
-          {tab === 'vocab' && <Vocab onDirty={() => setDirty(true)} />}
+          {tab === 'vocab' && <Vocab onDirty={() => { /* settings save immediately; re-tagging is explicit */ }} />}
           {tab === 'data' && <Data />}
         </div>
       </div>
@@ -72,7 +71,7 @@ function General({ onDirty }: { onDirty: () => void }) {
       <Slider label="Blur threshold" hint="Photos with sharpness below this get the “blurry” tag. Raise it to flag more photos." value={s.blurThreshold} min={5} max={400} step={5} onChange={(v) => set({ blurThreshold: v })} />
       <Slider label="Dark threshold" hint="Average brightness (0–255) below this gets “dark”." value={s.darkThreshold} min={10} max={120} step={5} onChange={(v) => set({ darkThreshold: v })} />
       <Slider label="Bright threshold" hint="Average brightness above this gets “bright”." value={s.brightThreshold} min={150} max={250} step={5} onChange={(v) => set({ brightThreshold: v })} />
-      <p className="muted">Changes are applied to your library when you close settings.</p>
+      <p className="muted">Settings save as you change them and apply to newly added photos right away. To update existing photos, click Re-tag library now (Tags → Detection list).</p>
       <h3>Storage</h3>
       {isDesktop ? (
         <p className="muted">Desktop mode always keeps the original file in your library folder. Thumbnails and 2048&nbsp;px views are cached under <code>.photo-tagger/</code>.</p>
@@ -161,6 +160,7 @@ function Vocab({ onDirty }: { onDirty: () => void }) {
       <section className="tag-card detect" data-testid="detection-card">
       <div className="eyebrow">What the app can find</div>
       <h3>Detection list</h3>
+      <p className="muted small">Changes save right away for new photos. Existing photos keep their tags until you click Re-tag library now, or Re-run tagging on one photo. Closing Settings never re-tags your library.</p>
       <p className="muted small">
         Tags Photo Tagger can look for automatically — not the tags already on your photos. Turn one off if you never want it detected, or add your own (for example “bike race”, “my dog Rex”,
         “whiteboard notes”). The first custom detection tag downloads a text model (≈72&nbsp;MB, once).
@@ -362,6 +362,7 @@ function LibraryTags({ onDirty }: { onDirty: () => void }) {
     <section className="lib-tags tag-card library" data-testid="library-tags">
       <div className="eyebrow">On your photos</div>
       <h3>Tags in your library <small className="muted">({all.length})</small></h3>
+      <div><VerifyDropboxTags photos={lib.photos.filter((p) => !!p.dropbox)} library /></div>
       <p className="muted small">Every tag already on your photos — people, your own, detected, Dropbox, date/camera and quality tags — plus tags you've added to this list. Renaming a person's tag renames that person (same as on the People page). Use it to review your tags, find near-duplicates, or rename one everywhere (renaming to a close spelling of another tag merges them). Changes are saved to Dropbox like any tag edit.</p>
       <div className="row wrap">
         <input className="grow" placeholder="Search tags in your library…" value={q} onChange={(e) => setQ(e.target.value)} data-testid="library-tags-search" />

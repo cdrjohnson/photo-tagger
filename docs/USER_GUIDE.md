@@ -123,7 +123,7 @@ Open **⚙️**.
 - **Keep full-size originals** – off by default to save space (each photo is stored as a 2048 px copy plus a thumbnail).
 - **Model** – shows whether the model is loaded; you can download it ahead of time (handy on Wi-Fi before you travel).
 
-Changes to tagging settings are applied to your whole library when you close Settings.
+Settings save as you change them and apply to newly added photos right away. Existing photos keep their current tags until you click **Re-tag library now** (Settings → Tags → Detection list), or **Re-run tagging** on a single photo. Closing Settings never starts a re-tag job.
 
 ### Dropbox
 Paste your Dropbox **app key**, then **Connect Dropbox** (see [Dropbox setup](DROPBOX_SETUP.md) — it lists the redirect URIs and the scopes `files.metadata.read`, `files.content.read`, `files.content.write` (only for Photo Tagger's own `/.photo-tagger/` files), `files.metadata.write` (Dropbox tags on your photos), `account_info.read` to add to your Dropbox app; use **Full Dropbox** access to browse your real folders). The tab shows who is connected and a **Disconnect** button that forgets the sign-in on this device.
@@ -132,16 +132,22 @@ While tagging a Dropbox folder, watch the **banner under the header**: “Taggin
 
 Dropbox photos show Dropbox's thumbnails (fetched live, kept in memory). **Download original** / Save fetches the original from Dropbox at that moment. **Remove from app** deletes only Photo Tagger's tag file in `/.photo-tagger/` — never the photo. Face recognition (People) works on Dropbox photos exactly like on others.
 
+### Verify Dropbox tags
+
+To check what really reached Dropbox, select photos and click **Verify Dropbox tags** in the selection bar. Or go to **Settings → Tags → Tags in your library → Verify Dropbox tags — whole library** to check every Dropbox-backed photo/video. The check first saves pending edits, then reads Dropbox's Tags API (no photo or video downloads). Dropbox's web file-info panel can be cached; the API read-back is the source of truth for this check.
+
+Results stay in a searchable list, with **Only missing tags / errors** to focus on problems. Each file shows **Landed**, **Missing**, and, when its 20 native tag slots are full, **Could not be written because the file already has 20 tags**. Tags added by you or other apps keep their slots. Suppressed tags you removed in Dropbox are not expected or reported missing. If everything matches, it says **Every desired tag was found on Dropbox**. Non-Dropbox photos in a selection are skipped. Errors stay in the list; a permissions error explains the **files.metadata.write / Full Dropbox** requirement and reconnect steps. Verification reports what was read at that moment — it does not re-tag photos or force missing tags onto the file.
+
 ### Tags (the vocabulary)
 ![Tags](images/desktop-labels.png)
 
 Settings → **Tags** has two cards on one page. **Tags in your library** (first card, *On your photos*) lists **every** tag already on your photos — people, your own, detected, Dropbox, date/camera and quality tags — A–Z with how many photos have each, plus tags you've added to the list but not used yet. The whole list is shown; just scroll the Settings page (there is no small inner box to scroll). Search it to review your tags or spot near-duplicates; **Add to list** puts a new tag in the add-tag suggestions (and lets detection look for it); **Rename** changes a tag on every photo that has it (and in Dropbox) after you confirm — renaming to a close spelling of another tag ("family trip" → `family_trip`) merges the two. **Renaming a person's tag** renames that person (same as on the People page) and updates their photos; renaming to an existing person's name merges them. Reset detection list never changes tags on your photos.
 
 The second card, **Detection list** (*What the app can find*), holds the tags Photo Tagger *can* detect automatically — not the tags already on your photos (the same word, e.g. `beach`, can appear in both). You can:
-- **Photo metadata** (first group): **Year**, **Camera**, **Geotagged**, **Blurry**, **Dark**, **Bright** — all on by default. Switch one off and that tag is no longer added, and **Re-tag library** / **Re-run tagging** (or closing Settings) removes it from your photos; switch it back on and it's re-applied. Dates, camera, GPS, sorting, the detail panel, the quality badges and the quality filter keep working either way.
+- **Photo metadata** (first group): **Year**, **Camera**, **Geotagged**, **Blurry**, **Dark**, **Bright** — all on by default. Switch one off and that tag is no longer added, and **Re-tag library** / **Re-run tagging** removes it from existing photos; switch it back on and re-tag to re-apply it. Closing Settings only saves your list — it does not change existing photos. Dates, camera, GPS, sorting, the detail panel, the quality badges and the quality filter keep working either way.
 - **Switch tags off** you don't want (for example `wedding`).
 - **Add a detection tag**: type a name ("lighthouse", "bike race", "my dog Rex") and, if you like, a short description such as *a photo of a lighthouse by the sea* – a good description improves accuracy. The first custom tag downloads a small text model (about 72 MB, once).
-- **Re-tag library now** applies changes immediately (also done automatically when you close Settings). This is quick, because the app remembers what each photo "looks like".
+- **Re-tag library now** explicitly applies the saved list to existing photos; changes are not applied just by closing Settings. This is quick, because the app remembers what each photo "looks like".
 - **Filter detection tags…** narrows the chips; **Reset detection list** puts the built-in list back, turns every Photo metadata chip on and removes your custom detection tags (it doesn't remove tags already on your photos).
 
 ### Data

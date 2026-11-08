@@ -337,3 +337,11 @@ button.dbx-row:hover { background: var(--panel2); }
 .lib-tag-list li:hover { background: var(--panel2); }
 .lib-tag-list li form { flex: 1; gap: 6px; }
 .lib-tag-name { overflow-wrap: anywhere; }
+
+/* Read-back verification stays a scannable, searchable list for large Dropbox libraries. */
+.verify-card { max-height: 90dvh; }
+.verify-list { list-style: none; margin: 12px 0; padding: 0; display: grid; gap: 10px; }
+.verify-list > li { border: 1px solid var(--border); border-radius: 10px; padding: 12px; overflow-wrap: anywhere; }
+.verify-list > li > b { display: block; }
+.verify-list p { margin: 6px 0; font-size: .85rem; }
+.verify-missing { color: var(--c-quality); }

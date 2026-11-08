@@ -6,6 +6,7 @@ import { PeopleView } from './components/PeopleView'
 import { DupeReview } from './components/DupeReview'
 import { DropboxBrowser } from './components/DropboxBrowser'
 import { RemoveConfirm } from './components/RemoveConfirm'
+import { VerifyDropboxTags } from './components/VerifyDropboxTags'
 
 /** set only by the automated test harness (to load fixture photos); never in normal use */
 const E2E = typeof window !== 'undefined' && !!(window as any).__PT_E2E__
@@ -259,6 +260,7 @@ export default function App() {
           <button className="btn small" data-testid="sel-none" disabled={!sel.size} onClick={() => { setSelectMode(true); setSel(new Set()) }}>None</button>
           <span className="spacer" />
           <button className="btn primary" disabled={!sel.size} data-testid="bulk-tag" onClick={() => setBulk(true)}>Tags…</button>
+          <VerifyDropboxTags photos={lib.photos.filter((p) => sel.has(p.id))} />
           <button className="btn" disabled={!sel.size} data-testid="sel-export" onClick={() => lib.exportData('json', selIds)}>Export tags</button>
           <button className="btn" disabled={!sel.size} data-testid="sel-save" onClick={() => void (lib.folderSupported ? lib.savePhotosToDisk(selIds) : lib.downloadPhotosZip(selIds))}>{lib.folderSupported ? 'Save to folder…' : 'Download zip…'}</button>
           <button className="btn danger" disabled={!sel.size} data-testid="sel-delete" onClick={() => setRemoveAsk(true)} title="Removes the selected photos from Photo Tagger. Originals elsewhere (including Dropbox) are not touched.">Remove from app</button>

@@ -6,6 +6,7 @@
 import { activeDropbox, META_ROOT, toDropboxTagText, type DropboxClient } from './dropbox'
 import type { Face, Person, Photo } from './types'
 import { addTag, removeTag } from './tags'
+import { compareDropboxTags, tagVerificationError, type TagVerification } from './tagVerification'
 
 const photos = new Map<string, Photo>()
 const thumbs = new Map<string, Blob>()
@@ -106,6 +107,45 @@ export function desiredDropboxTags(p: Photo): string[] {
   for (const t of sorted) { const d = toDropboxTag(t.name); if (d && !sup.has(d) && !out.includes(d)) out.push(d) }
   return out
 }
+/** Flush edits, then read back native tags only. Does not import, re-tag, or fetch media bytes. */
+export async function verifyDropboxTags(list: readonly Photo[], onProgress?: (done: number, total: number) => void): Promise<TagVerification[]> {
+  await flush()
+  const c = activeDropbox()
+  const out: TagVerification[] = []
+  for (let i = 0; i < list.length; i += 20) {
+    const chunk = list.slice(i, i + 20)
+    const paths = new Map<string, string>()
+    const results = new Map<string, TagVerification>()
+    for (const p of chunk) {
+      const row: TagVerification = { id: p.id, name: p.name, landed: [], missing: [], atCap: [] }
+      if (!p.dropbox) results.set(p.id, { ...row, skipped: 'Not Dropbox-backed — skipped' })
+      else if (!c) results.set(p.id, { ...row, error: 'Connect Dropbox in Settings → Dropbox to verify tags.' })
+      else {
+        try { paths.set(p.id, await tagPath(c, p)) }
+        catch (e) { results.set(p.id, { ...row, error: tagVerificationError(e) }) }
+      }
+    }
+    if (c && paths.size) {
+      try {
+        // getTagsMany uses Dropbox's 20-path batch size; no photo/video downloads.
+        const actual = await c.getTagsMany([...paths.values()])
+        for (const p0 of chunk) {
+          const path = paths.get(p0.id); if (!path) continue
+          const p = photos.get(p0.id) ?? p0 // flush may have applied remote deletions/suppressions
+          const native = actual.get(path)
+          if (!native) results.set(p.id, { id: p.id, name: p.name, landed: [], missing: [], atCap: [], error: 'Dropbox returned no tag result for this file. Try again.' })
+          else results.set(p.id, { id: p.id, name: p.name, nativeCount: c.tagCount(path), ...compareDropboxTags(desiredDropboxTags(p), native, c.tagCount(path), DBX_TAGS_PER_FILE) })
+        }
+      } catch (e) {
+        for (const p of chunk) if (paths.has(p.id)) results.set(p.id, { id: p.id, name: p.name, landed: [], missing: [], atCap: [], error: tagVerificationError(e) })
+      }
+    }
+    out.push(...chunk.map((p) => results.get(p.id)!))
+    onProgress?.(out.length, list.length)
+  }
+  return out
+}
+
 const syncedKey = new Map<string, string>()
 
 /**
