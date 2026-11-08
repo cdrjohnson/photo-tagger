@@ -30,21 +30,21 @@ Photo Tagger looks at each photo, writes down what's in it as **tags** ("dog", "
 
 ## 1. Add photos
 
-Tap **＋ Add photos** (top right):
+Click **＋ Add photos** (top right) — one click opens the Dropbox browser (or Dropbox setup if you haven't connected yet; the line under the button says which). Once you've tagged Dropbox folders, a separate **↻ Refresh** button next to it re-checks them for new photos:
 
 Photos are added **from Dropbox** only (since 1.0.17 there's no Choose photos / Take a photo / Add a folder / drag-and-drop). Photos you added from this device in earlier versions stay in the app until you remove them.
 
 | Option | What it does |
 | --- | --- |
 | **From Dropbox** | Opens Photo Tagger's own Dropbox browser (after a one-time connect: see [Dropbox setup](DROPBOX_SETUP.md)). Browse folders with the breadcrumbs, then **Tag new photos here** (tick **Include subfolders** for everything below). To bring in only some photos, pick them like in a file manager: click one, **Ctrl/⌘-click** to add or remove others, **Shift-click** for a range (Shift-clicking an already selected photo deselects that range), or **drag** down the list; **Select all** (or Ctrl/⌘+A) and **Deselect all** are above the button, which then reads **Tag N selected photo(s)** — only those are tagged, subfolders aren't included, and the folder is not added to the linked folders that **Refresh** re-checks. Each photo row shows a small Dropbox preview (loaded as you scroll), its date and size; photos already in the library show a greyed, ticked box and **Already in library**. **Videos** (mp4, mov, m4v, avi, mkv, webm, wmv, mpg) are listed too and tagged from Dropbox's preview frame only — the video itself is never downloaded; a video Dropbox has no preview for yet is skipped with a message, and **Download original** is off for videos (open them in Dropbox). The banner tracks progress (n/N, Cancel). Photos are downloaded into memory only; tags and faces are written to `/.photo-tagger/` in your Dropbox, nothing is stored on this device. |
-| **Refresh Dropbox** | Re-checks the Dropbox folders you've tagged before and tags only photos that are new since last time. |
+| **↻ Refresh** (header button, also inside the Dropbox browser) | Re-checks the Dropbox folders you've tagged before and tags only photos that are new since last time. |
 
 
 ![Add menu](images/desktop-add-menu.png)
 
 The first time, the app downloads its tagging model (about 64 MB) – a progress bar shows this. It is stored in the browser, so this only happens once. Photos you add again later (same name, size and date) are skipped as duplicates.
 
-While a photo is being processed its tile shows *tagging…*; tags appear a moment later.
+While a photo is being processed its tile shows *tagging…*; tags appear a moment later. Videos carry a teal **▶ video** badge in the tile's top-right corner (above any *duplicate* or *blurry/dark/bright* badge); photos have no badge.
 
 ## 2. What the tags mean
 
@@ -135,13 +135,14 @@ Dropbox photos show Dropbox's thumbnails (fetched live, kept in memory). **Downl
 ### Tags (the vocabulary)
 ![Tags](images/desktop-labels.png)
 
-**Tags in your library** (top of Settings → **Tags**) lists **every** tag already on your photos — people, your own, detected, Dropbox, date/camera and quality tags — A–Z with how many photos have each, plus tags you've added to the list but not used yet. The whole list is shown; just scroll the Settings page (there is no small inner box to scroll). Search it to review your tags or spot near-duplicates; **Add to list** puts a new tag in the add-tag suggestions (and lets detection look for it); **Rename** changes a tag on every photo that has it (and in Dropbox) after you confirm — renaming to a close spelling of another tag ("family trip" → `family_trip`) merges the two. **Renaming a person's tag** renames that person (same as on the People page) and updates their photos; renaming to an existing person's name merges them. Reset tag list never changes tags on your photos.
+Settings → **Tags** has two cards on one page. **Tags in your library** (first card, *On your photos*) lists **every** tag already on your photos — people, your own, detected, Dropbox, date/camera and quality tags — A–Z with how many photos have each, plus tags you've added to the list but not used yet. The whole list is shown; just scroll the Settings page (there is no small inner box to scroll). Search it to review your tags or spot near-duplicates; **Add to list** puts a new tag in the add-tag suggestions (and lets detection look for it); **Rename** changes a tag on every photo that has it (and in Dropbox) after you confirm — renaming to a close spelling of another tag ("family trip" → `family_trip`) merges the two. **Renaming a person's tag** renames that person (same as on the People page) and updates their photos; renaming to an existing person's name merges them. Reset detection list never changes tags on your photos.
 
-Further down is the built-in **detection list** — tags Photo Tagger *can* detect automatically, not the tags already on your photos. The photos are matched against it. You can:
+The second card, **Detection list** (*What the app can find*), holds the tags Photo Tagger *can* detect automatically — not the tags already on your photos (the same word, e.g. `beach`, can appear in both). You can:
+- **Photo metadata** (first group): **Year**, **Camera**, **Geotagged**, **Blurry**, **Dark**, **Bright** — all on by default. Switch one off and that tag is no longer added, and **Re-tag library** / **Re-run tagging** (or closing Settings) removes it from your photos; switch it back on and it's re-applied. Dates, camera, GPS, sorting, the detail panel, the quality badges and the quality filter keep working either way.
 - **Switch tags off** you don't want (for example `wedding`).
-- **Add your own**: type a name ("lighthouse", "bike race", "my dog Rex") and, if you like, a short description such as *a photo of a lighthouse by the sea* – a good description improves accuracy. The first custom tag downloads a small text model (about 72 MB, once).
+- **Add a detection tag**: type a name ("lighthouse", "bike race", "my dog Rex") and, if you like, a short description such as *a photo of a lighthouse by the sea* – a good description improves accuracy. The first custom tag downloads a small text model (about 72 MB, once).
 - **Re-tag library now** applies changes immediately (also done automatically when you close Settings). This is quick, because the app remembers what each photo "looks like".
-- **Reset tag list** puts the built-in list back (it doesn't remove tags already on your photos).
+- **Filter detection tags…** narrows the chips; **Reset detection list** puts the built-in list back, turns every Photo metadata chip on and removes your custom detection tags (it doesn't remove tags already on your photos).
 
 ### Data
 

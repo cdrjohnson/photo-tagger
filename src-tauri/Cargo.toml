@@ -1,6 +1,6 @@
 [package]
 name = "photo-tagger"
-version = "1.0.22"
+version = "1.0.23"
 description = "Photo Tagger desktop app"
 authors = ["cdrjohnson"]
 edition = "2021"

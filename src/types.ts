@@ -79,6 +79,8 @@ export interface Settings {
   darkThreshold: number
   brightThreshold: number
   disabledLabels: string[]
+  /** photo-metadata tags switched off on the Detection list (year, camera, geotagged, blurry, dark, bright) */
+  disabledMetaTags: string[]
   faceEnabled: boolean
   /** max face-descriptor distance for a suggested match (lower = stricter) */
   faceThreshold: number
@@ -105,6 +107,7 @@ export const DEFAULT_SETTINGS: Settings = {
   darkThreshold: 55,
   brightThreshold: 200,
   disabledLabels: [],
+  disabledMetaTags: [],
   faceEnabled: true,
   faceThreshold: 0.5,
   dupeThreshold: 8,

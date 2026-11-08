@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import * as DB from './storage'
 import { ml, type ModelProgress, type ModelState } from './ml/client'
 import { applyAutoTags, buildVocab, scoreTags, type VocabEntry } from './tagging'
-import { addTag, exifAndQualityTags, normTag, removeTag } from './tags'
+import { addTag, applyMetaTags, normTag, removeTag } from './tags'
 import { fingerprint, hashesFromBlob, isImageFile, pixelsFromBlob, prepare, type Prepared } from './ingest'
 import { nearestPhash } from './hashes'
 import { buildZip, canPickFolder, clearSavedFolder, downloadBlob, ensurePermission, getSavedFolder, pickFolder, saveOneToFolder, saveToFolder, type DirHandle } from './folderSave'
@@ -55,6 +55,7 @@ export interface Library {
   addCustomLabel(label: string, prompt?: string): Promise<void>
   removeCustomLabel(id: string): Promise<void>
   toggleLabel(id: string, on: boolean): Promise<void>
+  toggleMetaTag(id: string, on: boolean): Promise<void>
   resetVocabulary(): Promise<void>
   exportData(kind: 'json' | 'csv', ids?: string[]): void
   importTags(file: File): Promise<void>
@@ -935,7 +936,8 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
         for (const p0 of all) {
           // refresh quality flags from stored measurements (thresholds may have changed)
           const q = qualityFlags(p0.quality.sharpness, p0.quality.brightness, s)
-          let p: Photo = { ...p0, quality: q, tags: [...p0.tags.filter((t) => t.source !== 'quality'), ...exifAndQualityTags({ ...p0, quality: q }).filter((t) => t.source === 'quality')] }
+          // recompute exif + quality tags from the current Detection-list toggles (1.0.23)
+          let p: Photo = applyMetaTags({ ...p0, quality: q }, s.disabledMetaTags ?? [])
           let e = embs.get(p.id)
           if (!e) { try { e = await embeddingFor(p) } catch { e = undefined } }
           if (e) await tagWithEmbedding(p, e)
@@ -960,8 +962,11 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
       const p = photosRef.current.find((x) => x.id === id)
       if (!p) throw new Error('photo not found')
       await syncCustomEmbeddings()
-      const e = (await DB.allEmbeddings()).get(id) ?? (await embeddingFor(p))
-      await tagWithEmbedding(photosRef.current.find((x) => x.id === id) ?? p, e)
+      const s = settingsRef.current
+      const p1 = photosRef.current.find((x) => x.id === id) ?? p
+      const meta = applyMetaTags({ ...p1, quality: qualityFlags(p1.quality.sharpness, p1.quality.brightness, s) }, s.disabledMetaTags ?? [])
+      const e = (await DB.allEmbeddings()).get(id) ?? (await embeddingFor(meta))
+      await tagWithEmbedding(meta, e)
       ok = true
       toast(`Re-tagged ${name}`, 'ok')
     } catch (err: any) {
@@ -1038,9 +1043,15 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
     await saveSettings({ disabledLabels: [...d] })
   }, [saveSettings])
 
+  const toggleMetaTag = useCallback(async (id: string, on: boolean) => {
+    const d = new Set(settingsRef.current.disabledMetaTags ?? [])
+    if (on) d.delete(id); else d.add(id)
+    await saveSettings({ disabledMetaTags: [...d] })
+  }, [saveSettings])
+
   const resetVocabulary = useCallback(async () => {
     await saveCustom([])
-    await saveSettings({ disabledLabels: [] })
+    await saveSettings({ disabledLabels: [], disabledMetaTags: [] })
   }, [saveSettings])
 
   // ---------- export / import ----------
@@ -1106,14 +1117,14 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
     dropbox: { connected: !!dbxSession, account: dbxSession?.name || dbxSession?.email || '', folders: dbxFolders, connecting: dbxConnecting },
     connectDropbox, disconnectDropbox, listDropbox, dropboxThumb, processDropboxFolder, processDropboxFiles, refreshDropbox, forgetDropboxFolder,
     addFiles, cancelDropboxDownload, updatePhotos, addTags, removeTags, deletePhotos, retagAll, retagPhoto, pullDropboxTags, retryPending,
-    saveSettings, addCustomLabel, removeCustomLabel, toggleLabel, resetVocabulary, exportData, importTags,
+    saveSettings, addCustomLabel, removeCustomLabel, toggleLabel, toggleMetaTag, resetVocabulary, exportData, importTags,
     clearEverything, toast, preloadModel, setAfterIngest,
     nearDupes, resolveNearDupe, resolveAllNearDupes, findDuplicates, dismissDupePair,
     folderSupported: canPickFolder, folderName, chooseSaveFolder, clearSaveFolder: clearSaveFolderFn,
     libraryPath, isDesktop: DB.isDesktop(), chooseLibraryFolder, changeLibraryFolder, portable, useLibraryBesideApp,
     savePhotosToDisk, downloadPhotosZip,
   }), [ready, photos, settings, custom, job, model, toasts, dropboxKey, dbxSession, dbxFolders, dbxConnecting, connectDropbox, disconnectDropbox, listDropbox, dropboxThumb, processDropboxFolder, processDropboxFiles, refreshDropbox, forgetDropboxFolder, addFiles, cancelDropboxDownload, updatePhotos, addTags, removeTags,
-    deletePhotos, retagAll, retagPhoto, pullDropboxTags, retryPending, saveSettings, addCustomLabel, removeCustomLabel, toggleLabel, resetVocabulary, exportData,
+    deletePhotos, retagAll, retagPhoto, pullDropboxTags, retryPending, saveSettings, addCustomLabel, removeCustomLabel, toggleLabel, toggleMetaTag, resetVocabulary, exportData,
     importTags, clearEverything, toast, preloadModel, setAfterIngest, nearDupes, resolveNearDupe, resolveAllNearDupes, findDuplicates,
     dismissDupePair, folderName, chooseSaveFolder, clearSaveFolderFn, savePhotosToDisk, downloadPhotosZip, libraryPath, chooseLibraryFolder, changeLibraryFolder, portable, useLibraryBesideApp])
 

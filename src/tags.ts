@@ -30,16 +30,36 @@ export function removeTag(p: Photo, name: string): Photo {
 
 export const tagNames = (p: Photo) => p.tags.map((t) => t.name)
 
-export function exifAndQualityTags(p: Pick<Photo, 'takenAt' | 'dateSource' | 'camera' | 'gps' | 'quality'>): Tag[] {
-  const out: Tag[] = []
-  if (p.takenAt && p.dateSource === 'exif') out.push({ name: String(new Date(p.takenAt).getFullYear()), source: 'exif' })
-  if (p.camera) out.push({ name: normTag(p.camera), source: 'exif' })
-  if (p.gps) out.push({ name: 'geotagged', source: 'exif' })
-  if (p.quality.blurry) out.push({ name: 'blurry', source: 'quality' })
-  if (p.quality.dark) out.push({ name: 'dark', source: 'quality' })
-  if (p.quality.bright) out.push({ name: 'bright', source: 'quality' })
+/** Photo-metadata tags that can be switched off on the Detection list (1.0.23). */
+export const META_TAGS = [
+  { id: 'year', label: 'Year' }, { id: 'camera', label: 'Camera' }, { id: 'geotagged', label: 'Geotagged' },
+  { id: 'blurry', label: 'Blurry' }, { id: 'dark', label: 'Dark' }, { id: 'bright', label: 'Bright' },
+] as const
+
+export function exifAndQualityTags(p: Pick<Photo, 'takenAt' | 'dateSource' | 'camera' | 'gps' | 'quality'>, disabled: readonly string[] = []): Tag[] {
+  const all = rawMetaTags(p)
+  return all.filter((x) => !disabled.includes(x.key)).map(({ name, source }) => ({ name, source }))
+}
+
+/** Replace a photo's exif/quality tags with what the current toggles allow; other tags are untouched. */
+export function applyMetaTags<T extends Pick<Photo, 'takenAt' | 'dateSource' | 'camera' | 'gps' | 'quality' | 'tags'>>(p: T, disabled: readonly string[] = []): T {
+  const keep = p.tags.filter((t) => t.source !== 'exif' && t.source !== 'quality')
+  const names = new Set(keep.map((t) => t.name))
+  return { ...p, tags: [...keep, ...exifAndQualityTags(p, disabled).filter((t) => !names.has(t.name))] }
+}
+
+function rawMetaTags(p: Pick<Photo, 'takenAt' | 'dateSource' | 'camera' | 'gps' | 'quality'>): (Tag & { key: string })[] {
+  const out: (Tag & { key: string })[] = []
+  const push = (key: string, name: string, source: Tag['source']) => out.push({ key, name, source })
+  if (p.takenAt && p.dateSource === 'exif') push('year', String(new Date(p.takenAt).getFullYear()), 'exif')
+  if (p.camera) push('camera', normTag(p.camera), 'exif')
+  if (p.gps) push('geotagged', 'geotagged', 'exif')
+  if (p.quality.blurry) push('blurry', 'blurry', 'quality')
+  if (p.quality.dark) push('dark', 'dark', 'quality')
+  if (p.quality.bright) push('bright', 'bright', 'quality')
   return out
 }
+
 
 /** Loose key for "same topic" matching: case-insensitive; spaces, underscores and hyphens are equivalent. */
 export const looseTagKey = (s: string) => normTag(s).replace(/[\s_-]+/g, '_').replace(/^_+|_+$/g, '')

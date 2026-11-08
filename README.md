@@ -109,7 +109,7 @@ The live link above is already HTTPS. Installing needs the app to be served over
    - **Android (Chrome):** ⋮ menu → **Install app** (or *Add to Home screen*).
    - **Laptop (Chrome / Edge):** click the install icon at the right of the address bar.
 3. Open it once while online and add a photo, so the model downloads. From then on it works offline.
-4. Tip: *Add photos → From Dropbox* is how photos get in (connect Dropbox first).
+4. Tip: *＋ Add photos* (opens the Dropbox browser) is how photos get in (connect Dropbox first).
 
 Your library lives **per browser and per device** (it is stored in that browser's IndexedDB). To move tags between devices, use **Settings → Data → Export / Import** and add the same photos on both.
 

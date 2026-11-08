@@ -270,6 +270,32 @@ await test('EXIF (camera, year, GPS) and quality (blur, dark, bright) tags', asy
   ok(!(await tagsOf('city.jpg')).includes('dark') && !(await tagsOf('city.jpg')).includes('bright'), 'normal exposure')
 })
 
+await test('Detection list "Photo metadata" toggles strip and re-apply year/camera/geotagged/quality tags', async () => {
+  await openSettings('vocab')
+  const g = page.getByTestId('meta-group')
+  eq(await g.locator('label').evaluateAll((els) => els.map((e) => e.textContent.trim())), ['Year', 'Camera', 'Geotagged', 'Blurry', 'Dark', 'Bright'], 'six chips')
+  ok(await page.getByTestId('detection-card').locator('h4').first().evaluate((h) => h.textContent === 'Photo metadata'), 'metadata group first')
+  for (const id of ['year', 'camera', 'geotagged', 'blurry', 'dark', 'bright']) ok(await page.getByTestId(`meta-${id}`).isChecked(), id + ' on by default')
+  await page.getByTestId('meta-year').uncheck(); await page.getByTestId('meta-blurry').uncheck()
+  await closeSettings(); await settled()
+  await page.waitForFunction(() => !document.querySelector('[data-name="geotagged-cat.jpg"]').dataset.tags.split('|').includes('2021'), null, { timeout: 300_000 })
+  const g1 = await tagsOf('geotagged-cat.jpg')
+  ok(!g1.includes('2021') && g1.includes('geotagged') && g1.includes('samplecam sample phone 1') && g1.includes('cat'), 'year stripped, others kept: ' + g1)
+  ok(!(await tagsOf('blurry-mountain.jpg')).includes('blurry'), 'blurry tag stripped')
+  ok(/blurry/.test(await tile('blurry-mountain.jpg').locator('.badge.warn').innerText()), 'quality badge still shown')
+  // single-photo Re-run tagging honors the toggles too
+  await tile('geotagged-cat.jpg').click(); await page.getByRole('button', { name: 'Re-run tagging' }).click(); await settled()
+  ok(!(await tagsOf('geotagged-cat.jpg')).includes('2021'), 'Re-run tagging keeps year off')
+  await page.keyboard.press('Escape'); await page.getByTestId('detail').waitFor({ state: 'detached' })
+  await openSettings('vocab')
+  await page.getByRole('button', { name: 'Reset detection list' }).click()
+  await page.waitForFunction(() => document.querySelector('[data-testid=meta-year]')?.checked && document.querySelector('[data-testid=meta-blurry]')?.checked, null, { timeout: 10_000 }).catch(() => {})
+  ok(await page.getByTestId('meta-year').isChecked() && await page.getByTestId('meta-blurry').isChecked(), 'reset turns metadata chips back on')
+  await closeSettings(); await settled()
+  await page.waitForFunction(() => document.querySelector('[data-name="geotagged-cat.jpg"]').dataset.tags.split('|').includes('2021'), null, { timeout: 300_000 })
+  ok((await tagsOf('blurry-mountain.jpg')).includes('blurry'), 'blurry re-applied')
+})
+
 await test('tag chip filter with AND / OR', async () => {
   await (await chip('pets')).click()
   eq(await names(), ['cat.jpg', 'dog.jpg', 'geotagged-cat.jpg'], 'pets')
@@ -557,8 +583,8 @@ await test('vocabulary: add a custom label (text model loads on demand) and appl
   await page.getByTestId('custom-prompt').fill('a photo of a city skyline')
   await page.getByTestId('custom-add').click()
   await page.locator('[data-testid=custom-chip]', { hasText: 'skyline' }).waitFor({ timeout: 300_000 })
-  await page.waitForFunction(() => !document.querySelector('[data-testid=custom-add]')?.disabled || document.querySelector('[data-testid=custom-add]')?.textContent === 'Add tag', null, { timeout: 300_000 })
-  ok(await page.getByTestId('retag-all-group').getByTestId('retag-all').count() === 1 && await page.getByTestId('retag-all-group').getByRole('button', { name: 'Reset tag list' }).count() === 0, 'help grouped with Re-tag library only')
+  await page.waitForFunction(() => !document.querySelector('[data-testid=custom-add]')?.disabled || document.querySelector('[data-testid=custom-add]')?.textContent === 'Add a detection tag', null, { timeout: 300_000 })
+  ok(await page.getByTestId('retag-all-group').getByTestId('retag-all').count() === 1 && await page.getByTestId('retag-all-group').getByRole('button', { name: 'Reset detection list' }).count() === 0, 'help grouped with Re-tag library only')
   { // Settings tabs: "Tags" (not Labels), each tab its own non-overlapping box
     const boxes = await page.locator('.tabs button').evaluateAll((els) => els.map((e) => { const r = e.getBoundingClientRect(); return { t: e.textContent.trim(), l: r.left, r: r.right } }))
     ok(boxes.some((b) => b.t === 'Tags') && !boxes.some((b) => b.t === 'Labels'), 'tab is called Tags: ' + boxes.map((b) => b.t))
@@ -621,7 +647,7 @@ const connectDropbox = async (pg, key) => {
 }
 
 await test('Dropbox: without a key the button explains setup; shows redirect URIs + read-only scopes; Connect runs OAuth PKCE', async () => {
-  await page.getByTestId('add-btn').click(); await page.getByTestId('add-dropbox').click()
+  await page.getByTestId('add-btn').click()
   await page.getByTestId('settings-note').waitFor()
   const uris = await page.getByTestId('redirect-uri').allTextContents()
   ok(uris.includes('http://127.0.0.1:4174/photo-tagger/'), 'local redirect shown: ' + uris)
@@ -645,7 +671,7 @@ await test('Dropbox: without a key the button explains setup; shows redirect URI
 
 await test('Dropbox: in-app browser lists folders and images (paginated), skips non-images, breadcrumbs work', async () => {
   dbx.expireOnce = true // first API call gets 401 → app refreshes the token and retries
-  await page.getByTestId('add-btn').click(); await page.getByTestId('add-dropbox').click()
+  await page.getByTestId('add-btn').click()
   await page.getByTestId('dropbox-browser').waitFor()
   await page.locator('[data-testid=dropbox-folder][data-name="Photos"]').waitFor()
   ok(dbx.refreshes >= 1, 'expired token was refreshed')
@@ -731,7 +757,7 @@ await test('Dropbox: tag a folder — saved with Dropbox id, thumbnail + preview
   // a tag added in Dropbox later is picked up on Refresh without re-downloading
   dbx.fileTags.set('id:dbx-b', new Set([...(dbx.fileTags.get('id:dbx-b') ?? []), 'added_in_dropbox']))
   const dl = { ...dbx.downloads }
-  await page.getByTestId('add-btn').click(); await page.getByTestId('add-dropbox-refresh').click()
+  await page.getByTestId('add-dropbox-refresh').click()
   await page.waitForFunction(() => (document.querySelector('[data-name="from-dropbox-2.jpg"]')?.dataset.tags || '').split('|').includes('added_in_dropbox'), null, { timeout: 30_000 })
   eq(dbx.downloads, dl, 'no re-download to pick up Dropbox tags')
   await page.waitForTimeout(500)
@@ -872,11 +898,11 @@ await test('Dropbox sync (regression 1.0.15): Dropbox tags with spaces/punctuati
 
 await test('Dropbox: Refresh re-lists linked folders and skips already-seen file ids; subfolders opt-in', async () => {
   const before = { ...dbx.downloads }
-  await page.getByTestId('add-btn').click(); await page.getByTestId('add-dropbox-refresh').click()
+  await page.getByTestId('add-dropbox-refresh').click()
   await page.locator('.toast', { hasText: /No new photos — 2 already in your library/ }).waitFor({ timeout: 30_000 })
   eq(dbx.downloads, before, 'nothing re-downloaded')
   // now include subfolders: only trip.jpg is new
-  await page.getByTestId('add-btn').click(); await page.getByTestId('add-dropbox').click()
+  await page.getByTestId('add-btn').click()
   await page.locator('[data-testid=dropbox-folder][data-name="Photos"]').click()
   await page.locator('[data-testid=dropbox-file][data-name="from-dropbox.jpg"] [data-testid=dropbox-in-library]').waitFor()
   await page.getByTestId('dropbox-recursive').check()
@@ -907,7 +933,7 @@ await test('Dropbox: Refresh re-lists linked folders and skips already-seen file
 })
 
 await test('Dropbox: Cancel stops remaining work; already-processed photos stay', async () => {
-  await page.getByTestId('add-btn').click(); await page.getByTestId('add-dropbox').click()
+  await page.getByTestId('add-btn').click()
   await page.locator('[data-testid=dropbox-folder][data-name="Slow"]').click()
   await page.locator('[data-testid=dropbox-file][data-name="cancel-stop-b.jpg"]').waitFor()
   await page.getByTestId('dropbox-process').click()
@@ -923,7 +949,7 @@ await test('Dropbox: Cancel stops remaining work; already-processed photos stay'
 })
 
 await test('Dropbox: pick individual files (click, Ctrl-click, Shift-click, drag, Select all / Deselect all); only those are tagged, folder not linked', async () => {
-  await page.getByTestId('add-btn').click(); await page.getByTestId('add-dropbox').click()
+  await page.getByTestId('add-btn').click()
   await page.locator('[data-testid=dropbox-folder][data-name="Picks"]').click()
   const row = (n) => page.locator(`[data-testid=dropbox-file][data-name="pick-${n}.jpg"]`)
   const count = () => page.locator('[data-testid=dropbox-file][data-picked="1"]').count()
@@ -956,7 +982,7 @@ await test('Dropbox: pick individual files (click, Ctrl-click, Shift-click, drag
 
 await test('Dropbox picker: lazy thumbnails, date/size, in-library rows show a disabled checked box; videos tagged from the preview only', async () => {
   const thumbs0 = dbx.thumbLog.length
-  await page.getByTestId('add-btn').click(); await page.getByTestId('add-dropbox').click()
+  await page.getByTestId('add-btn').click()
   await page.locator('[data-testid=dropbox-folder][data-name="Picks"]').click()
   const row = (n) => page.locator(`[data-testid=dropbox-file][data-name="${n}"]`)
   await row('pick-4.jpg').waitFor()
@@ -986,6 +1012,12 @@ await test('Dropbox picker: lazy thumbnails, date/size, in-library rows show a d
   ok(dbx.thumbLog.some(([p, size]) => p === 'id:v1' && size === 'w2048h1536'), 'tagged from the preview frame')
   ok((await tagsOf('clip.mp4')).length > 0, 'video got tags')
   eq(await tile('noframe.mov').count(), 0, 'video without a preview skipped, not hung')
+  // 1.0.23: lowercase "video" badge on video tiles only, top of the badge stack
+  await tile('clip.mp4').getByTestId('video-badge').waitFor()
+  eq((await tile('clip.mp4').getByTestId('video-badge').innerText()).trim(), 'video', 'badge text')
+  eq(await tile('clip.mp4').getByTestId('video-badge').evaluate((e) => getComputedStyle(e).backgroundColor), 'rgba(14, 116, 144, 0.92)', 'teal badge')
+  eq(await tile('clip.mp4').locator('.badges > .badge:not(.pend)').first().getAttribute('data-testid'), 'video-badge', 'video badge on top')
+  eq(await page.locator('[data-testid=photo-tile]:not([data-name$=".mp4"]) [data-testid=video-badge]').count(), 0, 'photos stay unmarked')
   await page.evaluate(() => window.__ptFlushDropbox())
   ok(sidecarFor(dbx, 'v1'), 'sidecar written for the video')
   ok((dbx.fileTags.get('id:v1')?.size ?? 0) > 0, 'native Dropbox tags written on the video')
@@ -1029,7 +1061,7 @@ await test('Dropbox: Disconnect forgets the session; From Dropbox goes back to S
   for (let i = 0; i < 50 && !dbx.revoked; i++) await page.waitForTimeout(100)
   ok(dbx.revoked >= 1, 'token revoked')
   await closeSettings()
-  await page.getByTestId('add-btn').click(); await page.getByTestId('add-dropbox').click()
+  await page.getByTestId('add-btn').click()
   await page.getByTestId('settings-note').waitFor()
   ok(await page.getByTestId('dropbox-connect').isVisible(), 'Connect shown again')
   await closeSettings()
@@ -1569,8 +1601,10 @@ await test('mobile: empty state, Dropbox-only add, no horizontal overflow', asyn
   await m.goto(URL_BASE)
   await m.getByTestId('empty').waitFor()
   await noOverflow('empty')
+  eq(await m.getByTestId('add-dropbox').count(), 0, 'no Add photos submenu (1.0.23)')
   await m.getByTestId('add-btn').click()
-  ok(await m.getByTestId('add-dropbox').isVisible(), 'From Dropbox is the add action')
+  await m.getByTestId('settings').waitFor(); ok(/Dropbox/.test(await m.getByTestId('settings').innerText()), 'Add photos goes straight to Dropbox setup')
+  await m.keyboard.press('Escape'); await m.getByTestId('settings').waitFor({ state: 'detached' })
   eq([await m.getByTestId('add-photos').count(), await m.getByTestId('add-camera').count(), await m.getByTestId('add-folder').count(), await m.getByTestId('camera-input').count()], [0, 0, 0, 0], 'no local add options (1.0.17)')
   eq(await m.getByTestId('empty-add').count(), 0, 'no Choose photos on the empty screen')
   ok(await m.getByTestId('empty-dropbox').isVisible(), 'From Dropbox is the empty-screen button')

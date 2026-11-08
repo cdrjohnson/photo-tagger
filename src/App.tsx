@@ -14,6 +14,7 @@ import { filterPhotos, tagStats, photoTime } from './filter'
 import { useInView, useTheme, useThumb } from './hooks'
 import { useLibrary } from './store'
 import { normTag } from './tags'
+import { isDropboxVideo } from './dropbox'
 import { EMPTY_FILTERS, type Filters, type Photo, type QualityFilter, type SortKey } from './types'
 
 const FEW = 16 // tag chips shown before "All tags"
@@ -27,7 +28,6 @@ export default function App() {
   const [selectMode, setSelectMode] = useState(false)
   const [open, setOpen] = useState<number | null>(null)
   const [settings, setSettings] = useState<{ tab?: 'general' | 'dropbox' | 'vocab' | 'data'; note?: string } | null>(null)
-  const [addMenu, setAddMenu] = useState(false)
   const [allTags, setAllTags] = useState(false)
   const [moreFilters, setMoreFilters] = useState(false)
   const [bulk, setBulk] = useState(false)
@@ -59,7 +59,6 @@ export default function App() {
   const advancedCount = [filters.from, filters.to, filters.quality !== 'any' ? 'q' : ''].filter(Boolean).length
 
   useEffect(() => { setSel((s) => { const ids = new Set(lib.photos.map((p) => p.id)); const n = new Set([...s].filter((x) => ids.has(x))); return n.size === s.size ? s : n }) }, [lib.photos])
-  useEffect(() => { if (!addMenu) return; const c = () => setAddMenu(false); window.addEventListener('click', c); return () => window.removeEventListener('click', c) }, [addMenu])
 
   const toggleTag = (name: string) =>
     setFilters((f) => ({ ...f, tags: f.tags.includes(name) ? f.tags.filter((t) => t !== name) : [...f.tags, name] }))
@@ -97,7 +96,6 @@ export default function App() {
 
   const onFiles = (e: React.ChangeEvent<HTMLInputElement>) => { const f = [...(e.target.files ?? [])]; e.target.value = ''; void lib.addFiles(f) }
   const doDropbox = async () => {
-    setAddMenu(false)
     if (!lib.dropboxKey) setSettings({ tab: 'dropbox', note: 'Add your Dropbox app key, then connect Dropbox to browse and tag your folders. It takes a few minutes – steps below.' })
     else if (!lib.dropbox.connected) setSettings({ tab: 'dropbox', note: 'Connect Dropbox to browse and tag your folders in Photo Tagger.' })
     else setDbxBrowser(true)
@@ -122,17 +120,13 @@ export default function App() {
           <input type="search" data-testid="search" placeholder="Search names, tags, cameras…" aria-label="Search photos" value={filters.query} onChange={(e) => setFilters((f) => ({ ...f, query: e.target.value }))} />
         </div>
         <div className="actions">
-          <div className="menu-wrap" onClick={(e) => e.stopPropagation()}>
-            <button className="btn primary" data-testid="add-btn" aria-haspopup="menu" aria-expanded={addMenu} onClick={() => setAddMenu((v) => !v)}>＋ <span className="hide-sm">Add photos</span></button>
-            {addMenu && (
-              <div className="menu" role="menu">
-                <button role="menuitem" className="menu-primary" data-testid="add-dropbox" onClick={doDropbox}>📦 From Dropbox<small>{lib.dropbox.connected ? 'Browse and tag your Dropbox folders' : lib.dropboxKey ? 'Connect Dropbox first' : 'Needs an app key'}</small></button>
-                {lib.dropbox.connected && lib.dropbox.folders.length > 0 && (
-                  <button role="menuitem" data-testid="add-dropbox-refresh" onClick={() => { setAddMenu(false); void lib.refreshDropbox() }}>↻ Refresh Dropbox<small>Tag new photos in linked folders</small></button>
-                )}
-              </div>
-            )}
-          </div>
+          <button className="btn primary add-photos" data-testid="add-btn" onClick={doDropbox} aria-label="Add photos from Dropbox">
+            <span>＋<span className="hide-sm"> Add photos</span></span>
+            <small className="hide-sm">{lib.dropbox.connected ? 'Browse and tag your Dropbox folders' : lib.dropboxKey ? 'Connect Dropbox first' : 'Needs an app key'}</small>
+          </button>
+          {lib.dropbox.connected && lib.dropbox.folders.length > 0 && (
+            <button className="btn" data-testid="add-dropbox-refresh" title="Tag new photos in linked Dropbox folders" onClick={() => void lib.refreshDropbox()}>↻ <span className="hide-sm">Refresh</span></button>
+          )}
           <button className={`btn ${inSelection ? 'on' : ''}`} data-testid="select-mode" onClick={() => (inSelection ? exitSelect() : setSelectMode(true))} aria-pressed={inSelection}>☑ <span className="hide-sm">Select</span></button>
           <button className="btn icon" data-testid="theme" onClick={cycleTheme} aria-label={`Theme: ${theme}`} title={`Theme: ${theme}`}>{theme === 'dark' ? '🌙' : theme === 'light' ? '☀️' : '🌓'}</button>
           <button className="btn icon" data-testid="open-settings" onClick={() => setSettings({})} aria-label="Settings" title="Settings">⚙️</button>
@@ -412,6 +406,7 @@ const Tile = memo(function Tile({ p, i, selected, selecting, onTile, onLong, onC
       <button className={`check-box ${selecting ? 'show' : ''}`} aria-label={selected ? 'Deselect' : 'Select'} aria-pressed={selected} data-testid="tile-check" onClick={(e) => { e.stopPropagation(); onCheck(i, p.id) }}>{selected ? '✓' : ''}</button>
       <div className="badges" data-testid="tile-badges">
         {p.status === 'pending' && <span className="badge pend" title="Tagging…">tagging…</span>}
+        {isDropboxVideo(p.name) && <span className="badge video" data-testid="video-badge" title="Video"><i aria-hidden="true" /> video</span>}
         {p.duplicateOf && <span className="badge dupe" data-testid="dupe-badge" title="Marked as a duplicate">duplicate</span>}
         {warn.length > 0 && <span className="badge warn" title={warn.join(', ')}>{warn[0]}</span>}
       </div>

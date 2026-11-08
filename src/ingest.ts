@@ -63,7 +63,7 @@ export async function prepare(file: File, source: Photo['source'], settings: Set
       hasOriginal: keepOrig,
       status: 'pending',
     }
-    base.tags = exifAndQualityTags(base)
+    base.tags = exifAndQualityTags(base, settings.disabledMetaTags ?? [])
     return {
       photo: base,
       // Desktop always writes the original file into the library folder

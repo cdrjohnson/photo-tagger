@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { addTag, looseTagKey, matchTags, normTag, removeTag, resolveTagName } from '../tags'
+import { META_TAGS, addTag, looseTagKey, matchTags, normTag, removeTag, resolveTagName } from '../tags'
 import { DEFAULT_LABELS } from '../labels'
 import { DESKTOP_REDIRECT_URI, DROPBOX_SCOPES, ENV_DROPBOX_KEY, WEB_REDIRECT_URI, redirectUri } from '../dropbox'
 import { useLibrary } from '../store'
@@ -153,13 +153,18 @@ function Vocab({ onDirty }: { onDirty: () => void }) {
   const groups = new Map<string, typeof DEFAULT_LABELS>()
   for (const l of DEFAULT_LABELS) if (!q || l.label.includes(q.toLowerCase())) groups.set(l.group, [...(groups.get(l.group) ?? []), l])
   const off = new Set(lib.settings.disabledLabels)
+  const offMeta = new Set(lib.settings.disabledMetaTags ?? [])
+  const meta = META_TAGS.filter((l) => !q || l.label.toLowerCase().includes(q.toLowerCase()))
   return (
     <>
-      <p className="muted">
-        Below “Tags in your library” is the built-in <strong>detection list</strong>: tags Photo Tagger <em>can</em> detect automatically, not tags already on your photos. Switch tags off if you never want them detected, or add your own (for example “bike race”, “my dog Rex”,
-        “whiteboard notes”). The first custom tag downloads a text model (≈72&nbsp;MB, once).
-      </p>
       <LibraryTags onDirty={onDirty} />
+      <section className="tag-card detect" data-testid="detection-card">
+      <div className="eyebrow">What the app can find</div>
+      <h3>Detection list</h3>
+      <p className="muted small">
+        Tags Photo Tagger can look for automatically — not the tags already on your photos. Turn one off if you never want it detected, or add your own (for example “bike race”, “my dog Rex”,
+        “whiteboard notes”). The first custom detection tag downloads a text model (≈72&nbsp;MB, once).
+      </p>
       <form className="add-label" onSubmit={async (e) => {
         e.preventDefault()
         if (!label.trim()) return
@@ -167,9 +172,9 @@ function Vocab({ onDirty }: { onDirty: () => void }) {
         await lib.addCustomLabel(label, prompt)
         setBusy(false); setLabel(''); setPrompt('')
       }}>
-        <input data-testid="custom-label" placeholder="New tag, e.g. lighthouse" value={label} onChange={(e) => setLabel(e.target.value)} />
+        <input data-testid="custom-label" placeholder="New detection tag, e.g. lighthouse" value={label} onChange={(e) => setLabel(e.target.value)} />
         <input data-testid="custom-prompt" placeholder="Optional description, e.g. a photo of a lighthouse by the sea" value={prompt} onChange={(e) => setPrompt(e.target.value)} />
-        <button className="btn primary" data-testid="custom-add" disabled={busy || !label.trim()}>{busy ? 'Adding…' : 'Add tag'}</button>
+        <button className="btn primary" data-testid="custom-add" disabled={busy || !label.trim()}>{busy ? 'Adding…' : 'Add a detection tag'}</button>
       </form>
       {lib.custom.length > 0 && (
         <div className="vocab-group">
@@ -188,9 +193,22 @@ function Vocab({ onDirty }: { onDirty: () => void }) {
         <p className="muted small" id="retag-all-help-text" data-testid="retag-all-help">Re-analyzes every photo in the library and updates detected tags (faces aren't re-scanned). Dropbox photos pick up tag changes made in Dropbox, then Photo Tagger's tags are saved back. Adding or removing a tag on a photo already updates Dropbox — no re-tag needed.</p>
       </div>
       <div className="row wrap">
-        <input className="grow" placeholder="Filter tags…" value={q} onChange={(e) => setQ(e.target.value)} />
-        <button className="btn" onClick={() => { void lib.resetVocabulary(); onDirty() }} title="Puts the built-in tag list back and removes your custom tags from it. Tags already on photos stay.">Reset tag list</button>
+        <input className="grow" placeholder="Filter detection tags…" value={q} onChange={(e) => setQ(e.target.value)} />
+        <button className="btn" onClick={() => { void lib.resetVocabulary(); onDirty() }} title="Puts the built-in detection list back (all chips on) and removes your custom detection tags. Tags already on photos stay.">Reset detection list</button>
       </div>
+      {meta.length > 0 && (
+        <div className="vocab-group" data-testid="meta-group">
+          <h4>Photo metadata</h4>
+          <div className="chips">
+            {meta.map((l) => (
+              <label key={l.id} className={`chip toggle ${offMeta.has(l.id) ? 'off' : ''}`}>
+                <input type="checkbox" checked={!offMeta.has(l.id)} data-testid={`meta-${l.id}`} onChange={(e) => { void lib.toggleMetaTag(l.id, e.target.checked); onDirty() }} />
+                {l.label}
+              </label>
+            ))}
+          </div>
+        </div>
+      )}
       {[...groups.entries()].map(([g, ls]) => (
         <div key={g} className="vocab-group">
           <h4>{g}</h4>
@@ -204,6 +222,7 @@ function Vocab({ onDirty }: { onDirty: () => void }) {
           </div>
         </div>
       ))}
+      </section>
     </>
   )
 }
@@ -340,11 +359,12 @@ function LibraryTags({ onDirty }: { onDirty: () => void }) {
     setAsk({ from, to, ids })
   }
   return (
-    <section className="lib-tags" data-testid="library-tags">
-      <h4>Tags in your library <small className="muted">({all.length})</small></h4>
+    <section className="lib-tags tag-card library" data-testid="library-tags">
+      <div className="eyebrow">On your photos</div>
+      <h3>Tags in your library <small className="muted">({all.length})</small></h3>
       <p className="muted small">Every tag already on your photos — people, your own, detected, Dropbox, date/camera and quality tags — plus tags you've added to this list. Renaming a person's tag renames that person (same as on the People page). Use it to review your tags, find near-duplicates, or rename one everywhere (renaming to a close spelling of another tag merges them). Changes are saved to Dropbox like any tag edit.</p>
       <div className="row wrap">
-        <input className="grow" placeholder="Search tags…" value={q} onChange={(e) => setQ(e.target.value)} data-testid="library-tags-search" />
+        <input className="grow" placeholder="Search tags in your library…" value={q} onChange={(e) => setQ(e.target.value)} data-testid="library-tags-search" />
       </div>
       <ul className="lib-tag-list" data-testid="library-tags-list">
         {shown.map((t) => (
