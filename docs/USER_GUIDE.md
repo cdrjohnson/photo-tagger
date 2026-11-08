@@ -135,9 +135,9 @@ Dropbox photos show Dropbox's thumbnails (fetched live, kept in memory). **Downl
 ### Tags (the vocabulary)
 ![Tags](images/desktop-labels.png)
 
-**Tags in your library** (top of Settings → **Tags**) lists every tag on your photos, A–Z with how many photos have each, plus tags you've added to the list but not used yet. Search it to review your tags or spot near-duplicates; **Add to list** puts a new tag in the add-tag suggestions (and lets detection look for it); **Rename** changes a tag on every photo that has it (and in Dropbox) after you confirm — renaming to a close spelling of another tag ("family trip" → `family_trip`) merges the two. Reset tag list never changes tags on your photos.
+**Tags in your library** (top of Settings → **Tags**) lists **every** tag already on your photos — people, your own, detected, Dropbox, date/camera and quality tags — A–Z with how many photos have each, plus tags you've added to the list but not used yet. The whole list is shown; just scroll the Settings page (there is no small inner box to scroll). Search it to review your tags or spot near-duplicates; **Add to list** puts a new tag in the add-tag suggestions (and lets detection look for it); **Rename** changes a tag on every photo that has it (and in Dropbox) after you confirm — renaming to a close spelling of another tag ("family trip" → `family_trip`) merges the two. **Renaming a person's tag** renames that person (same as on the People page) and updates their photos; renaming to an existing person's name merges them. Reset tag list never changes tags on your photos.
 
-The photos are matched against a list of tags (Settings → **Tags**). You can:
+Further down is the built-in **detection list** — tags Photo Tagger *can* detect automatically, not the tags already on your photos. The photos are matched against it. You can:
 - **Switch tags off** you don't want (for example `wedding`).
 - **Add your own**: type a name ("lighthouse", "bike race", "my dog Rex") and, if you like, a short description such as *a photo of a lighthouse by the sea* – a good description improves accuracy. The first custom tag downloads a small text model (about 72 MB, once).
 - **Re-tag library now** applies changes immediately (also done automatically when you close Settings). This is quick, because the app remembers what each photo "looks like".

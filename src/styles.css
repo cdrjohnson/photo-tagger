@@ -320,7 +320,7 @@ button.dbx-row:hover { background: var(--panel2); }
 
 /* Settings → Tags: tags in your library */
 .lib-tags { display: grid; gap: 8px; margin: 8px 0 16px; }
-.lib-tag-list { list-style: none; margin: 0; padding: 4px; max-height: 320px; overflow-y: auto; border: 1px solid var(--border); border-radius: 10px; }
+.lib-tag-list { list-style: none; margin: 0; padding: 4px; border: 1px solid var(--border); border-radius: 10px; }
 .lib-tag-list li { display: flex; align-items: center; gap: 8px; padding: 4px 6px; border-radius: 6px; }
 .lib-tag-list li:hover { background: var(--panel2); }
 .lib-tag-list li form { flex: 1; gap: 6px; }

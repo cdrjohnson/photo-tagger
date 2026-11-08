@@ -3,6 +3,7 @@ import { addTag, looseTagKey, matchTags, normTag, removeTag, resolveTagName } fr
 import { DEFAULT_LABELS } from '../labels'
 import { DESKTOP_REDIRECT_URI, DROPBOX_SCOPES, ENV_DROPBOX_KEY, WEB_REDIRECT_URI, redirectUri } from '../dropbox'
 import { useLibrary } from '../store'
+import { usePeople } from '../people'
 
 type Tab = 'general' | 'dropbox' | 'vocab' | 'data'
 const fmtMB = (n: number) => `${(n / 1e6).toFixed(0)} MB`
@@ -155,7 +156,7 @@ function Vocab({ onDirty }: { onDirty: () => void }) {
   return (
     <>
       <p className="muted">
-        Photos are matched against this list of tags. Switch tags off if you never want them detected, or add your own (for example “bike race”, “my dog Rex”,
+        Below “Tags in your library” is the built-in <strong>detection list</strong>: tags Photo Tagger <em>can</em> detect automatically, not tags already on your photos. Switch tags off if you never want them detected, or add your own (for example “bike race”, “my dog Rex”,
         “whiteboard notes”). The first custom tag downloads a text model (≈72&nbsp;MB, once).
       </p>
       <LibraryTags onDirty={onDirty} />
@@ -298,11 +299,12 @@ function Data() {
 /** Settings → Tags: every tag already in the library (plus your own list entries), searchable, with rename/merge. */
 function LibraryTags({ onDirty }: { onDirty: () => void }) {
   const lib = useLibrary()
+  const ppl = usePeople()
   const [q, setQ] = useState('')
   const [adding, setAdding] = useState('')
   const [busy, setBusy] = useState(false)
   const [edit, setEdit] = useState<{ from: string; to: string } | null>(null)
-  const [ask, setAsk] = useState<{ from: string; to: string; ids: string[] } | null>(null)
+  const [ask, setAsk] = useState<{ from: string; to: string; ids: string[]; personId?: string; typed?: string } | null>(null)
   const counts = useMemo(() => {
     const m = new Map<string, number>()
     for (const p of lib.photos) for (const t of p.tags) m.set(t.name, (m.get(t.name) ?? 0) + 1)
@@ -319,7 +321,17 @@ function LibraryTags({ onDirty }: { onDirty: () => void }) {
     })
     lib.toast(`Renamed “${from}” to “${to}” on ${ids.length} photo(s)`, 'ok')
   }
+  const personFor = (name: string) => ppl.people.find((x) => normTag(x.name) === name)
   const startRename = (from: string, typed: string) => {
+    const person = personOnly(from) ? personFor(from) : undefined
+    if (person) {
+      setEdit(null)
+      const n = typed.trim().replace(/\s+/g, ' ')
+      if (!n || normTag(n) === from) return
+      const ids = lib.photos.filter((p) => p.tags.some((t) => t.name === from)).map((p) => p.id)
+      setAsk({ from, to: normTag(n), ids, personId: person.id, typed: n })
+      return
+    }
     const to = resolveTagName(typed, all.filter((t) => t !== from))
     setEdit(null)
     if (!to || to === from) return
@@ -330,7 +342,7 @@ function LibraryTags({ onDirty }: { onDirty: () => void }) {
   return (
     <section className="lib-tags" data-testid="library-tags">
       <h4>Tags in your library <small className="muted">({all.length})</small></h4>
-      <p className="muted small">Every tag on your photos, plus tags you've added to this list. Use it to review your tags, find near-duplicates, or rename one everywhere (renaming to a close spelling of another tag merges them). Changes are saved to Dropbox like any tag edit.</p>
+      <p className="muted small">Every tag already on your photos — people, your own, detected, Dropbox, date/camera and quality tags — plus tags you've added to this list. Renaming a person's tag renames that person (same as on the People page). Use it to review your tags, find near-duplicates, or rename one everywhere (renaming to a close spelling of another tag merges them). Changes are saved to Dropbox like any tag edit.</p>
       <div className="row wrap">
         <input className="grow" placeholder="Search tags…" value={q} onChange={(e) => setQ(e.target.value)} data-testid="library-tags-search" />
       </div>
@@ -347,7 +359,7 @@ function LibraryTags({ onDirty }: { onDirty: () => void }) {
             ) : (<>
               <span className="grow lib-tag-name">{t}</span>
               <small className="muted" data-testid="library-tag-count">{counts.get(t) ? `${counts.get(t)} photo${counts.get(t) === 1 ? '' : 's'}` : 'not on a photo yet'}</small>
-              {(counts.get(t) ?? 0) > 0 && !personOnly(t) && <button type="button" className="btn small" data-testid="library-tag-rename" onClick={() => setEdit({ from: t, to: t })} aria-label={`Rename ${t}`}>Rename</button>}
+              {(counts.get(t) ?? 0) > 0 && (!personOnly(t) || personFor(t)) && <button type="button" className="btn small" data-testid="library-tag-rename" onClick={() => setEdit({ from: t, to: personOnly(t) ? personFor(t)!.name : t })} aria-label={`Rename ${t}`}>Rename</button>}
             </>)}
           </li>
         ))}
@@ -364,7 +376,8 @@ function LibraryTags({ onDirty }: { onDirty: () => void }) {
         <input className="grow" placeholder="Add a tag to the list…" value={adding} onChange={(e) => setAdding(e.target.value)} data-testid="library-tags-add-input" />
         <button className="btn" disabled={busy || !adding.trim()} data-testid="library-tags-add">{busy ? 'Adding…' : 'Add to list'}</button>
       </form>
-      {ask && <RenameConfirm {...ask} onCancel={() => setAsk(null)} onConfirm={async () => { const a = ask; setAsk(null); await doRename(a.from, a.to, a.ids) }} />}
+      {ask && <RenameConfirm {...ask} onCancel={() => setAsk(null)} onConfirm={async () => { const a = ask; setAsk(null)
+        if (a.personId) { await ppl.rename(a.personId, a.typed!); lib.toast(`Renamed person “${a.from}” to “${a.typed}”`, 'ok') } else await doRename(a.from, a.to, a.ids) }} />}
     </section>
   )
 }
