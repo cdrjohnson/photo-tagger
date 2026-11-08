@@ -297,6 +297,28 @@ await test('tag counts in the chip bar are faceted by the other filters', async 
   await page.getByTestId('search').fill('')
 })
 
+await test('grid tile: two tags shown, +N lists and removes the rest without opening the photo', async () => {
+  await tile('dog.jpg').click()
+  await page.getByTestId('detail-tag-input').fill('overflow probe'); await page.getByTestId('detail-tag-input').press('Enter')
+  await page.locator('[data-testid=detail-tag][data-tag="overflow probe"]').waitFor()
+  await page.keyboard.press('Escape'); await page.getByTestId('detail').waitFor({ state: 'detached' })
+  const t = tile('dog.jpg')
+  eq(await t.locator('.cap > span').count(), 2, 'two caption tags')
+  const all = await tagsOf('dog.jpg')
+  const more = t.getByTestId('tile-more')
+  eq(await more.innerText(), '+' + (all.length - 2), '+N counts the rest')
+  await more.click()
+  const menu = t.getByTestId('tile-more-menu'); await menu.waitFor()
+  eq(await page.getByTestId('detail').count(), 0, 'photo not opened')
+  ok(await menu.locator('[data-tag="overflow probe"]').isVisible(), 'overflow tag listed')
+  eq(await menu.getByTestId('tile-more-tag').count(), all.length - 2, 'every other tag listed, none duplicated')
+  await menu.locator('[data-tag="overflow probe"] [data-testid=tile-more-remove]').click()
+  await page.waitForFunction(() => !document.querySelector('[data-testid=photo-tile][data-name="dog.jpg"]').dataset.tags.split('|').includes('overflow probe'))
+  eq(await page.getByTestId('detail').count(), 0, 'still not opened after remove')
+  await page.keyboard.press('Escape'); await menu.waitFor({ state: 'detached' })
+  eq(await page.locator('[data-testid=photo-tile].sel').count(), 0, 'selection untouched')
+})
+
 await test('detail view: edit tags by hand, navigate, persists across reload', async () => {
   await tile('dog.jpg').click()
   await page.getByTestId('detail').waitFor()

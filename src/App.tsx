@@ -414,6 +414,7 @@ const Tile = memo(function Tile({ p, i, selected, selecting, onTile, onLong, onC
   const start = () => { fired.current = false; timer.current = window.setTimeout(() => { fired.current = true; onLong(i, p.id) }, 550) }
   const stop = () => clearTimeout(timer.current)
   const shown = p.tags.filter((t) => t.source === 'auto' || t.source === 'manual' || t.source === 'dropbox').slice(0, 2)
+  const rest = p.tags.filter((t) => !shown.includes(t))
   const warn = [p.quality.blurry && 'blurry', p.quality.dark && 'dark', p.quality.bright && 'bright'].filter(Boolean) as string[]
   return (
     <div
@@ -439,9 +440,51 @@ const Tile = memo(function Tile({ p, i, selected, selecting, onTile, onLong, onC
         {p.duplicateOf && <span className="badge dupe" data-testid="dupe-badge" title="Marked as a duplicate">duplicate</span>}
         {warn.length > 0 && <span className="badge warn" title={warn.join(', ')}>{warn[0]}</span>}
       </div>
-      <div className="cap">{shown.map((t) => <span key={t.name}>{t.name}</span>)}</div>
+      <div className="cap">{shown.map((t) => <span key={t.name}>{t.name}</span>)}{rest.length > 0 && <TileMore p={p} rest={rest} />}</div>
       <span className="sr-only">{new Date(photoTime(p)).toDateString()}</span>
     </div>
   )
 })
 
+
+const SRC_NAME: Record<string, string> = { person: 'person', manual: 'yours', dropbox: 'Dropbox', auto: 'detected', exif: 'photo info', quality: 'quality' }
+/** "+N" on a grid tile: review (and remove) the rest of a photo's tags without opening it. One open at a time. */
+function TileMore({ p, rest }: { p: Photo; rest: Photo['tags'] }) {
+  const lib = useLibrary()
+  const ppl = usePeople()
+  const [open, setOpen] = useState(false)
+  const box = useRef<HTMLDivElement>(null)
+  const btn = useRef<HTMLButtonElement>(null)
+  useEffect(() => {
+    const other = (e: Event) => { if ((e as CustomEvent).detail !== p.id) setOpen(false) }
+    window.addEventListener('pt-tile-more', other)
+    return () => window.removeEventListener('pt-tile-more', other)
+  }, [p.id])
+  useEffect(() => {
+    if (!open) return
+    const out = (e: Event) => { if (box.current && !box.current.contains(e.target as Node)) setOpen(false) }
+    const esc = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.stopPropagation(); setOpen(false); btn.current?.focus() } }
+    document.addEventListener('pointerdown', out, true); document.addEventListener('keydown', esc, true)
+    return () => { document.removeEventListener('pointerdown', out, true); document.removeEventListener('keydown', esc, true) }
+  }, [open])
+  useEffect(() => { if (open && !rest.length) setOpen(false) }, [open, rest.length])
+  const stop = (e: React.SyntheticEvent) => e.stopPropagation()
+  return (
+    <div className="tile-more" ref={box} onClick={stop} onKeyDown={stop} onTouchStart={stop} onPointerDown={stop}>
+      <button ref={btn} type="button" className="more-btn" data-testid="tile-more" aria-haspopup="true" aria-expanded={open}
+        aria-label={`${rest.length} more tag${rest.length === 1 ? '' : 's'} on ${p.name}`}
+        onClick={() => { const n = !open; setOpen(n); if (n) window.dispatchEvent(new CustomEvent('pt-tile-more', { detail: p.id })) }}>+{rest.length}</button>
+      {open && (
+        <div className="more-menu" role="group" aria-label={`All tags on ${p.name}`} data-testid="tile-more-menu">
+          {rest.map((t) => (
+            <span key={t.name} className={`chip src-${t.source} static`} data-testid="tile-more-tag" data-tag={t.name} title={SRC_NAME[t.source] ?? t.source}>
+              {t.name}
+              <button type="button" aria-label={`Remove tag ${t.name}`} data-testid="tile-more-remove"
+                onClick={() => (t.source === 'person' ? ppl.rejectOnPhotos([p.id], t.name) : lib.removeTags([p.id], [t.name]))}>×</button>
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}

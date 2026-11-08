@@ -108,6 +108,12 @@ main { flex: 1; padding: 12px 16px 96px; }
 .tile .ph { background: linear-gradient(110deg, var(--panel2) 30%, var(--panel) 50%, var(--panel2) 70%); background-size: 200% 100%; animation: shimmer 1.4s infinite; }
 @keyframes shimmer { to { background-position: -200% 0; } }
 .tile .cap { position: absolute; left: 0; right: 0; bottom: 0; padding: 18px 8px 6px; display: flex; gap: 4px; flex-wrap: wrap; background: linear-gradient(transparent, rgba(0,0,0,.65)); pointer-events: none; }
+.tile-more { pointer-events: auto; display: contents; }
+.tile .cap .more-btn { pointer-events: auto; font-size: .72rem; color: #fff; background: rgba(0,0,0,.55); border: 1px solid rgba(255,255,255,.45); border-radius: 999px; padding: 0 8px; cursor: pointer; line-height: 1.5; }
+.tile .cap .more-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.tile .more-menu { pointer-events: auto; position: absolute; left: 6px; right: 6px; bottom: calc(100% - 14px); max-height: 150px; overflow: auto; z-index: 5; display: flex; flex-wrap: wrap; gap: 4px; padding: 8px; background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 6px 18px rgba(0,0,0,.35); }
+.tile .cap .more-menu .chip { font-size: .72rem; color: var(--text); background: var(--panel2); backdrop-filter: none; padding: 2px 4px 2px 8px; }
+.tile .more-menu .chip button { pointer-events: auto; }
 .tile .cap span { font-size: .72rem; color: #fff; background: rgba(255,255,255,.18); border-radius: 999px; padding: 1px 8px; backdrop-filter: blur(4px); }
 .tile.sel { outline: 3px solid var(--accent); outline-offset: -3px; }
 .tile.sel img { opacity: .75; }
