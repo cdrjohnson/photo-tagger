@@ -75,7 +75,7 @@ Tap a photo to open it. From here you can:
 
 ![Detail](images/desktop-detail.png)
 
-- **Add a tag**: type in the box and press Enter (separate several with commas; suggestions appear as you type).
+- **Add a tag**: type in the box and press Enter (separate several with commas). The box suggests **every tag already in your library** (plus your own Settings → Tags entries), filtered as you type — use ↑/↓ and Enter, or click one. A close spelling reuses the existing tag: typing “family trip” or “Family-Trip” adds your existing `family_trip` instead of creating a second tag for the same topic.
 - **Remove a tag**: tap the **×** on it. A detected tag you remove will not come back when you re-tag.
 - See the **date, camera, GPS location** (tap the coordinates to open a map), size, sharpness and brightness.
 - Move between photos with ‹ › (or the ← → keys). **Esc** closes.
@@ -134,6 +134,8 @@ Dropbox photos show Dropbox's thumbnails (fetched live, kept in memory). **Downl
 
 ### Tags (the vocabulary)
 ![Tags](images/desktop-labels.png)
+
+**Tags in your library** (top of Settings → **Tags**) lists every tag on your photos, A–Z with how many photos have each, plus tags you've added to the list but not used yet. Search it to review your tags or spot near-duplicates; **Add to list** puts a new tag in the add-tag suggestions (and lets detection look for it); **Rename** changes a tag on every photo that has it (and in Dropbox) after you confirm — renaming to a close spelling of another tag ("family trip" → `family_trip`) merges the two. Reset tag list never changes tags on your photos.
 
 The photos are matched against a list of tags (Settings → **Tags**). You can:
 - **Switch tags off** you don't want (for example `wedding`).

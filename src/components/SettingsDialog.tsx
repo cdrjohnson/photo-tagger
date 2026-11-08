@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { addTag, looseTagKey, matchTags, normTag, removeTag, resolveTagName } from '../tags'
 import { DEFAULT_LABELS } from '../labels'
 import { DESKTOP_REDIRECT_URI, DROPBOX_SCOPES, ENV_DROPBOX_KEY, WEB_REDIRECT_URI, redirectUri } from '../dropbox'
 import { useLibrary } from '../store'
@@ -157,6 +158,7 @@ function Vocab({ onDirty }: { onDirty: () => void }) {
         Photos are matched against this list of tags. Switch tags off if you never want them detected, or add your own (for example “bike race”, “my dog Rex”,
         “whiteboard notes”). The first custom tag downloads a text model (≈72&nbsp;MB, once).
       </p>
+      <LibraryTags onDirty={onDirty} />
       <form className="add-label" onSubmit={async (e) => {
         e.preventDefault()
         if (!label.trim()) return
@@ -290,5 +292,102 @@ function Data() {
         await lib.clearEverything(); setArmed(false)
       }}>{armed ? 'Click again to delete everything' : 'Delete all local data'}</button>
     </>
+  )
+}
+
+/** Settings → Tags: every tag already in the library (plus your own list entries), searchable, with rename/merge. */
+function LibraryTags({ onDirty }: { onDirty: () => void }) {
+  const lib = useLibrary()
+  const [q, setQ] = useState('')
+  const [adding, setAdding] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [edit, setEdit] = useState<{ from: string; to: string } | null>(null)
+  const [ask, setAsk] = useState<{ from: string; to: string; ids: string[] } | null>(null)
+  const counts = useMemo(() => {
+    const m = new Map<string, number>()
+    for (const p of lib.photos) for (const t of p.tags) m.set(t.name, (m.get(t.name) ?? 0) + 1)
+    for (const c of lib.custom) { const n = normTag(c.label); if (n && !m.has(n)) m.set(n, 0) }
+    return m
+  }, [lib.photos, lib.custom])
+  const all = useMemo(() => [...counts.keys()].sort((a, b) => a.localeCompare(b)), [counts])
+  const shown = q.trim() ? matchTags(q, all, all.length) : all
+  const personOnly = (name: string) => lib.photos.every((p) => !p.tags.some((t) => t.name === name && t.source !== 'person'))
+  const doRename = async (from: string, to: string, ids: string[]) => {
+    await lib.updatePhotos(ids, (p) => {
+      const old = p.tags.find((t) => t.name === from && t.source !== 'person'); if (!old) return p
+      return addTag(removeTag(p, from), to, 'manual')
+    })
+    lib.toast(`Renamed “${from}” to “${to}” on ${ids.length} photo(s)`, 'ok')
+  }
+  const startRename = (from: string, typed: string) => {
+    const to = resolveTagName(typed, all.filter((t) => t !== from))
+    setEdit(null)
+    if (!to || to === from) return
+    const ids = lib.photos.filter((p) => p.tags.some((t) => t.name === from && t.source !== 'person')).map((p) => p.id)
+    if (!ids.length) { lib.toast(`“${from}” isn't on any photo yet — add “${to}” to the list instead`); return }
+    setAsk({ from, to, ids })
+  }
+  return (
+    <section className="lib-tags" data-testid="library-tags">
+      <h4>Tags in your library <small className="muted">({all.length})</small></h4>
+      <p className="muted small">Every tag on your photos, plus tags you've added to this list. Use it to review your tags, find near-duplicates, or rename one everywhere (renaming to a close spelling of another tag merges them). Changes are saved to Dropbox like any tag edit.</p>
+      <div className="row wrap">
+        <input className="grow" placeholder="Search tags…" value={q} onChange={(e) => setQ(e.target.value)} data-testid="library-tags-search" />
+      </div>
+      <ul className="lib-tag-list" data-testid="library-tags-list">
+        {shown.map((t) => (
+          <li key={t} data-testid="library-tag" data-tag={t}>
+            {edit?.from === t ? (
+              <form className="row" onSubmit={(e) => { e.preventDefault(); startRename(t, edit.to) }}>
+                <input autoFocus className="grow" value={edit.to} onChange={(e) => setEdit({ from: t, to: e.target.value })} aria-label={`New name for ${t}`} data-testid="library-tag-rename-input"
+                  onKeyDown={(e) => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); setEdit(null) } }} />
+                <button className="btn small primary" data-testid="library-tag-rename-save">Rename</button>
+                <button type="button" className="btn small" onClick={() => setEdit(null)}>Cancel</button>
+              </form>
+            ) : (<>
+              <span className="grow lib-tag-name">{t}</span>
+              <small className="muted" data-testid="library-tag-count">{counts.get(t) ? `${counts.get(t)} photo${counts.get(t) === 1 ? '' : 's'}` : 'not on a photo yet'}</small>
+              {(counts.get(t) ?? 0) > 0 && !personOnly(t) && <button type="button" className="btn small" data-testid="library-tag-rename" onClick={() => setEdit({ from: t, to: t })} aria-label={`Rename ${t}`}>Rename</button>}
+            </>)}
+          </li>
+        ))}
+        {!shown.length && <li className="muted">No tags match.</li>}
+      </ul>
+      <form className="row wrap" onSubmit={async (e) => {
+        e.preventDefault()
+        const n = resolveTagName(adding, all)
+        if (!n) return
+        if (counts.has(n)) { lib.toast(`“${n}” is already in your list`); setAdding(''); return }
+        setBusy(true); onDirty()
+        try { await lib.addCustomLabel(n, '') } finally { setBusy(false); setAdding('') }
+      }}>
+        <input className="grow" placeholder="Add a tag to the list…" value={adding} onChange={(e) => setAdding(e.target.value)} data-testid="library-tags-add-input" />
+        <button className="btn" disabled={busy || !adding.trim()} data-testid="library-tags-add">{busy ? 'Adding…' : 'Add to list'}</button>
+      </form>
+      {ask && <RenameConfirm {...ask} onCancel={() => setAsk(null)} onConfirm={async () => { const a = ask; setAsk(null); await doRename(a.from, a.to, a.ids) }} />}
+    </section>
+  )
+}
+
+function RenameConfirm({ from, to, ids, onCancel, onConfirm }: { from: string; to: string; ids: string[]; onCancel: () => void; onConfirm: () => void }) {
+  const cancelRef = useRef<HTMLButtonElement>(null)
+  useEffect(() => {
+    cancelRef.current?.focus()
+    const k = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.stopPropagation(); e.preventDefault(); onCancel() } }
+    window.addEventListener('keydown', k, true)
+    return () => window.removeEventListener('keydown', k, true)
+  }, [onCancel])
+  const merge = looseTagKey(from) === looseTagKey(to)
+  return (
+    <div className="modal sheet" role="alertdialog" aria-modal="true" aria-labelledby="rename-title" data-testid="rename-confirm">
+      <div className="sheet-card">
+        <h2 id="rename-title">Rename “{from}” to “{to}”?</h2>
+        <p>{merge ? `“${to}” already exists — this merges them. ` : ''}It changes the tag on {ids.length} photo{ids.length === 1 ? '' : 's'} in Photo Tagger and, for Dropbox photos, on the files' Dropbox tags.</p>
+        <div className="row wrap" style={{ justifyContent: 'flex-end', gap: 8 }}>
+          <button type="button" ref={cancelRef} className="btn" data-testid="rename-cancel" onClick={onCancel}>Cancel</button>
+          <button type="button" className="btn primary" data-testid="rename-confirm-btn" onClick={onConfirm}>Rename</button>
+        </div>
+      </div>
+    </div>
   )
 }

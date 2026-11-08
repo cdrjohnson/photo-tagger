@@ -40,3 +40,27 @@ export function exifAndQualityTags(p: Pick<Photo, 'takenAt' | 'dateSource' | 'ca
   if (p.quality.bright) out.push({ name: 'bright', source: 'quality' })
   return out
 }
+
+/** Loose key for "same topic" matching: case-insensitive; spaces, underscores and hyphens are equivalent. */
+export const looseTagKey = (s: string) => normTag(s).replace(/[\s_-]+/g, '_').replace(/^_+|_+$/g, '')
+
+/**
+ * The tag name to store for what the user typed: an exact match wins, else an existing tag that only differs
+ * by case/spaces/underscores/hyphens ("family trip" → existing "family_trip"), else the typed text itself.
+ */
+export function resolveTagName(typed: string, existing: readonly string[]): string {
+  const n = normTag(typed)
+  if (!n) return n
+  if (existing.includes(n)) return n
+  const k = looseTagKey(n)
+  return existing.find((e) => looseTagKey(e) === k) ?? n
+}
+
+/** Suggestions matching what's typed (loose, substring); prefix matches first, then A–Z. Capped after filtering. */
+export function matchTags(typed: string, all: readonly string[], cap = 200): string[] {
+  const k = looseTagKey(typed)
+  if (!k) return all.slice(0, cap)
+  const hits = all.filter((t) => looseTagKey(t).includes(k))
+  hits.sort((a, b) => Number(!looseTagKey(a).startsWith(k)) - Number(!looseTagKey(b).startsWith(k)) || a.localeCompare(b))
+  return hits.slice(0, cap)
+}

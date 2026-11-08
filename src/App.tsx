@@ -13,6 +13,7 @@ import { usePeople } from './people'
 import { filterPhotos, tagStats, photoTime } from './filter'
 import { useInView, useTheme, useThumb } from './hooks'
 import { useLibrary } from './store'
+import { normTag } from './tags'
 import { EMPTY_FILTERS, type Filters, type Photo, type QualityFilter, type SortKey } from './types'
 
 const FEW = 16 // tag chips shown before "All tags"
@@ -51,7 +52,8 @@ export default function App() {
 
   const filtered = useMemo(() => filterPhotos(lib.photos, filters), [lib.photos, filters])
   const stats = useMemo(() => tagStats(lib.photos, filters), [lib.photos, filters])
-  const everyTag = useMemo(() => [...new Set(lib.photos.flatMap((p) => p.tags.map((t) => t.name)))].sort(), [lib.photos])
+  // every tag already on a photo + your own Settings → Tags entries (not the whole built-in list)
+  const everyTag = useMemo(() => [...new Set([...lib.photos.flatMap((p) => p.tags.map((t) => t.name)), ...lib.custom.map((c) => normTag(c.label)).filter(Boolean)])].sort(), [lib.photos, lib.custom])
   const visibleStats = allTags ? stats : stats.filter((s, i) => i < FEW || filters.tags.includes(s.name))
   const hasFilters = filters.tags.length > 0 || filters.query || filters.from || filters.to || filters.quality !== 'any'
   const advancedCount = [filters.from, filters.to, filters.quality !== 'any' ? 'q' : ''].filter(Boolean).length
