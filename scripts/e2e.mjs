@@ -783,6 +783,7 @@ await test('Dropbox sync (regression 1.0.15): Dropbox tags with spaces/punctuati
   // Re-run tagging on a Dropbox photo really runs and reports status
   await page.evaluate(() => window.__ptDropEmbeddings?.())
   const dl = dbx.downloads['id:dbx-a'] || 0
+  eq(await page.getByTestId('delete-photo').innerText(), 'Remove from app', 'detail says Remove from app')
   ok(await page.getByTestId('retag-group').getByRole('button', { name: 'Re-run tagging' }).count() === 1 && await page.getByTestId('retag-group').getByTestId('download').count() === 0, 'help grouped with Re-run tagging only')
   ok(await page.getByTestId('retag-help').evaluate((el) => el.getBoundingClientRect().top > el.parentElement.querySelector('button').getBoundingClientRect().bottom - 1), 'help sits under Re-run tagging')
   ok(/doesn't need|don't need/.test(await page.getByTestId('retag-help').innerText()) && await page.getByTestId('retag-help').isVisible(), 'Re-run tagging explained next to the button')

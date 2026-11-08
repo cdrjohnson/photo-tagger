@@ -82,7 +82,7 @@ Tap a photo to open it. From here you can:
 - See the **date, camera, GPS location** (tap the coordinates to open a map), size, sharpness and brightness.
 - Move between photos with ‹ › (or the ← → keys). **Esc** closes.
 - **Zoom** to inspect detail: **＋ / −** buttons, the slider, mouse wheel, or pinch on a touch screen. Drag to pan when zoomed in. The percentage is the real size (100% = actual pixels), so large photos open well below 100% and you can zoom out further than that to shrink a photo. **0** or the percentage button fits the whole photo in the frame again (the default). Every photo, however large, tall, or wide, opens fitted so nothing is clipped.
-- **Re-run tagging** (re-analyzes the photo and updates detected tags — not faces; for Dropbox photos it also picks up tag changes made in Dropbox and saves tags back; not needed after editing a tag chip, which already updates Dropbox), **Download** (the original if kept, otherwise the stored copy) or **Delete** (this only removes it from the app).
+- **Re-run tagging** (re-analyzes the photo and updates detected tags — not faces; for Dropbox photos it also picks up tag changes made in Dropbox and saves tags back; not needed after editing a tag chip, which already updates Dropbox), **Download** (the original if kept, otherwise the stored copy) or **Remove from app** (this only removes it from Photo Tagger; the photo itself, in Dropbox or elsewhere, isn't deleted). The **Re-run tagging** explanation sits directly under that button.
 
 ## 5. Work on many photos at once
 
@@ -90,7 +90,7 @@ Tap **Select** (or press and hold a photo on a phone, or tick the circle that ap
 
 ![Bulk tagging](images/desktop-bulk.png)
 
-The bar at the bottom lets you **Select all** photos matching the current filter, edit **Tags…** (add tags to all selected photos, or remove a tag from all of them), **Export** just those photos' tags, or **Delete** them.
+The bar at the bottom lets you **Select all** photos matching the current filter, edit **Tags…** (add tags to all selected photos, or remove a tag from all of them), **Export** just those photos' tags, or **Remove from app** (removes them from Photo Tagger only; the photos themselves aren't deleted).
 
 ## 6. People (face naming)
 

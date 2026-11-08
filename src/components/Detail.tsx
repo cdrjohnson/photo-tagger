@@ -298,7 +298,7 @@ export function Detail({ list, index, onIndex, onClose, allTags }: {
             await lib.deletePhotos([p.id])
             if (!next) onClose()
             else onIndex(Math.min(index, list.length - 2))
-          }} title={p.dropbox ? 'Removes it from Photo Tagger (and its tags file in /.photo-tagger). The photo stays in your Dropbox.' : undefined}>{p.dropbox ? 'Remove from app' : 'Delete'}</button>
+          }} title={p.dropbox ? 'Removes it from Photo Tagger (and its tags file in /.photo-tagger). The photo stays in your Dropbox.' : 'Removes it from Photo Tagger. Originals elsewhere are not touched.'}>Remove from app</button>
         </div>
       </aside>
     </div>

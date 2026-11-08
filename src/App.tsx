@@ -297,7 +297,7 @@ export default function App() {
           <button className="btn primary" disabled={!sel.size} data-testid="bulk-tag" onClick={() => setBulk(true)}>Tags…</button>
           <button className="btn" disabled={!sel.size} data-testid="sel-export" onClick={() => lib.exportData('json', selIds)}>Export tags</button>
           <button className="btn" disabled={!sel.size} data-testid="sel-save" onClick={() => void (lib.folderSupported ? lib.savePhotosToDisk(selIds) : lib.downloadPhotosZip(selIds))}>{lib.folderSupported ? 'Save to folder…' : 'Download zip…'}</button>
-          <button className="btn danger" disabled={!sel.size} data-testid="sel-delete" onClick={async () => { if (confirm(`Delete ${sel.size} photo(s) from this app? Originals elsewhere (including Dropbox) are not affected.`)) { await lib.deletePhotos(selIds); exitSelect() } }}>Delete</button>
+          <button className="btn danger" disabled={!sel.size} data-testid="sel-delete" onClick={async () => { if (confirm(`Remove ${sel.size} photo(s) from this app? The photos themselves aren't deleted — originals elsewhere (including Dropbox) are not affected.`)) { await lib.deletePhotos(selIds); exitSelect() } }} title="Removes the selected photos from Photo Tagger. Originals elsewhere (including Dropbox) are not touched.">Remove from app</button>
         </div>
       )}
 
