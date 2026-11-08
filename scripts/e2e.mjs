@@ -561,6 +561,17 @@ await test('vocabulary: add a custom label (text model loads on demand) and appl
     const boxes = await page.locator('.tabs button').evaluateAll((els) => els.map((e) => { const r = e.getBoundingClientRect(); return { t: e.textContent.trim(), l: r.left, r: r.right } }))
     ok(boxes.some((b) => b.t === 'Tags') && !boxes.some((b) => b.t === 'Labels'), 'tab is called Tags: ' + boxes.map((b) => b.t))
     ok(boxes.every((b, i) => i === 0 || b.l >= boxes[i - 1].r), 'tabs do not overlap: ' + JSON.stringify(boxes))
+    const vp0 = page.viewportSize(); await page.setViewportSize({ width: 700, height: 360 }); await page.waitForTimeout(200) // short window, like the user's
+    // 1.0.18: no tab label clipped (descender of the g in Tags) and no two tab boxes intersect
+    const clip = await page.locator('.tabs button').evaluateAll((els) => els.map((e) => {
+      const r = e.getBoundingClientRect(), row = e.parentElement.getBoundingClientRect()
+      const range = document.createRange(); range.selectNodeContents(e); const t = range.getBoundingClientRect()
+      return { t: e.textContent, fits: e.scrollHeight <= e.clientHeight + 1 && t.bottom <= r.bottom && r.bottom <= row.bottom + 1 && r.top >= row.top - 1 && t.height >= 14, r: [r.left, r.top, r.right, r.bottom] }
+    }))
+    ok(clip.every((c) => c.fits), 'tab labels fully visible: ' + JSON.stringify(clip))
+    ok(clip.every((a, i) => clip.every((b, j) => i === j || a.r[2] <= b.r[0] || b.r[2] <= a.r[0] || a.r[3] <= b.r[1] || b.r[3] <= a.r[1])), 'tab boxes never intersect')
+    ok(await page.locator('.tabs').evaluate((e) => getComputedStyle(e).overflowY !== 'hidden' && e.scrollHeight <= e.clientHeight + 1), 'tab row not clipped')
+    await page.setViewportSize(vp0)
   }
   ok(await page.getByTestId('retag-all-help').isVisible() && /every photo/.test(await page.getByTestId('retag-all-help').innerText()), 'Re-tag library explained next to the button')
   await page.getByTestId('retag-all').click()

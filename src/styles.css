@@ -138,11 +138,13 @@ main { flex: 1; padding: 12px 16px 96px; }
 .settings-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px 6px; }
 .sheet-card .settings-head { padding: 0; }
 .settings-head h2 { margin: 0; }
-.tabs { display: flex; flex-wrap: nowrap; gap: 8px; padding: 0 12px; border-bottom: 1px solid var(--border); overflow-x: auto; overflow-y: hidden; }
-/* each tab is its own box: underline drawn inside it (inset shadow), never on top of a neighbour */
-.tabs button { position: static; flex: 0 0 auto; isolation: isolate; font: inherit; font-weight: 600; background: none; border: 0; border-radius: 8px 8px 0 0; color: var(--text); opacity: .72; padding: 10px 14px; cursor: pointer; white-space: nowrap; box-shadow: inset 0 -3px 0 transparent; }
-.tabs button:hover { opacity: 1; background: var(--panel2); }
-.tabs button.on { opacity: 1; color: var(--text); box-shadow: inset 0 -3px 0 var(--accent); }
+.settings-head { flex: none; }
+/* Tab row: never shrinks inside the column-flex dialog (that squashed it and clipped "Tags" to "Taas"),
+   never clips, wraps to a second row instead of scrolling. No opacity/isolation (WebView2 compositing). */
+.tabs { flex: none; display: flex; flex-wrap: wrap; gap: 4px 8px; padding: 4px 12px 0; border-bottom: 1px solid var(--border); overflow: visible; min-height: max-content; }
+.tabs button { position: static; flex: 0 0 auto; font: inherit; font-weight: 600; line-height: 1.5; background: none; border: 0; border-radius: 8px 8px 0 0; color: var(--muted); padding: 8px 14px 10px; cursor: pointer; white-space: nowrap; box-shadow: inset 0 -3px 0 transparent; }
+.tabs button:hover { color: var(--text); background: var(--panel2); }
+.tabs button.on { color: var(--text); box-shadow: inset 0 -3px 0 var(--accent); }
 .settings-body { padding: 4px 16px 20px; overflow: auto; -webkit-overflow-scrolling: touch; }
 .field { display: grid; gap: 4px; margin: 12px 0; }
 .field span { display: flex; justify-content: space-between; font-weight: 600; }
