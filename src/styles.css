@@ -285,3 +285,7 @@ dl.meta dt { color: var(--muted); } dl.meta dd { margin: 0; word-break: break-wo
 button.dbx-row { cursor: pointer; }
 button.dbx-row:hover { background: var(--panel2); }
 .chip.src-dropbox { --dot: #0061fe; }
+
+/* a button with its own explanation directly under it */
+.action-help { display: grid; justify-items: start; gap: 4px; margin-bottom: 4px; }
+.action-help > p { margin: 0; max-width: 46ch; }

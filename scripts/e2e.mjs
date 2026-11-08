@@ -515,6 +515,7 @@ await test('vocabulary: add a custom label (text model loads on demand) and appl
   await page.getByTestId('custom-add').click()
   await page.locator('[data-testid=custom-chip]', { hasText: 'skyline' }).waitFor({ timeout: 300_000 })
   await page.waitForFunction(() => !document.querySelector('[data-testid=custom-add]')?.disabled || document.querySelector('[data-testid=custom-add]')?.textContent === 'Add label', null, { timeout: 300_000 })
+  ok(await page.getByTestId('retag-all-group').getByTestId('retag-all').count() === 1 && await page.getByTestId('retag-all-group').getByRole('button', { name: 'Reset labels' }).count() === 0, 'help grouped with Re-tag library only')
   ok(await page.getByTestId('retag-all-help').isVisible() && /every photo/.test(await page.getByTestId('retag-all-help').innerText()), 'Re-tag library explained next to the button')
   await page.getByTestId('retag-all').click()
   await settled()
@@ -782,6 +783,8 @@ await test('Dropbox sync (regression 1.0.15): Dropbox tags with spaces/punctuati
   // Re-run tagging on a Dropbox photo really runs and reports status
   await page.evaluate(() => window.__ptDropEmbeddings?.())
   const dl = dbx.downloads['id:dbx-a'] || 0
+  ok(await page.getByTestId('retag-group').getByRole('button', { name: 'Re-run tagging' }).count() === 1 && await page.getByTestId('retag-group').getByTestId('download').count() === 0, 'help grouped with Re-run tagging only')
+  ok(await page.getByTestId('retag-help').evaluate((el) => el.getBoundingClientRect().top > el.parentElement.querySelector('button').getBoundingClientRect().bottom - 1), 'help sits under Re-run tagging')
   ok(/doesn't need|don't need/.test(await page.getByTestId('retag-help').innerText()) && await page.getByTestId('retag-help').isVisible(), 'Re-run tagging explained next to the button')
   await page.getByRole('button', { name: 'Re-run tagging' }).click()
   await page.getByTestId('job-label').filter({ hasText: /Re-tag/ }).first().waitFor({ timeout: 10_000 })

@@ -180,12 +180,14 @@ function Vocab({ onDirty }: { onDirty: () => void }) {
           </div>
         </div>
       )}
+      <div className="action-help" data-testid="retag-all-group">
+        <button className="btn" data-testid="retag-all" aria-describedby="retag-all-help-text" onClick={() => void lib.retagAll()}>Re-tag library now</button>
+        <p className="muted small" id="retag-all-help-text" data-testid="retag-all-help">Re-analyzes every photo in the library and updates detected tags (faces aren't re-scanned). Dropbox photos pick up tag changes made in Dropbox, then Photo Tagger's tags are saved back. Adding or removing a tag on a photo already updates Dropbox — no re-tag needed.</p>
+      </div>
       <div className="row wrap">
         <input className="grow" placeholder="Filter labels…" value={q} onChange={(e) => setQ(e.target.value)} />
-        <button className="btn" data-testid="retag-all" aria-describedby="retag-all-help-text" onClick={() => void lib.retagAll()}>Re-tag library now</button>
         <button className="btn" onClick={() => { void lib.resetVocabulary(); onDirty() }}>Reset labels</button>
       </div>
-      <p className="muted small" id="retag-all-help-text" data-testid="retag-all-help">Re-analyzes every photo in the library and updates detected tags (faces aren't re-scanned). Dropbox photos pick up tag changes made in Dropbox, then Photo Tagger's tags are saved back. Adding or removing a tag on a photo already updates Dropbox — no re-tag needed.</p>
       {[...groups.entries()].map(([g, ls]) => (
         <div key={g} className="vocab-group">
           <h4>{g}</h4>
