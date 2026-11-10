@@ -86,6 +86,10 @@ export interface Settings {
   faceThreshold: number
   /** max dHash Hamming distance (0–64) to treat two photos as near-duplicates */
   dupeThreshold: number
+  /** Dropbox imports larger than this are tagged, saved and verified in batches (1.0.27) */
+  dropboxBatchSize: number
+  /** show "Check your detection list first" before a Dropbox import into an empty library (1.0.27) */
+  askBeforeFirstImport: boolean
   /** when a save-folder is remembered and permission is still granted, write each newly tagged photo there */
   autoSaveFolder: boolean
 }
@@ -111,6 +115,8 @@ export const DEFAULT_SETTINGS: Settings = {
   faceEnabled: true,
   faceThreshold: 0.5,
   dupeThreshold: 8,
+  dropboxBatchSize: 100,
+  askBeforeFirstImport: true,
   autoSaveFolder: false,
 }
 

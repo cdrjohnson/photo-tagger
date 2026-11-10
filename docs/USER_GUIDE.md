@@ -40,6 +40,25 @@ Photos are added **from Dropbox** only (since 1.0.17 there's no Choose photos / 
 | **↻ Refresh** (header button, also inside the Dropbox browser) | Re-checks the Dropbox folders you've tagged before and tags only photos that are new since last time. |
 
 
+### Check your detection list first (first import)
+
+When your library is **empty** and you start an import from Dropbox (**Tag new photos here**, **Tag N selected**, **Add next batch**, **Add all remaining**, the resume banner or **↻ Refresh**), Photo Tagger first asks **“Check your detection list first”** — before anything is downloaded or analysed. It explains that every imported photo automatically gets tags from your **Detection list** and **Photo metadata** settings (and that they're saved to Dropbox), with a short summary: how many built-in detection tags are on, your custom detection tags, which metadata tags (Year, Camera, Geotagged, Blurry, Dark, Bright) are on or off, and whether face recognition is on.
+
+- **Review detection list** (focused by default, so Enter never starts an import) opens **Settings → Tags** scrolled to the **Detection list** card. The import does not start; start it again when you're happy.
+- **Tag with these settings** starts the import.
+- **Cancel** (or Esc / ✕) does nothing.
+- **Don't show this again** stops the question. Turn it back on in **Settings → Dropbox → Imports → Ask me to check the detection list before the first import**.
+
+It only appears while the library has no photos — never for imports into a library that already has photos.
+
+### Large folders: batches and folder progress
+
+Big imports are done in **batches** (Settings → Dropbox → **Photos per batch**, default 100, 10–500). Each batch is tagged (three photos at a time), then Photo Tagger waits until that batch's tags are **saved to Dropbox**, **verifies** them by reading them back from Dropbox, and only then starts the next batch. The banner shows where it is: **“Batch 2 of 7 · tagging 37 of 100”**, **“Batch 2 of 7 · saving tags to Dropbox…”**, **“Batch 2 of 7 · verifying…”**. Photos whose tags didn't fully land (missing, 20-tag limit, errors) are added to the Dropbox save list (**View** / **Retry now**, see below). **Cancel** stops before the next batch; finished photos stay. Imports at or below the batch size run as one batch and are verified too.
+
+In the Dropbox browser every folder row (and the **This folder** line for the open folder) shows how much of it is in your library — e.g. **“1,200 of 2,000 in library (this folder only)”** or **“All in library”** — counted from Dropbox's file list only (nothing is downloaded). Counts follow **Include subfolders** (“incl. subfolders” / “this folder only”) and include videos; files that were skipped (no video preview yet, duplicates) are shown as skipped and don't stop a folder from reading **All in library**. **Add next batch (N)** adds the next N photos not yet in the library, in name order; **Add all remaining** adds the rest in batches.
+
+If the app is closed in the middle of a folder import, the next time you open it a banner says e.g. **“Import of /Photos/2019 stopped at 1,200 of 2,000. Continue?”** — **Continue** adds the remaining photos, **Dismiss** forgets it. (Tag saves that were still queued resume on their own.)
+
 ![Add menu](images/desktop-add-menu.png)
 
 The first time, the app downloads its tagging model (about 64 MB) – a progress bar shows this. It is stored in the browser, so this only happens once. Photos you add again later (same name, size and date) are skipped as duplicates.

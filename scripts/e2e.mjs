@@ -174,7 +174,7 @@ async function stubDropbox(ctx) {
       const key = String(id).replace(/^id:meta-/, '').toLowerCase()
       return st.meta.has(key) ? r.fulfill({ status: 200, headers: { ...CORS, 'content-type': 'application/octet-stream' }, body: st.meta.get(key) }) : r.fulfill({ status: 409, headers: CORS, contentType: 'application/json', body: '{"error_summary":"path/not_found/"}' })
     }
-    st.downloads[id] = (st.downloads[id] || 0) + 1
+    st.downloads[id] = (st.downloads[id] || 0) + 1; (st.dlOrder ??= []).push(id)
     if (st.flakyOnce.has(id)) { st.flakyOnce.delete(id); return r.abort('failed') } // transient — app should retry
     if (st.failDownload) return r.fulfill({ status: 409, headers: CORS, contentType: 'application/json', body: '{"error_summary":"path/not_found/"}' })
     if (id === 'id:slow-b') await new Promise((res) => setTimeout(res, 8_000))
@@ -996,6 +996,7 @@ await test('Dropbox: Refresh re-lists linked folders and skips already-seen file
   await page.getByTestId('add-dropbox-refresh').click()
   await page.locator('.toast', { hasText: /No new photos — 2 already in your library/ }).waitFor({ timeout: 30_000 })
   eq(dbx.downloads, before, 'nothing re-downloaded')
+  eq(await page.getByTestId('preimport-check').count(), 0, 'no "check your detection list" prompt when the library already has photos')
   // now include subfolders: only trip.jpg is new
   await page.getByTestId('add-btn').click()
   await page.locator('[data-testid=dropbox-folder][data-name="Photos"]').click()
@@ -1185,6 +1186,8 @@ await test('Dropbox write queue (1.0.26): bulk add survives 429/5xx/network/401;
     await p7.locator('[data-testid=dropbox-folder][data-name="Picks"]').click()
     await p7.locator('[data-testid=dropbox-file][data-name="pick-4.jpg"]').waitFor()
     await p7.getByTestId('dropbox-process').click()
+    await p7.getByTestId('preimport-check').waitFor() // empty library → "Check your detection list first"
+    await p7.getByTestId('preimport-proceed').click()
     for (const n of ['pick-1.jpg', 'pick-2.jpg', 'pick-3.jpg', 'pick-4.jpg']) await waitTile(n, p7, 300_000)
     await p7.waitForFunction(() => document.querySelectorAll('[data-testid=photo-tile][data-status=ready]').length === 4, null, { timeout: 300_000 })
     await flush7(); await p7.getByTestId('save-status').waitFor({ state: 'detached', timeout: 30_000 })
@@ -1273,6 +1276,157 @@ await test('Dropbox write queue (1.0.26): bulk add survives 429/5xx/network/401;
   } finally { await c7.close() }
 })
 
+await test('Large Dropbox imports (1.0.27): "Check your detection list first" on an empty library; batches are tagged, saved and verified; folder progress; resume after reload', async () => {
+  const ARCH = ['beach.jpg', 'cat.jpg', 'city.jpg', 'pizza.jpg', 'mountain.jpg', 'person.jpg', 'document.jpg', 'dog.jpg', 'dark-city.jpg', 'screenshot.png', 'obama-biden-2009.jpg', 'dropbox-stub.jpg']
+  const archIds = ARCH.map((_, i) => 'id:arch' + String(i + 1).padStart(2, '0'))
+  ARCH.forEach((n, i) => { SAMPLE_BY_ID[archIds[i]] = n })
+  DBX_TREE['/archive'] = ARCH.map((n, i) => dbxFile(archIds[i], `a${String(i + 1).padStart(2, '0')}-${n}`, '/Archive'))
+  DBX_TREE[''].splice(1, 0, dbxDir('Archive', ''))
+  const c8 = await browser.newContext({ viewport: { width: 1280, height: 860 } })
+  await routeModel(c8).catch(() => {})
+  const st = await stubDropbox(c8)
+  const p8 = await c8.newPage()
+  const errs8 = []; p8.on('pageerror', (e) => errs8.push(e.message))
+  const archDl = () => (st.dlOrder ?? []).filter((id) => id.startsWith('id:arch'))
+  const tiles = () => p8.getByTestId('photo-tile').count()
+  const here = () => p8.locator('[data-testid=dropbox-here-progress] [data-testid=folder-progress][data-total]')
+  const openArchive = async () => {
+    await p8.getByTestId('add-btn').click()
+    await p8.locator('[data-testid=dropbox-folder][data-name="Archive"]').click()
+    await here().waitFor({ timeout: 30_000 })
+  }
+  const settings = async (tab) => { await p8.getByTestId('open-settings').click(); await p8.getByTestId(`tab-${tab}`).click() }
+  const removeAll = async () => {
+    await p8.getByTestId('select-mode').click(); await p8.getByTestId('sel-all').click(); await p8.getByTestId('sel-delete').click()
+    await p8.getByTestId('remove-confirm-btn').click()
+    await p8.waitForFunction(() => !document.querySelector('[data-testid=photo-tile]'), null, { timeout: 30_000 })
+    if (await p8.getByTestId('sel-cancel').count()) await p8.getByTestId('sel-cancel').click()
+  }
+  const allReady = (n) => p8.waitForFunction((n) => { const t = [...document.querySelectorAll('[data-testid=photo-tile]')]; return t.length >= n && t.every((e) => e.dataset.status !== 'pending') }, n, { timeout: 400_000 })
+  const waitIdle = () => p8.waitForFunction(() => !document.querySelector('[data-testid=job-label]') || /Done|Cancelled/.test(document.querySelector('[data-testid=job-label]').textContent), null, { timeout: 400_000 })
+  try {
+    await p8.goto(URL_BASE); await p8.getByTestId('empty').waitFor()
+    await connectDropbox(p8, 'batch_key')
+    await settings('dropbox')
+    ok(await p8.getByTestId('set-ask-first-import').isChecked(), 'Ask me to check the detection list is on by default')
+    await p8.getByTestId('set-batch-size').fill('10')
+    await p8.getByTestId('settings-close').click()
+
+    // folder progress before anything is imported (metadata only)
+    await openArchive()
+    ok(/0 of 12 in library \(this folder only\)/.test(await here().textContent()), 'progress before import: ' + await here().textContent())
+    ok(/Add next batch \(10\)/.test(await p8.getByTestId('dropbox-here-progress').textContent()), 'next batch = batch size')
+    eq(archDl(), [], 'counting a folder downloads nothing')
+
+    // 1) Cancel → nothing imported, nothing downloaded
+    await p8.getByTestId('dropbox-process').click()
+    const dlg = p8.getByTestId('preimport-check')
+    await dlg.waitFor()
+    ok(/Check your detection list first/.test(await dlg.textContent()), 'title')
+    eq(await p8.evaluate(() => document.activeElement?.dataset.testid), 'preimport-review', 'focus starts on Review (safe), not on Tag')
+    ok(/built-in detection tags on/.test(await p8.getByTestId('preimport-detect').textContent()), 'detection summary: ' + await p8.getByTestId('preimport-detect').textContent())
+    ok(/Year, Camera, Geotagged, Blurry, Dark, Bright/.test(await p8.getByTestId('preimport-meta').textContent()), 'metadata summary: ' + await p8.getByTestId('preimport-meta').textContent())
+    await p8.keyboard.press('Enter') // Enter on the focused safe button = Review, never an import
+    await p8.getByTestId('settings').waitFor()
+    await p8.getByTestId('settings-close').click()
+    await p8.waitForTimeout(800)
+    eq([archDl(), await tiles(), await p8.getByTestId('job-label').count()], [[], 0, 0], 'Enter did not import')
+    await openArchive()
+    await p8.getByTestId('dropbox-process').click()
+    await dlg.waitFor()
+    await p8.getByTestId('preimport-cancel').click()
+    await dlg.waitFor({ state: 'detached' })
+    await p8.waitForTimeout(1500)
+    eq([archDl(), await tiles(), await p8.getByTestId('job-label').count()], [[], 0, 0], 'Cancel imports nothing')
+
+    // 2) Review detection list (from Add next batch) → Settings → Tags, Detection card in view and focused; nothing imported
+    await openArchive()
+    await p8.getByTestId('dropbox-here-progress').getByTestId('folder-next-batch').click()
+    await dlg.waitFor()
+    await p8.getByTestId('preimport-review').click()
+    await p8.getByTestId('settings').waitFor()
+    eq(await p8.getByTestId('tab-vocab').getAttribute('aria-selected'), 'true', 'Tags tab open')
+    await p8.waitForFunction(() => document.activeElement?.dataset.testid === 'detection-card')
+    ok(await p8.getByTestId('detection-card').evaluate((el) => { const r = el.getBoundingClientRect(); const b = el.closest('.settings-body').getBoundingClientRect(); return r.top >= b.top - 2 && r.top < b.bottom }), 'Detection card scrolled into view')
+    await p8.getByTestId('settings-close').click()
+    await p8.waitForTimeout(1000)
+    eq([archDl(), await tiles()], [[], 0], 'Review starts no import')
+
+    // 3) Don't show again + Tag with these settings → 12 photos in 2 batches (10 + 2), each saved and verified
+    await p8.evaluate(() => {
+      window.__labels = []
+      new MutationObserver(() => { const t = document.querySelector('[data-testid=job-label]')?.textContent; if (t && window.__labels.at(-1) !== t) window.__labels.push(t) }).observe(document.body, { subtree: true, childList: true, characterData: true })
+    })
+    await openArchive()
+    await p8.getByTestId('dropbox-process').click()
+    await dlg.waitFor()
+    await p8.getByTestId('preimport-dont-ask').check()
+    await p8.getByTestId('preimport-proceed').click()
+    await allReady(12)
+    await p8.locator('.toast', { hasText: /in 2 batches/ }).waitFor({ timeout: 120_000 })
+    await waitIdle()
+    const labels = await p8.evaluate(() => window.__labels)
+    for (const re of [/Batch 1 of 2 · tagging \d+ of 10/, /Batch 1 of 2 · (saving tags to Dropbox|verifying)/, /Batch 2 of 2 · tagging \d+ of 2/]) ok(labels.some((l) => re.test(l)), `progress label ${re}: ${labels.slice(0, 40).join(' | ')}`)
+    const firstVerify = labels.findIndex((l) => /Batch 1 of 2 · verifying/.test(l)), firstB2 = labels.findIndex((l) => /Batch 2 of 2/.test(l))
+    ok(firstVerify >= 0 && firstVerify < firstB2, 'batch 2 starts only after batch 1 was verified')
+    eq(archDl().slice(0, 10).sort(), archIds.slice(0, 10), 'first batch = first 10 files by name')
+    for (const id of archIds) ok((st.fileTags.get(id)?.size ?? 0) > 0, `tags saved to Dropbox for ${id}`)
+    for (const f of DBX_TREE['/archive']) ok(st.tagGets.filter((x) => x === f.path_display).length >= 2, `${f.name} read back (import + verify)`)
+    eq(await p8.evaluate(() => new Promise((res) => { const r = indexedDB.open('photo-tagger'); r.onsuccess = () => { const q = r.result.transaction('kv').objectStore('kv').get('settings'); q.onsuccess = () => res(q.result?.askBeforeFirstImport) } })), false, "Don't show again saved")
+    await openArchive()
+    ok(/All in library/.test(await here().textContent()), 'folder says All in library: ' + await here().textContent())
+    await p8.getByTestId('dropbox-crumb').first().click()
+    await p8.locator('[data-testid=dropbox-folder-row][data-name="Archive"] [data-testid=folder-progress][data-total]').waitFor()
+    ok(/All in library/.test(await p8.locator('[data-testid=dropbox-folder-row][data-name="Archive"] [data-testid=folder-progress]').textContent()), 'folder row shows All in library')
+    await p8.getByTestId('dropbox-browser-close').click()
+
+    // 4) Don't-show-again persists across reload: empty library again, Add all remaining starts straight away; reload mid-run → resume banner
+    await removeAll()
+    await p8.reload(); await p8.getByTestId('empty').waitFor()
+    await settings('dropbox')
+    ok(!(await p8.getByTestId('set-ask-first-import').isChecked()), 'setting off after reload')
+    await p8.getByTestId('settings-close').click()
+    const dl0 = archDl().length
+    await openArchive()
+    await p8.getByTestId('dropbox-here-progress').getByTestId('folder-add-remaining').click()
+    await p8.getByTestId('job-label').waitFor({ timeout: 15_000 })
+    eq(await dlg.count(), 0, 'no prompt once turned off')
+    await p8.waitForFunction(() => document.querySelectorAll('[data-testid=photo-tile]').length >= 2, null, { timeout: 300_000 })
+    ok(archDl().length > dl0, 'import started without a prompt')
+    await p8.reload(); await p8.locator('[data-testid=grid], [data-testid=empty]').first().waitFor({ timeout: 30_000 })
+    const banner = p8.getByTestId('import-resume')
+    await banner.waitFor({ timeout: 30_000 })
+    ok(/Import of \/Archive stopped at \d+ of 12\. Continue\?/.test(await banner.textContent()), 'resume banner: ' + await banner.textContent())
+    await p8.getByTestId('import-resume-continue').click()
+    await allReady(12)
+    await waitIdle()
+    eq(await tiles(), 12, 'whole folder imported after Continue')
+    eq(await p8.evaluate(() => localStorage.getItem('pt.dropboxRun.v1')), null, 'run record cleared when finished')
+
+    // 5) Re-enable in Settings: not shown while photos exist (Refresh), shown again once the library is empty (Refresh + picker)
+    await settings('dropbox'); await p8.getByTestId('set-ask-first-import').check(); await p8.getByTestId('settings-close').click()
+    await p8.getByTestId('add-dropbox-refresh').click()
+    await p8.locator('.toast', { hasText: /No new photos/ }).waitFor({ timeout: 30_000 })
+    eq(await dlg.count(), 0, 'not shown when the library has photos')
+    await removeAll()
+    const dl1 = archDl().length
+    await p8.getByTestId('add-dropbox-refresh').click()
+    await dlg.waitFor()
+    await p8.keyboard.press('Escape')
+    await dlg.waitFor({ state: 'detached' })
+    await openArchive()
+    await p8.getByTestId('dropbox-process').click()
+    await dlg.waitFor()
+    await p8.getByTestId('preimport-cancel').click()
+    await p8.waitForTimeout(1500)
+    eq([archDl().length, await tiles()], [dl1, 0], 'Refresh and picker asked again; Cancel/Escape imported nothing')
+    eq(errs8, [], 'no page errors')
+  } finally {
+    await c8.close()
+    delete DBX_TREE['/archive']; DBX_TREE[''].splice(DBX_TREE[''].findIndex((e) => e.name === 'Archive'), 1)
+  }
+})
+
 await test('Dropbox: face recognition runs on Dropbox-backed photos (People clusters)', async () => {
   const c4 = await browser.newContext({ viewport: { width: 1280, height: 860 } })
   await routeModel(c4).catch(() => {})
@@ -1287,6 +1441,8 @@ await test('Dropbox: face recognition runs on Dropbox-backed photos (People clus
     await p4.locator('[data-testid=dropbox-folder][data-name="Faces"]').click()
     await p4.locator('[data-testid=dropbox-file][data-name="biden-2021.jpg"]').waitFor()
     await p4.getByTestId('dropbox-process').click()
+    await p4.getByTestId('preimport-check').waitFor()
+    await p4.getByTestId('preimport-proceed').click()
     for (const n of ['obama-portrait.jpg', 'biden-2013.jpg', 'biden-2021.jpg']) await waitTile(n, p4, 300_000)
     for (let i = 0; i < 300; i++) {
       const done = await p4.evaluate(() => [...document.querySelectorAll('[data-testid=photo-tile]')].length === 3)

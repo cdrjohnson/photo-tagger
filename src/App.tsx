@@ -8,6 +8,8 @@ import { DropboxBrowser } from './components/DropboxBrowser'
 import { RemoveConfirm } from './components/RemoveConfirm'
 import { VerifyDropboxTags } from './components/VerifyDropboxTags'
 import { SaveStatus } from './components/SaveStatus'
+import { ImportResume } from './components/ImportResume'
+import { PreImportCheck } from './components/PreImportCheck'
 
 /** set only by the automated test harness (to load fixture photos); never in normal use */
 const E2E = typeof window !== 'undefined' && !!(window as any).__PT_E2E__
@@ -29,7 +31,7 @@ export default function App() {
   const [sel, setSel] = useState<Set<string>>(new Set())
   const [selectMode, setSelectMode] = useState(false)
   const [open, setOpen] = useState<number | null>(null)
-  const [settings, setSettings] = useState<{ tab?: 'general' | 'dropbox' | 'vocab' | 'data'; note?: string } | null>(null)
+  const [settings, setSettings] = useState<{ tab?: 'general' | 'dropbox' | 'vocab' | 'data'; note?: string; focus?: 'detection' } | null>(null)
   const [allTags, setAllTags] = useState(false)
   const [moreFilters, setMoreFilters] = useState(false)
   const [bulk, setBulk] = useState(false)
@@ -172,6 +174,7 @@ export default function App() {
       )}
 
       <SaveStatus />
+      <ImportResume />
 
       {view === 'photos' && lib.photos.length > 0 && (
         <section className="filters" aria-label="Filters">
@@ -290,7 +293,8 @@ export default function App() {
       {open != null && filtered.length > 0 && (
         <Detail list={filtered} index={Math.min(open, filtered.length - 1)} onIndex={setOpen} onClose={() => setOpen(null)} allTags={everyTag} />
       )}
-      {settings && <SettingsDialog initialTab={settings.tab} note={settings.note} onClose={() => setSettings(null)} />}
+      {settings && <SettingsDialog initialTab={settings.tab} note={settings.note} focus={settings.focus} onClose={() => setSettings(null)} />}
+      <PreImportCheck onReview={() => setSettings({ tab: 'vocab', focus: 'detection' })} />
       
       {dbxBrowser && <DropboxBrowser onClose={() => setDbxBrowser(false)} />}
       {cancelDropboxConfirm && (

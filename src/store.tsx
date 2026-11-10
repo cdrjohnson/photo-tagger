@@ -13,6 +13,18 @@ import { fetchDropboxOriginal } from './dropbox'
 import { parseImport, toCSV, toJSON, download } from './exportImport'
 import { DEFAULT_SETTINGS, type CustomLabel, type DropboxRef, type Photo, type Settings, type Tag } from './types'
 
+
+// ---------- per-folder import progress (1.0.27) ----------
+/** Progress is derived from the library (Dropbox file ids in the sidecars); only two tiny local records exist. */
+export interface FolderProgress { path: string; recursive: boolean; total: number; inLibrary: number; skipped: number; remaining: number }
+const SKIP_KEY = 'pt.dropboxSkipped.v1', RUN_KEY = 'pt.dropboxRun.v1'
+/** Dropbox file ids that can't be imported (duplicate content, video without a preview) so "All in library" isn't blocked forever */
+export function skippedFiles(): Record<string, string> { try { return JSON.parse(localStorage.getItem(SKIP_KEY) || '{}') } catch { return {} } }
+function markSkipped(id: string, reason: string) { try { const m = skippedFiles(); m[id] = reason; localStorage.setItem(SKIP_KEY, JSON.stringify(m)) } catch { /* ignore */ } }
+export type RunRecord = { path: string; recursive: boolean; at: number }
+export function runRecord(): RunRecord | null { try { return JSON.parse(localStorage.getItem(RUN_KEY) || 'null') } catch { return null } }
+export function setRunRecord(r: RunRecord | null) { try { if (r) localStorage.setItem(RUN_KEY, JSON.stringify(r)); else localStorage.removeItem(RUN_KEY) } catch { /* ignore */ } }
+
 export interface Job { label: string; total: number; done: number; failed: number; /** true only while Dropbox files are downloading */ cancellable?: boolean }
 export interface Toast { id: number; text: string; kind: 'info' | 'error' | 'ok' }
 export interface ModelInfo { state: ModelState; phase: ModelProgress['phase']; loaded: number; total: number; error: string }
@@ -37,8 +49,18 @@ export interface Library {
   /** Tag every new image in a Dropbox folder; originals are not kept locally. */
   processDropboxFolder(path: string, recursive: boolean): Promise<void>
   processDropboxFiles(files: DropboxFile[]): Promise<void>
+  /** true while "Check your detection list first" is waiting for an answer (empty library, 1.0.27) */
+  preImportAsk: boolean
+  /** answer the pre-import check: proceed starts the import; review/cancel start nothing */
+  answerPreImport(choice: 'proceed' | 'review' | 'cancel', dontAskAgain: boolean): void
   /** Re-scan remembered Dropbox folders and process only files not yet in the library. */
   refreshDropbox(): Promise<void>
+  /** per-folder import progress derived from the library (metadata listing only, no downloads) */
+  dropboxFolderProgress(path: string, recursive: boolean): Promise<FolderProgress>
+  /** add the next "Photos per batch" not-yet-imported files of a folder (sorted by path) */
+  addNextDropboxBatch(path: string, recursive: boolean): Promise<void>
+  /** add every remaining file of a folder, in batches */
+  addAllRemainingDropbox(path: string, recursive: boolean): Promise<void>
   forgetDropboxFolder(path: string): Promise<void>
   /** Abort remaining Dropbox downloads; already-finished files are still tagged. */
   cancelDropboxDownload(): void
@@ -144,6 +166,15 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
   const running = useRef(false)
   const jobRef = useRef<Job | null>(null)
   const dropboxAbortRef = useRef<AbortController | null>(null)
+  /** pending "Check your detection list first" question (resolves true = go ahead) */
+  const preImportRef = useRef<((go: boolean) => void) | null>(null)
+  const [preImportAsk, setPreImportAsk] = useState(false)
+  /** Before the first import into an empty library, ask the user to check the Detection list (nothing is downloaded until they answer). */
+  const confirmFirstImport = useCallback((): Promise<boolean> => {
+    if (photosRef.current.length > 0 || settingsRef.current.askBeforeFirstImport === false) return Promise.resolve(true)
+    if (preImportRef.current) return Promise.resolve(false)
+    return new Promise<boolean>((res) => { preImportRef.current = res; setPreImportAsk(true) })
+  }, [])
   const modelFailed = useRef(false)
   /** Face-detection models failed once — toast once, then skip without spamming. */
   const faceFailed = useRef(false)
@@ -748,9 +779,28 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
     }
   }, [finishPhoto])
 
-  const processDropbox = useCallback(async (targets: LinkedFolder[], picked?: DropboxFile[]) => {
+  /** files Photo Tagger can import from a folder, in a stable order (by path) — metadata only */
+  const dropboxFolderFiles = useCallback(async (path: string, recursive: boolean) => {
+    const c = dbxClientRef.current
+    if (!c) throw new Error('Dropbox is not connected')
+    const all = await c.listFolder(path, { recursive })
+    return (all.filter((e) => e.kind === 'file' && isDropboxMedia(e.name) && !e.pathLower.startsWith('/.photo-tagger')) as DropboxFile[])
+      .sort((a, b) => (a.pathLower < b.pathLower ? -1 : a.pathLower > b.pathLower ? 1 : 0))
+  }, [])
+  const dropboxFolderProgress = useCallback(async (path: string, recursive: boolean): Promise<FolderProgress> => {
+    const files = await dropboxFolderFiles(path, recursive)
+    const lib = new Set(photosRef.current.map((p) => p.dropbox?.id).filter(Boolean) as string[])
+    const sk = skippedFiles()
+    let inLibrary = 0, skipped = 0
+    for (const f of files) { if (lib.has(f.id)) inLibrary++; else if (sk[f.id]) skipped++ }
+    return { path, recursive, total: files.length, inLibrary, skipped, remaining: files.length - inLibrary - skipped }
+  }, [dropboxFolderFiles])
+
+  const processDropbox = useCallback(async (targets: LinkedFolder[], picked?: DropboxFile[], opts: { skipKnown?: boolean; run?: { path: string; recursive: boolean }; confirmed?: boolean } = {}) => {
     const c = dbxClientRef.current
     if (!c) { toast('Connect Dropbox first (Settings → Dropbox)', 'error'); return }
+    if (dropboxAbortRef.current) { toast('A Dropbox job is already running'); return }
+    if (!opts.confirmed && !(await confirmFirstImport())) return
     if (dropboxAbortRef.current) { toast('A Dropbox job is already running'); return }
     const ac = new AbortController()
     dropboxAbortRef.current = ac
@@ -768,6 +818,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
       }
       const seen = new Set<string>()
       for (const p of photosRef.current) if (p.dropbox?.id) seen.add(p.dropbox.id)
+      const known = opts.skipKnown ? skippedFiles() : {}
       for (const n of nearRef.current) if (n.prep?.photo.dropbox?.id) seen.add(n.prep.photo.dropbox.id)
       const files: DropboxFile[] = []
       const alreadyIds: string[] = []
@@ -778,9 +829,15 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
         for (const e of entries) {
           if (e.kind !== 'file' || !isDropboxMedia(e.name) || e.pathLower.startsWith('/.photo-tagger')) continue
           if (seen.has(e.id)) { already++; alreadyIds.push(e.id); continue }
+          if (known[e.id]) continue
           seen.add(e.id); files.push(e)
         }
       }
+      // deterministic order (by path) so "Add next batch" is predictable
+      files.sort((a, b) => (a.pathLower < b.pathLower ? -1 : a.pathLower > b.pathLower ? 1 : 0))
+      // remember a single-folder run so an interrupted import can be offered again on next open (one tiny record)
+      const run = opts.run ?? (!picked && targets.length === 1 ? { path: targets[0].path, recursive: targets[0].recursive } : null)
+      if (run && files.length) setRunRecord({ ...run, at: Date.now() })
       // Pick up Dropbox tags added since the last visit (no re-download / re-tagging needed)
       if (alreadyIds.length) {
         const dset = new Set(alreadyIds)
@@ -793,45 +850,74 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
         await saveFolders(dbxFoldersRef.current.map((f) => targets.some((t) => t.path.toLowerCase() === f.path.toLowerCase()) ? { ...f, lastSync: Date.now() } : f))
         return
       }
-      setJobBoth({ label: 'Tagging from Dropbox…', total: files.length, done: 0, failed: 0, cancellable: true })
-      let next = 0, done = 0, failed = 0, imported = 0
+      // Large imports run in batches: tag a batch, wait until its tags are saved to Dropbox, verify them, then go on (1.0.27)
+      const size = Math.max(10, Math.min(500, Math.round(settingsRef.current.dropboxBatchSize || 100)))
+      const batches: DropboxFile[][] = []
+      for (let k = 0; k < files.length; k += size) batches.push(files.slice(k, k + size))
+      const multi = batches.length > 1
+      let batchNo = 0, batchDone = 0, batchLen = 0
+      const tagLabel = (name?: string) => multi ? `Batch ${batchNo} of ${batches.length} · tagging ${batchDone} of ${batchLen}` : name ? `Tagging from Dropbox · ${name}` : 'Tagging from Dropbox…'
+      setJobBoth({ label: multi ? `Batch 1 of ${batches.length} · tagging 0 of ${batches[0].length}` : 'Tagging from Dropbox…', total: files.length, done: 0, failed: 0, cancellable: true })
+      let done = 0, failed = 0, imported = 0, verifyProblems = 0
       const noPreview: string[] = []
-      const worker = async () => {
-        while (true) {
-          if (ac.signal.aborted) return
-          const i = next++
-          if (i >= files.length) return
-          const f = files[i]
-          bumpJob({ label: `Tagging from Dropbox · ${f.name}`, done, failed })
-          try {
-            // Photos: original bytes live only in memory for this step, then are dropped.
-            // Videos: only Dropbox's preview frame is used — the movie is never downloaded.
-            let file: File
-            if (isDropboxVideo(f.name)) {
-              const frame = await c.preview(f, 'w2048h1536')
-              if (!frame) { noPreview.push(f.name); done++; bumpJob({ label: `No preview yet · ${f.name}`, done, failed }); continue }
-              file = new File([frame], f.name, { type: 'image/jpeg' })
-            } else file = await downloadWithRetry(c, f, ac.signal)
-            const result = await ingestOneFile(file, 'dropbox', { id: f.id, path: f.path, rev: f.rev, contentHash: f.contentHash })
-            if (result === 'error') failed++
-            else imported++
-            if (result === 'added') {
-              const np = photosRef.current.find((p) => p.dropbox?.id === f.id)
-              if (np) syncFromRemote(await Remote.importNativeTags([np.id]))
+      for (const batch of batches) {
+        if (ac.signal.aborted) break
+        batchNo++; batchDone = 0; batchLen = batch.length
+        let next = 0
+        const worker = async () => {
+          while (true) {
+            if (ac.signal.aborted) return
+            const i = next++
+            if (i >= batch.length) return
+            const f = batch[i]
+            bumpJob({ label: tagLabel(f.name), done, failed })
+            try {
+              // Photos: original bytes live only in memory for this step, then are dropped.
+              // Videos: only Dropbox's preview frame is used — the movie is never downloaded.
+              let file: File
+              if (isDropboxVideo(f.name)) {
+                const frame = await c.preview(f, 'w2048h1536')
+                if (!frame) { noPreview.push(f.name); markSkipped(f.id, 'no preview'); done++; batchDone++; bumpJob({ label: multi ? tagLabel() : `No preview yet · ${f.name}`, done, failed }); continue }
+                file = new File([frame], f.name, { type: 'image/jpeg' })
+              } else file = await downloadWithRetry(c, f, ac.signal)
+              const result = await ingestOneFile(file, 'dropbox', { id: f.id, path: f.path, rev: f.rev, contentHash: f.contentHash })
+              if (result === 'error') failed++
+              else imported++
+              if (result === 'duplicate') markSkipped(f.id, 'duplicate')
+              if (result === 'added') {
+                const np = photosRef.current.find((p) => p.dropbox?.id === f.id)
+                if (np) syncFromRemote(await Remote.importNativeTags([np.id]))
+              }
+              done++; batchDone++
+              bumpJob({ label: tagLabel(f.name), done, failed })
+            } catch (e: any) {
+              if (e?.name === 'AbortError' || ac.signal.aborted) return
+              failed++; done++; batchDone++
+              bumpJob({ label: tagLabel(), done, failed })
             }
-            done++
-            bumpJob({ label: `Tagging from Dropbox · ${f.name}`, done, failed })
-          } catch (e: any) {
-            if (e?.name === 'AbortError' || ac.signal.aborted) return
-            failed++; done++
-            bumpJob({ label: 'Tagging from Dropbox…', done, failed })
           }
         }
+        await Promise.all(Array.from({ length: Math.min(3, batch.length) }, () => worker()))
+        if (ac.signal.aborted) break
+        // wait for this batch's Dropbox saves (the 1.0.26 queue) — the next batch starts only after they landed or were listed as failed
+        const ids = new Set(batch.map((f) => f.id))
+        const batchPhotos = photosRef.current.filter((p) => p.dropbox && ids.has(p.dropbox.id))
+        const pre = multi ? `Batch ${batchNo} of ${batches.length} · ` : ''
+        try {
+          bumpJob({ label: `${pre}saving tags to Dropbox…` })
+          void Remote.flush(false)
+          await Remote.waitForSaved(batchPhotos.map((p) => p.id), ac.signal)
+          bumpJob({ label: `${pre}verifying…` })
+          verifyProblems += Remote.reportVerifyProblems(await Remote.verifyDropboxTags(batchPhotos.map((p) => photosRef.current.find((x) => x.id === p.id) ?? p)))
+        } catch (e: any) {
+          if (e?.name === 'AbortError' || ac.signal.aborted) break
+          toast(`Could not verify batch ${batchNo}: ${e?.message || e}`, 'error')
+        }
       }
-      await Promise.all(Array.from({ length: Math.min(3, files.length) }, () => worker()))
       if (noPreview.length) toast(`${noPreview.length} video(s) skipped — Dropbox has no preview frame for them yet (the video isn't downloaded to tag it). Try again later: ${noPreview.slice(0, 3).join(', ')}${noPreview.length > 3 ? '…' : ''}`, 'error')
       dropboxAbortRef.current = null
       const cancelled = ac.signal.aborted
+      setRunRecord(null) // finished or cancelled on purpose: nothing to offer next time
       setJobBoth({ label: cancelled ? 'Cancelled' : 'Done', total: files.length, done: cancelled ? files.length : done, failed, cancellable: false })
       if (!cancelled) await saveFolders(dbxFoldersRef.current.map((f) => targets.some((t) => t.path.toLowerCase() === f.path.toLowerCase()) ? { ...f, lastSync: Date.now() } : f))
       if (cancelled) {
@@ -840,7 +926,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
       } else if (failed > 0) {
         toast(`Tagged ${imported} photo(s) from Dropbox · ${failed} could not be read`, imported ? 'info' : 'error')
       } else {
-        toast(`Tagged ${imported} new photo(s) from Dropbox${already ? ` · ${already} already in library` : ''}`, 'ok')
+        toast(`Tagged ${imported} new photo(s) from Dropbox${already ? ` · ${already} already in library` : ''}${multi ? ` in ${batches.length} batches` : ''}${verifyProblems ? ` · ${verifyProblems} need attention (see the Dropbox save list)` : ' · tags verified in Dropbox'}`, verifyProblems ? 'info' : 'ok')
       }
       endJob()
     } catch (e: any) {
@@ -848,7 +934,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
       setJobBoth(null)
       if (e?.name !== 'AbortError') toast(e?.message || 'Dropbox failed', 'error')
     }
-  }, [ingestOneFile, toast])
+  }, [ingestOneFile, toast, confirmFirstImport])
 
   const processDropboxFolder = useCallback((path: string, recursive: boolean) => processDropbox([{ path, recursive }]), [processDropbox])
   /** tag only these hand-picked files (same pipeline; the folder is not linked for Refresh) */
@@ -857,6 +943,20 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
     if (!dbxFoldersRef.current.length) { toast('No Dropbox folders linked yet — open From Dropbox and tag a folder'); return }
     await processDropbox(dbxFoldersRef.current)
   }, [processDropbox, toast])
+  const addNextDropboxBatch = useCallback(async (path: string, recursive: boolean) => {
+    if (dropboxAbortRef.current) { toast('A Dropbox job is already running'); return }
+    if (!(await confirmFirstImport())) return
+    try {
+      const files = await dropboxFolderFiles(path, recursive)
+      const lib = new Set(photosRef.current.map((p) => p.dropbox?.id).filter(Boolean) as string[])
+      const sk = skippedFiles()
+      const rest = files.filter((f) => !lib.has(f.id) && !sk[f.id])
+      if (!rest.length) { toast('All photos in this folder are already in your library', 'ok'); return }
+      const n = Math.max(10, Math.min(500, Math.round(settingsRef.current.dropboxBatchSize || 100)))
+      await processDropbox([], rest.slice(0, n), { skipKnown: true, run: { path, recursive }, confirmed: true })
+    } catch (e: any) { toast(e?.message || 'Dropbox failed', 'error') }
+  }, [dropboxFolderFiles, processDropbox, toast, confirmFirstImport])
+  const addAllRemainingDropbox = useCallback((path: string, recursive: boolean) => processDropbox([{ path, recursive }], undefined, { skipKnown: true }), [processDropbox])
   const forgetDropboxFolder = useCallback(async (path: string) => {
     await saveFolders(dbxFoldersRef.current.filter((f) => f.path !== path))
   }, [])
@@ -1016,6 +1116,13 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
     setSettings(next)
     await DB.kvSet('settings', next)
   }, [])
+  const answerPreImport = useCallback((choice: 'proceed' | 'review' | 'cancel', dontAskAgain: boolean) => {
+    if (dontAskAgain) void saveSettings({ askBeforeFirstImport: false })
+    const res = preImportRef.current
+    preImportRef.current = null
+    setPreImportAsk(false)
+    res?.(choice === 'proceed')
+  }, [saveSettings])
 
   const saveCustom = async (c: CustomLabel[]) => {
     customRef.current = c; setCustom(c)
@@ -1119,7 +1226,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
     pendingCount: photos.filter((p) => p.status === 'pending').length,
     dropboxKey,
     dropbox: { connected: !!dbxSession, account: dbxSession?.name || dbxSession?.email || '', folders: dbxFolders, connecting: dbxConnecting },
-    connectDropbox, disconnectDropbox, listDropbox, dropboxThumb, processDropboxFolder, processDropboxFiles, refreshDropbox, forgetDropboxFolder,
+    connectDropbox, disconnectDropbox, listDropbox, dropboxThumb, processDropboxFolder, processDropboxFiles, preImportAsk, answerPreImport, refreshDropbox, dropboxFolderProgress, addNextDropboxBatch, addAllRemainingDropbox, forgetDropboxFolder,
     addFiles, cancelDropboxDownload, updatePhotos, addTags, removeTags, deletePhotos, retagAll, retagPhoto, pullDropboxTags, retryPending,
     saveSettings, addCustomLabel, removeCustomLabel, toggleLabel, toggleMetaTag, resetVocabulary, exportData, importTags,
     clearEverything, toast, preloadModel, setAfterIngest,
@@ -1127,7 +1234,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
     folderSupported: canPickFolder, folderName, chooseSaveFolder, clearSaveFolder: clearSaveFolderFn,
     libraryPath, isDesktop: DB.isDesktop(), chooseLibraryFolder, changeLibraryFolder, portable, useLibraryBesideApp,
     savePhotosToDisk, downloadPhotosZip,
-  }), [ready, photos, settings, custom, job, model, toasts, dropboxKey, dbxSession, dbxFolders, dbxConnecting, connectDropbox, disconnectDropbox, listDropbox, dropboxThumb, processDropboxFolder, processDropboxFiles, refreshDropbox, forgetDropboxFolder, addFiles, cancelDropboxDownload, updatePhotos, addTags, removeTags,
+  }), [ready, photos, settings, custom, job, model, toasts, dropboxKey, dbxSession, dbxFolders, dbxConnecting, connectDropbox, disconnectDropbox, listDropbox, dropboxThumb, processDropboxFolder, processDropboxFiles, preImportAsk, answerPreImport, refreshDropbox, dropboxFolderProgress, addNextDropboxBatch, addAllRemainingDropbox, forgetDropboxFolder, addFiles, cancelDropboxDownload, updatePhotos, addTags, removeTags,
     deletePhotos, retagAll, retagPhoto, pullDropboxTags, retryPending, saveSettings, addCustomLabel, removeCustomLabel, toggleLabel, toggleMetaTag, resetVocabulary, exportData,
     importTags, clearEverything, toast, preloadModel, setAfterIngest, nearDupes, resolveNearDupe, resolveAllNearDupes, findDuplicates,
     dismissDupePair, folderName, chooseSaveFolder, clearSaveFolderFn, savePhotosToDisk, downloadPhotosZip, libraryPath, chooseLibraryFolder, changeLibraryFolder, portable, useLibraryBesideApp])

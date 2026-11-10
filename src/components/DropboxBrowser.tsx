@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { isDropboxVideo, type DropboxEntry, type DropboxFile } from '../dropbox'
-import { useLibrary } from '../store'
+import { skippedFiles, useLibrary, type FolderProgress } from '../store'
 
 /** Photo Tagger's own Dropbox folder browser (replaces the Chooser pop-up). */
 export function DropboxBrowser({ onClose }: { onClose: () => void }) {
@@ -67,6 +67,7 @@ export function DropboxBrowser({ onClose }: { onClose: () => void }) {
     return () => { window.removeEventListener('pointerup', up); window.removeEventListener('pointercancel', up) }
   }, [])
   const busy = !!lib.job?.cancellable
+  const skipped = useMemo(() => skippedFiles(), [lib.photos, entries])
 
   return (
     <div className="modal sheet" role="dialog" aria-modal="true" aria-labelledby="dbx-title" data-testid="dropbox-browser">
@@ -86,7 +87,10 @@ export function DropboxBrowser({ onClose }: { onClose: () => void }) {
           {!entries && !error && <p className="muted">Loading…</p>}
           {entries && !entries.length && <p className="muted">This folder has no subfolders or images.</p>}
           {folders.map((f) => (
-            <button key={f.id} className="dbx-row" data-testid="dropbox-folder" data-name={f.name} onClick={() => setPath(f.path)}>📁 <span>{f.name}</span></button>
+            <div key={f.id} className="dbx-folder-row" data-testid="dropbox-folder-row" data-name={f.name}>
+              <button className="dbx-row" data-testid="dropbox-folder" data-name={f.name} onClick={() => setPath(f.path)}>📁 <span>{f.name}</span></button>
+              <FolderImport path={f.path} recursive={recursive} busy={busy} onStart={onClose} />
+            </div>
           ))}
           {images.map((f, i) => {
             const file = f as DropboxFile
@@ -98,6 +102,7 @@ export function DropboxBrowser({ onClose }: { onClose: () => void }) {
                 <span className="dbx-file-name" title={f.name}>{isDropboxVideo(f.name) ? '🎬 ' : ''}{f.name}</span>
                 <small className="muted dbx-file-meta" data-testid="dropbox-file-meta">{[fmtDate(file), fmtBytes(file.size)].filter(Boolean).join(' · ')}</small>
                 {have && <small className="dbx-have" data-testid="dropbox-in-library">Already in library</small>}
+                {!have && skipped[f.id] && <small className="muted" data-testid="dropbox-skipped">Skipped before ({skipped[f.id]})</small>}
               </span>
             </>)
             return have ? (
@@ -119,6 +124,7 @@ export function DropboxBrowser({ onClose }: { onClose: () => void }) {
             </div>
           )}
         </div>
+        {path && entries && !error && <div className="dbx-here" data-testid="dropbox-here-progress"><b>This folder:</b> <FolderImport path={path} recursive={recursive} busy={busy} onStart={onClose} /></div>}
         <label className="check" style={chosen.length ? { opacity: 0.55 } : undefined}>
           <input type="checkbox" disabled={chosen.length > 0} checked={recursive} onChange={(e) => setRecursive(e.target.checked)} data-testid="dropbox-recursive" />
           <span>Include subfolders <small>Off by default so you don’t tag your whole Dropbox by accident. Only for tagging the whole folder, not picked photos.</small></span>
@@ -173,6 +179,47 @@ function PickerThumb({ f }: { f: DropboxFile }) {
   return (
     <span ref={ref} className="dbx-thumb" data-testid="dropbox-thumb" data-state={url ? 'loaded' : url === null ? 'failed' : 'waiting'} aria-hidden="true">
       {url ? <img src={url} alt="" draggable={false} /> : <span className="dbx-thumb-ph">{isDropboxVideo(f.name) ? '🎬' : '🖼'}</span>}
+    </span>
+  )
+}
+
+const fmtN = (n: number) => n.toLocaleString('en-US')
+// at most two folder listings at a time (metadata only — nothing is downloaded to count)
+const countQ = { active: 0, wait: [] as (() => void)[] }
+async function slot<T>(fn: () => Promise<T>): Promise<T> {
+  if (countQ.active >= 2) await new Promise<void>((r) => countQ.wait.push(r))
+  countQ.active++
+  try { return await fn() } finally { countQ.active--; countQ.wait.shift()?.() }
+}
+export function progressText(p: FolderProgress) {
+  const scope = p.recursive ? 'incl. subfolders' : 'this folder only'
+  if (!p.total) return `No photos or videos (${scope})`
+  const skip = p.skipped ? ` · ${fmtN(p.skipped)} skipped` : ''
+  return p.remaining <= 0 ? `All in library${skip} (${scope})` : `${fmtN(p.inLibrary)} of ${fmtN(p.total)} in library${skip} (${scope})`
+}
+/** "1,200 of 2,000 in library" plus one-click Add next batch / Add all remaining for one folder. */
+function FolderImport({ path, recursive, busy, onStart }: { path: string; recursive: boolean; busy: boolean; onStart: () => void }) {
+  const lib = useLibrary()
+  const [p, setP] = useState<FolderProgress | null>(null)
+  const [err, setErr] = useState('')
+  const n = Math.max(10, Math.min(500, lib.settings.dropboxBatchSize || 100))
+  useEffect(() => {
+    let off = false
+    setErr('')
+    slot(() => lib.dropboxFolderProgress(path, recursive)).then((x) => { if (!off) setP(x) }).catch((e: any) => { if (!off) setErr(e?.message || 'could not count') })
+    return () => { off = true }
+  }, [path, recursive, lib.photos.length, lib.dropboxFolderProgress])
+  if (err) return <small className="muted dbx-progress" data-testid="folder-progress">Couldn't count: {err}</small>
+  if (!p) return <small className="muted dbx-progress" data-testid="folder-progress" data-loading="1">Counting…</small>
+  return (
+    <span className="dbx-progress-wrap">
+      <small className={`dbx-progress ${p.remaining <= 0 && p.total ? 'all' : ''}`} data-testid="folder-progress" data-in={p.inLibrary} data-total={p.total} data-skipped={p.skipped}>{progressText(p)}</small>
+      {p.remaining > 0 && <>
+        <button className="btn small" data-testid="folder-next-batch" disabled={busy} title={`Adds the next ${n} photos that aren't in your library yet (in name order)`}
+          onClick={() => { void lib.addNextDropboxBatch(path, recursive); onStart() }}>Add next batch ({fmtN(Math.min(n, p.remaining))})</button>
+        <button className="btn small" data-testid="folder-add-remaining" disabled={busy} title={`Adds all ${fmtN(p.remaining)} remaining photos, ${n} per batch`}
+          onClick={() => { void lib.addAllRemainingDropbox(path, recursive); onStart() }}>Add all remaining ({fmtN(p.remaining)})</button>
+      </>}
     </span>
   )
 }

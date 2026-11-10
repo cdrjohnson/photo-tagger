@@ -9,7 +9,7 @@ import { VerifyDropboxTags } from './VerifyDropboxTags'
 type Tab = 'general' | 'dropbox' | 'vocab' | 'data'
 const fmtMB = (n: number) => `${(n / 1e6).toFixed(0)} MB`
 
-export function SettingsDialog({ initialTab = 'general', note, onClose }: { initialTab?: Tab; note?: string; onClose: () => void }) {
+export function SettingsDialog({ initialTab = 'general', note, focus, onClose }: { initialTab?: Tab; note?: string; focus?: 'detection'; onClose: () => void }) {
   const [tab, setTab] = useState<Tab>(initialTab)
   const close = onClose
 
@@ -35,7 +35,7 @@ export function SettingsDialog({ initialTab = 'general', note, onClose }: { init
           {note && <p className="note warn" data-testid="settings-note">{note}</p>}
           {tab === 'general' && <General onDirty={() => { /* settings save immediately; re-tagging is explicit */ }} />}
           {tab === 'dropbox' && <DropboxTab />}
-          {tab === 'vocab' && <Vocab onDirty={() => { /* settings save immediately; re-tagging is explicit */ }} />}
+          {tab === 'vocab' && <Vocab focusDetection={focus === 'detection' && initialTab === 'vocab'} onDirty={() => { /* settings save immediately; re-tagging is explicit */ }} />}
           {tab === 'data' && <Data />}
         </div>
       </div>
@@ -138,13 +138,28 @@ function DropboxTab() {
               <span className="muted" data-testid="dropbox-status">{dropboxKey ? 'Not connected.' : 'No key set yet.'}</span>
             </>}
       </div>
+      <h3>Imports</h3>
+      <label className="check">
+        <input type="checkbox" checked={settings.askBeforeFirstImport !== false} onChange={(e) => void saveSettings({ askBeforeFirstImport: e.target.checked })} data-testid="set-ask-first-import" />
+        <span>Ask me to check the detection list before the first import <small>When your library is empty, Photo Tagger shows what it will tag automatically before it starts, so you can adjust the Detection list first.</small></span>
+      </label>
+      <Slider label="Photos per batch" testId="set-batch-size"
+        hint="Big Dropbox imports are done in batches of this many photos: each batch is tagged, its tags are saved to Dropbox and checked (verified) before the next batch starts. Smaller batches are gentler on Dropbox; larger ones finish with fewer pauses. Default 100."
+        value={settings.dropboxBatchSize ?? 100} min={10} max={500} step={10} onChange={(n) => void saveSettings({ dropboxBatchSize: n })} />
       <p className="muted"><small>Disconnect forgets the sign-in on this device; your tags stay in Dropbox and come back when you connect again. Photo Tagger never ships a key.</small></p>
     </>
   )
 }
 
-function Vocab({ onDirty }: { onDirty: () => void }) {
+function Vocab({ onDirty, focusDetection }: { onDirty: () => void; focusDetection?: boolean }) {
   const lib = useLibrary()
+  const detectRef = useRef<HTMLElement>(null)
+  // "Review detection list" from the pre-import check lands here: scroll the Detection card into view and focus it
+  useEffect(() => {
+    if (!focusDetection) return
+    const t = requestAnimationFrame(() => { detectRef.current?.scrollIntoView({ block: 'start' }); detectRef.current?.focus({ preventScroll: true }) })
+    return () => cancelAnimationFrame(t)
+  }, [focusDetection])
   const [label, setLabel] = useState('')
   const [prompt, setPrompt] = useState('')
   const [q, setQ] = useState('')
@@ -157,7 +172,7 @@ function Vocab({ onDirty }: { onDirty: () => void }) {
   return (
     <>
       <LibraryTags onDirty={onDirty} />
-      <section className="tag-card detect" data-testid="detection-card">
+      <section className="tag-card detect" data-testid="detection-card" ref={detectRef} tabIndex={-1} aria-label="Detection list">
       <div className="eyebrow">What the app can find</div>
       <h3>Detection list</h3>
       <p className="muted small">Changes save right away for new photos. Existing photos keep their tags until you click Re-tag library now, or Re-run tagging on one photo. Closing Settings never re-tags your library.</p>

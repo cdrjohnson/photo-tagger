@@ -74,7 +74,7 @@ const queueBackoff = (n: number) => { const top = Math.min(E2E ? 400 : 5 * 60_00
 /** Two photos at a time: fewer 429s on bulk edits (each photo is several Tags API calls). */
 const CONCURRENCY = 2
 
-export type SaveFailureKind = 'cap' | 'permission' | 'not_found' | 'auth' | 'gave_up' | 'other'
+export type SaveFailureKind = 'cap' | 'permission' | 'not_found' | 'auth' | 'gave_up' | 'missing' | 'other'
 export interface SaveFailure { id: string; name: string; kind: SaveFailureKind; reason: string; at: number }
 export interface SaveStatus {
   /** photos in the current save run */ total: number
@@ -202,6 +202,33 @@ export function flush(force = true): Promise<void> {
     }
   })
   return flushing
+}
+/** Resolves once none of these photos is waiting to be written (each either landed or is on the failure list). */
+export function waitForSaved(ids: string[], signal?: AbortSignal): Promise<void> {
+  const set = new Set(ids)
+  const done = () => ![...set].some((id) => dirty.has(id) || inflight.has(id))
+  if (done()) return Promise.resolve()
+  return new Promise((res, rej) => {
+    let off: (() => void) | null = null
+    const stop = () => { off?.(); signal?.removeEventListener('abort', abort) }
+    const abort = () => { stop(); rej(new DOMException('Aborted', 'AbortError')) }
+    signal?.addEventListener('abort', abort, { once: true })
+    off = onSaveStatus(() => { if (done()) { stop(); res() } })
+  })
+}
+/** After a batch is verified: list photos whose tags did not all land (with the reason) so Retry now can fix them. */
+export function reportVerifyProblems(rows: TagVerification[]): number {
+  let n = 0
+  for (const r of rows) {
+    if (r.skipped || r.pending || !photos.has(r.id)) continue
+    let f: SaveFailure | null = null
+    if (r.error) f = { id: r.id, name: r.name, kind: 'other', at: Date.now(), reason: `Checking tags in Dropbox failed: ${r.error}` }
+    else if (r.atCap.length) f = { id: r.id, name: r.name, kind: 'cap', at: Date.now(), reason: `Dropbox allows 20 tags per file and this file is full — not written: ${r.atCap.join(', ')}` }
+    else if (r.missing.length) f = { id: r.id, name: r.name, kind: 'missing', at: Date.now(), reason: `Verified after import: missing in Dropbox: ${r.missing.join(', ')}` }
+    if (f) { failures.set(r.id, f); n++ }
+  }
+  if (n) { emitStatus(); persistQueue() }
+  return n
 }
 /** Retry every photo on the failure list now (fresh retry window). */
 export function retryFailed(ids?: string[]) {

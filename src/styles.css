@@ -345,3 +345,15 @@ button.dbx-row:hover { background: var(--panel2); }
 .verify-list > li > b { display: block; }
 .verify-list p { margin: 6px 0; font-size: .85rem; }
 .verify-missing { color: var(--c-quality); }
+
+/* 1.0.27: per-folder import progress in the Dropbox picker */
+.dbx-folder-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+.dbx-folder-row > .dbx-row { flex: 1 1 160px; }
+.dbx-progress-wrap { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; padding-right: 6px; }
+.dbx-progress { color: var(--muted); }
+.dbx-progress.all { color: var(--c-person); font-weight: 600; }
+.dbx-here { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: .9rem; }
+.import-resume { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+/* 1.0.27 pre-import check */
+.preimport-summary { margin: 8px 0 12px; padding-left: 18px; display: grid; gap: 4px; font-size: 0.92rem; }
+.tag-card.detect:focus { outline: 2px solid var(--accent, #3b82f6); outline-offset: 2px; }
