@@ -7,6 +7,7 @@ import { DupeReview } from './components/DupeReview'
 import { DropboxBrowser } from './components/DropboxBrowser'
 import { RemoveConfirm } from './components/RemoveConfirm'
 import { VerifyDropboxTags } from './components/VerifyDropboxTags'
+import { SaveStatus } from './components/SaveStatus'
 
 /** set only by the automated test harness (to load fixture photos); never in normal use */
 const E2E = typeof window !== 'undefined' && !!(window as any).__PT_E2E__
@@ -169,6 +170,8 @@ export default function App() {
           )}
         </div>
       )}
+
+      <SaveStatus />
 
       {view === 'photos' && lib.photos.length > 0 && (
         <section className="filters" aria-label="Filters">

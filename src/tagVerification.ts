@@ -10,6 +10,8 @@ export interface TagVerification extends TagComparison {
   nativeCount?: number
   error?: string
   skipped?: string
+  /** edits for this photo are still queued / failed to save (from the write queue) */
+  pending?: string
 }
 export function compareDropboxTags(desired: readonly string[], actual: readonly string[], nativeCount = actual.length, cap = 20): TagComparison {
   const have = new Set(actual)

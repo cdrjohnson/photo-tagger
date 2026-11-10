@@ -67,6 +67,7 @@ export function VerifyDropboxTags({ photos, library = false }: { photos: Photo[]
                 <b>{r.name}</b>
                 {r.skipped ? <p className="muted">{r.skipped}</p> : r.error ? <p className="note warn" role="alert">{r.error}</p> : <>
                   <small className="muted">{r.nativeCount} of 20 Dropbox tag slots used</small>
+                  {r.pending && <p className="note warn" data-testid="verify-pending">{r.pending}</p>}
                   <p data-testid="verify-landed"><strong>Landed ({r.landed.length}):</strong> {r.landed.join(', ') || 'No desired tags on this photo.'}</p>
                   <p className={r.missing.length ? 'verify-missing' : 'muted'} data-testid="verify-missing"><strong>Missing ({r.missing.length}):</strong> {r.missing.join(', ') || 'None'}</p>
                   {r.atCap.length > 0 && <p className="note warn" data-testid="verify-cap"><strong>Could not be written because the file already has 20 tags:</strong> {r.atCap.join(', ')}. Tags added by you or other apps keep their slots.</p>}

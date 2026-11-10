@@ -55,7 +55,15 @@ const idByPath = (p) => Object.values(DBX_TREE).flat().find((x) => x.path_lower 
 const CORS = { 'access-control-allow-origin': '*', 'access-control-allow-headers': 'authorization, content-type, dropbox-api-arg', 'access-control-allow-methods': 'POST, OPTIONS', 'access-control-expose-headers': 'dropbox-api-result' }
 async function stubDropbox(ctx) {
   // writes = any write/delete outside Photo Tagger's /.photo-tagger metadata folder (must stay 0)
-  const st = { token: [], downloads: {}, lists: [], revoked: 0, writes: 0, expireOnce: false, flakyOnce: new Set(), refreshes: 0, meta: new Map(), uploads: 0, metaDeletes: 0, thumbs: 0, fileTags: new Map([['id:dbx-a', new Set(['family_trip'])]]), tagAdds: [], tagRemoves: [], tagGets: [], tagBad: 0, thumbLog: [], thumbFailOnce: {}, thumbFailSmall: new Set() }
+  const st = { token: [], downloads: {}, lists: [], revoked: 0, writes: 0, expireOnce: false, flakyOnce: new Set(), refreshes: 0, meta: new Map(), uploads: 0, metaDeletes: 0, thumbs: 0, fileTags: new Map([['id:dbx-a', new Set(['family_trip'])]]), tagAdds: [], tagRemoves: [], tagGets: [], tagBad: 0, thumbLog: [], thumbFailOnce: {}, thumbFailSmall: new Set(), inject: [], injected: 0 }
+  // failure injection (1.0.26): { ep: '/2/files/tags/add', status | network, times, retryAfter, summary, body: /regex on request body or Dropbox-API-Arg/ }
+  const injectFor = (req, pathname) => {
+    const body = (req.postData() || '') + (req.headers()['dropbox-api-arg'] || '')
+    const f = st.inject.find((x) => x.times > 0 && pathname === x.ep && (!x.body || x.body.test(body)))
+    if (!f) return null
+    f.times--; st.injected++; return f
+  }
+  const injected = (r, f) => f.network ? r.abort('failed') : r.fulfill({ status: f.status, headers: { ...CORS, 'access-control-expose-headers': 'dropbox-api-result, retry-after', ...(f.retryAfter ? { 'retry-after': String(f.retryAfter) } : {}) }, contentType: 'application/json', body: JSON.stringify({ error_summary: f.summary || 'too_many_requests/' }) })
   const metaEntry = (path) => ({ '.tag': 'file', id: 'id:meta-' + path, name: path.split('/').pop(), path_display: path, path_lower: path.toLowerCase(), rev: 'm', size: 1 })
   await ctx.route('https://www.dropbox.com/oauth2/authorize**', (r) => {
     const u = new URL(r.request().url())
@@ -75,6 +83,7 @@ async function stubDropbox(ctx) {
     }
     const auth = req.headers()['authorization'] || ''
     if (!/^Bearer tok-/.test(auth)) return json({ error_summary: 'invalid_access_token' }, 401)
+    { const f = injectFor(req, url.pathname); if (f) return injected(r, f) }
     if (url.pathname === '/2/users/get_current_account') return json({ account_id: 'dbid:test', name: { display_name: 'Test User' }, email: 'test@example.com' })
     if (url.pathname === '/2/auth/token/revoke') { st.revoked++; return json(null) }
     // Native Dropbox file tags (metadata only): lowercase [\w]{1,32}, max 20 per file
@@ -144,6 +153,7 @@ async function stubDropbox(ctx) {
     const url = new URL(req.url())
     const arg = JSON.parse(req.headers()['dropbox-api-arg'] || '{}')
     if (url.pathname === '/2/files/upload') {
+      { const f = injectFor(req, url.pathname); if (f) return injected(r, f) }
       if (!String(arg.path).toLowerCase().startsWith('/.photo-tagger/')) { st.writes++; return r.fulfill({ status: 400, headers: CORS, body: 'no' }) }
       st.uploads++; st.meta.set(arg.path.toLowerCase(), req.postData() || '')
       return r.fulfill({ status: 200, headers: CORS, contentType: 'application/json', body: '{}' })
@@ -1158,6 +1168,109 @@ await test('Dropbox: Disconnect forgets the session; From Dropbox goes back to S
   await assertNothingLocal(page)
   ok(sidecarFor(dbx, 'dbx-a'), 'tags remain in Dropbox')
   eq(dbx.writes, 0, 'no write/delete call ever made to Dropbox')
+})
+
+await test('Dropbox write queue (1.0.26): bulk add survives 429/5xx/network/401; progress shows and clears; permanent errors listed; queue resumes after reload', async () => {
+  const c7 = await browser.newContext({ viewport: { width: 1280, height: 860 } })
+  await routeModel(c7).catch(() => {})
+  const st = await stubDropbox(c7)
+  const p7 = await c7.newPage()
+  const flush7 = () => p7.evaluate(() => window.__ptFlushDropbox())
+  const tagsOn = (id) => [...(st.fileTags.get(id) ?? [])]
+  const picks = ['id:p1', 'id:p2', 'id:p3', 'id:p4']
+  try {
+    await p7.goto(URL_BASE); await p7.getByTestId('empty').waitFor()
+    await connectDropbox(p7, 'queue_key')
+    await p7.getByTestId('empty').getByRole('button', { name: 'From Dropbox' }).click()
+    await p7.locator('[data-testid=dropbox-folder][data-name="Picks"]').click()
+    await p7.locator('[data-testid=dropbox-file][data-name="pick-4.jpg"]').waitFor()
+    await p7.getByTestId('dropbox-process').click()
+    for (const n of ['pick-1.jpg', 'pick-2.jpg', 'pick-3.jpg', 'pick-4.jpg']) await waitTile(n, p7, 300_000)
+    await p7.waitForFunction(() => document.querySelectorAll('[data-testid=photo-tile][data-status=ready]').length === 4, null, { timeout: 300_000 })
+    await flush7(); await p7.getByTestId('save-status').waitFor({ state: 'detached', timeout: 30_000 })
+    // 1) bulk add with every kind of transient failure injected
+    st.inject.push(
+      { ep: '/2/files/tags/add', status: 429, retryAfter: 1, times: 3 },
+      { ep: '/2/files/tags/add', status: 500, summary: 'internal_error', times: 3 },
+      { ep: '/2/files/tags/add', network: true, times: 3 },
+      { ep: '/2/files/tags/add', status: 409, summary: 'too_many_write_operations/', times: 2 },
+      { ep: '/2/files/tags/add', status: 401, summary: 'expired_access_token/', times: 1 },
+      { ep: '/2/files/tags/get', network: true, times: 2 },
+      { ep: '/2/files/upload', status: 503, times: 4 },
+    )
+    const refreshes0 = st.refreshes
+    await p7.getByTestId('select-mode').click(); await p7.getByTestId('sel-all').click()
+    await p7.getByTestId('bulk-tag').click()
+    await p7.getByTestId('bulk-input').fill('bulk_retry, second_tag'); await p7.getByTestId('bulk-input').press('Enter')
+    await p7.getByTestId('save-progress').waitFor({ timeout: 10_000 })
+    ok(/Saving tags to Dropbox: \d+ of 4 photos · \d+ remaining/.test(await p7.getByTestId('save-progress').innerText()), 'progress text: ' + await p7.getByTestId('save-progress').innerText())
+    await p7.getByTestId('bulk-close').click()
+    await p7.getByTestId('save-status').waitFor({ state: 'detached', timeout: 120_000 })
+    for (const id of picks) ok(tagsOn(id).includes('bulk_retry') && tagsOn(id).includes('second_tag'), `${id} has both tags in Dropbox: ${tagsOn(id)}`)
+    ok(st.inject.every((f) => f.times === 0), 'all injected failures were hit: ' + JSON.stringify(st.inject))
+    ok(st.refreshes > refreshes0, 'token refreshed mid-queue after 401')
+    ok([...st.meta.values()].filter((v) => v.includes('bulk_retry')).length === 4, 'all four sidecars saved')
+    st.inject.length = 0
+    // 2) permanent errors go straight to the failure list (no endless loop)
+    st.fileTags.set('id:p3', new Set(Array.from({ length: 20 }, (_, i) => 'external_' + i)))
+    st.inject.push(
+      { ep: '/2/files/tags/add', status: 403, summary: 'missing_scope/files.metadata.write', body: /pick-1/, times: 1000 },
+      { ep: '/2/files/tags/get', status: 409, summary: 'path/not_found/', body: /pick-2/, times: 1000 },
+    )
+    await p7.getByTestId('bulk-tag').click()
+    await p7.getByTestId('bulk-input').fill('perm_check'); await p7.getByTestId('bulk-input').press('Enter')
+    await p7.getByTestId('bulk-close').click()
+    await p7.getByTestId('save-failed-count').waitFor({ timeout: 60_000 })
+    await p7.waitForFunction(() => /3 photos could not/.test(document.querySelector('[data-testid=save-failed-count]')?.textContent || ''), null, { timeout: 60_000 })
+    await p7.getByTestId('save-progress').waitFor({ state: 'detached', timeout: 60_000 })
+    const hits = st.injected; await p7.waitForTimeout(1500)
+    ok(st.injected - hits <= 1, 'permanent errors are not retried in a loop: ' + (st.injected - hits))
+    await p7.getByTestId('save-failures-open').click()
+    const rows = await p7.getByTestId('save-failure').evaluateAll((els) => els.map((e) => [e.dataset.name, e.dataset.kind, e.textContent]))
+    const kind = (n) => rows.find((r) => r[0] === n)
+    eq([kind('pick-1.jpg')?.[1], kind('pick-2.jpg')?.[1], kind('pick-3.jpg')?.[1]], ['permission', 'not_found', 'cap'], 'failure kinds: ' + JSON.stringify(rows))
+    ok(/files\.metadata\.write/.test(kind('pick-1.jpg')[2]) && /not found/i.test(kind('pick-2.jpg')[2]) && /20 tags/.test(kind('pick-3.jpg')[2]) && /perm_check/.test(kind('pick-3.jpg')[2]), 'reasons explained')
+    ok(tagsOn('id:p4').includes('perm_check'), 'other photos still saved')
+    // Retry now after fixing the cause: those two land, the full file stays listed
+    st.inject.length = 0
+    await p7.getByTestId('save-retry-all').click()
+    await p7.waitForFunction(() => /1 photo could not/.test(document.querySelector('[data-testid=save-failed-count]')?.textContent || ''), null, { timeout: 60_000 })
+    ok(tagsOn('id:p1').includes('perm_check') && tagsOn('id:p2').includes('perm_check'), 'Retry now landed the fixed ones')
+    if (await p7.getByTestId('save-failures').count()) await p7.keyboard.press('Escape')
+    // 3) a long outage: after the retry window the photo is listed instead of retrying silently forever
+    await p7.evaluate(() => { window.__PT_RETRY_WINDOW_MS = 400 })
+    if (await p7.getByTestId('sel-cancel').count()) await p7.getByTestId('sel-cancel').click()
+    st.inject.push({ ep: '/2/files/tags/add', network: true, body: /pick-4/, times: 100000 })
+    await p7.locator('[data-testid=photo-tile][data-name="pick-4.jpg"]').click()
+    await p7.getByTestId('detail-tag-input').fill('outage_tag'); await p7.getByTestId('detail-tag-input').press('Enter')
+    await p7.keyboard.press('Escape')
+    await p7.locator('[data-testid=save-failure-count], [data-testid=save-failed-count]').first().waitFor()
+    await p7.waitForFunction(() => /2 photos could not/.test(document.querySelector('[data-testid=save-failed-count]')?.textContent || ''), null, { timeout: 60_000 })
+    await p7.getByTestId('save-failures-open').click()
+    ok(/Still failing after retrying/.test(await p7.locator('[data-testid=save-failure][data-name="pick-4.jpg"]').innerText()), 'gave-up reason shown')
+    await p7.keyboard.press('Escape')
+    // 4) still failing when the app closes → queue persisted, resumes on next open
+    await p7.evaluate(() => { window.__PT_RETRY_WINDOW_MS = 600000 })
+    await p7.getByTestId('save-retry-now').click()
+    await p7.getByTestId('save-retrying').waitFor({ timeout: 30_000 })
+    const q = await p7.evaluate(() => JSON.parse(localStorage.getItem('pt.dropboxQueue.v1') || 'null'))
+    ok(q?.items?.some((it) => it.id && it.tags.some((t) => t.name === 'outage_tag')), 'pending write persisted (ids + tag state only)')
+    ok(JSON.stringify(q).length < 4000, 'small footprint: ' + JSON.stringify(q).length)
+    ok(!tagsOn('id:p4').includes('outage_tag'), 'not in Dropbox yet')
+    st.inject.length = 0
+    await p7.reload(); await p7.getByTestId('grid').waitFor()
+    await p7.waitForFunction(() => document.querySelector('[data-name="pick-4.jpg"]')?.dataset.tags.split('|').includes('outage_tag'), null, { timeout: 60_000 })
+    for (let i = 0; i < 200 && !tagsOn('id:p4').includes('outage_tag'); i++) await p7.waitForTimeout(100)
+    ok(tagsOn('id:p4').includes('outage_tag'), 'resumed write landed after reopening')
+    await p7.waitForFunction(() => !document.querySelector('[data-testid=save-progress]'), null, { timeout: 60_000 })
+    await p7.waitForFunction(() => !localStorage.getItem('pt.dropboxQueue.v1'), null, { timeout: 10_000 }) // queue emptied once everything landed
+    // Verify still flushes first
+    await p7.getByTestId('select-mode').click(); await p7.locator('[data-testid=photo-tile][data-name="pick-4.jpg"]').click()
+    await p7.getByTestId('verify-dropbox-selected').click()
+    await p7.locator('[data-testid=verify-row][data-name="pick-4.jpg"]').waitFor()
+    ok(/outage_tag/.test(await p7.locator('[data-testid=verify-row][data-name="pick-4.jpg"] [data-testid=verify-landed]').innerText()), 'verify sees the resumed tag')
+    eq(st.writes, 0, 'no writes outside Photo Tagger metadata')
+  } finally { await c7.close() }
 })
 
 await test('Dropbox: face recognition runs on Dropbox-backed photos (People clusters)', async () => {

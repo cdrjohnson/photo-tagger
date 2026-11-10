@@ -3,7 +3,7 @@
  * and persists tags / faces / embeddings as JSON sidecars under /.photo-tagger/meta/ in the user's Dropbox.
  * Nothing about these photos is written to IndexedDB or the desktop library folder.
  */
-import { activeDropbox, META_ROOT, toDropboxTagText, type DropboxClient } from './dropbox'
+import { activeDropbox, isTransientDropboxError, META_ROOT, toDropboxTagText, type DropboxClient } from './dropbox'
 import type { Face, Person, Photo } from './types'
 import { addTag, removeTag } from './tags'
 import { compareDropboxTags, tagVerificationError, type TagVerification } from './tagVerification'
@@ -58,38 +58,167 @@ async function sidecar(id: string) {
   })
 }
 
-// ---------- write-behind to Dropbox ----------
+// ---------- write-behind to Dropbox (durable, retrying queue) ----------
 const dirty = new Set<string>()
 let peopleDirty = false
 let timer: ReturnType<typeof setTimeout> | null = null
 let flushing: Promise<void> = Promise.resolve()
 export let onWriteError: ((e: unknown) => void) | null = null
 export const setWriteErrorHandler = (fn: ((e: unknown) => void) | null) => { onWriteError = fn }
-function schedule() {
-  if (timer) clearTimeout(timer)
-  timer = setTimeout(() => { timer = null; void flush() }, 500)
+
+const E2E = typeof window !== 'undefined' && !!(window as any).__PT_E2E__
+/** How long one photo keeps retrying transient errors before it is listed as failed (Retry now restarts it). */
+const retryWindowMs = () => Number((globalThis as any).__PT_RETRY_WINDOW_MS) || 30 * 60_000
+/** Queue-level backoff between passes for a photo that hit a transient error (the client already retried a few times). */
+const queueBackoff = (n: number) => { const top = Math.min(E2E ? 400 : 5 * 60_000, (E2E ? 40 : 2000) * 2 ** Math.min(n, 12)); return Math.round(top / 2 + Math.random() * top / 2) }
+/** Two photos at a time: fewer 429s on bulk edits (each photo is several Tags API calls). */
+const CONCURRENCY = 2
+
+export type SaveFailureKind = 'cap' | 'permission' | 'not_found' | 'auth' | 'gave_up' | 'other'
+export interface SaveFailure { id: string; name: string; kind: SaveFailureKind; reason: string; at: number }
+export interface SaveStatus {
+  /** photos in the current save run */ total: number
+  done: number
+  /** still waiting to be written (includes retrying) */ remaining: number
+  retrying: number
+  /** last transient problem while retrying, e.g. "Dropbox is rate limiting" */ retryReason?: string
+  failures: SaveFailure[]
 }
-/** Write every pending change to Dropbox (resolves when done). */
-export function flush(): Promise<void> {
+const retry = new Map<string, { n: number; first: number; next: number; reason: string }>()
+const failures = new Map<string, SaveFailure>()
+const inflight = new Set<string>()
+const batch = new Set<string>()
+const statusListeners = new Set<(s: SaveStatus) => void>()
+export const onSaveStatus = (fn: (s: SaveStatus) => void) => { statusListeners.add(fn); fn(saveStatus()); return () => { statusListeners.delete(fn) } }
+export function saveStatus(): SaveStatus {
+  const pending = new Set([...dirty, ...inflight])
+  const total = pending.size ? batch.size : 0
+  const rs = [...retry.values()].sort((a, b) => b.n - a.n)
+  return { total, done: total - pending.size, remaining: pending.size, retrying: retry.size, retryReason: rs[0]?.reason, failures: [...failures.values()].sort((a, b) => a.name.localeCompare(b.name)) }
+}
+/** Photos with edits not yet confirmed in Dropbox (used to warn before closing). */
+export const pendingWrites = () => new Set([...dirty, ...inflight]).size + (peopleDirty ? 1 : 0)
+let statusRaf = 0
+function emitStatus() {
+  if (!dirty.size && !inflight.size) batch.clear()
+  if (statusRaf) return
+  statusRaf = 1
+  queueMicrotask(() => { statusRaf = 0; const st = saveStatus(); statusListeners.forEach((f) => f(st)) })
+}
+
+// The queue survives closing the app: only ids + the tag state to write are kept (a few hundred bytes per photo).
+const QUEUE_KEY = 'pt.dropboxQueue.v1'
+type QueuedState = { id: string; tags: Photo['tags']; rejected: string[]; dropboxRemoved?: string[] }
+let persistTimer: ReturnType<typeof setTimeout> | null = null
+function persistQueue() {
+  if (persistTimer) return
+  persistTimer = setTimeout(() => {
+    persistTimer = null
+    try {
+      const ids = new Set([...dirty, ...inflight, ...[...failures.values()].filter((f) => f.kind !== 'cap').map((f) => f.id)])
+      const items: QueuedState[] = [...ids].map((id) => photos.get(id)).filter((p): p is Photo => !!p)
+        .map((p) => ({ id: p.id, tags: p.tags, rejected: p.rejected, dropboxRemoved: p.dropboxRemoved }))
+      if (items.length || peopleDirty) localStorage.setItem(QUEUE_KEY, JSON.stringify({ v: 1, people: peopleDirty, items }))
+      else localStorage.removeItem(QUEUE_KEY)
+    } catch { /* storage full / unavailable: the in-memory queue still runs */ }
+  }, 200)
+}
+export function persistedQueue(): { people: boolean; items: QueuedState[] } {
+  try { const j = JSON.parse(localStorage.getItem(QUEUE_KEY) || 'null'); return j?.v === 1 ? { people: !!j.people, items: j.items ?? [] } : { people: false, items: [] } } catch { return { people: false, items: [] } }
+}
+export function clearPersistedQueue() { try { localStorage.removeItem(QUEUE_KEY) } catch { /* ignore */ } }
+
+function schedule(ms = 500) {
+  if (timer) clearTimeout(timer)
+  timer = setTimeout(() => { timer = null; void flush(false) }, ms)
+}
+function classify(e: any): { transient: boolean; kind: SaveFailureKind; reason: string } {
+  const msg = String(e?.message ?? e ?? ''), st = Number(e?.status ?? 0)
+  if (/missing_scope|app folder|not support/i.test(msg) || st === 403)
+    return { transient: false, kind: 'permission', reason: 'Permission denied — enable files.metadata.write and Full Dropbox access for your Dropbox app, then Disconnect and Connect again (Settings → Dropbox)' }
+  if (/not_found/i.test(msg)) return { transient: false, kind: 'not_found', reason: 'File not found in Dropbox (moved, renamed or deleted?)' }
+  if (st === 401 || /sign-in failed|invalid_access_token|expired_access_token/i.test(msg)) return { transient: false, kind: 'auth', reason: 'Dropbox sign-in expired — connect again in Settings → Dropbox' }
+  if (isTransientDropboxError(e) || !st) {
+    const reason = st === 429 || /too_many/.test(msg) ? 'Dropbox is rate limiting — slowing down' : st >= 500 ? `Dropbox server error (${st})` : /timed out/i.test(msg) ? 'Dropbox request timed out' : 'Network problem'
+    return { transient: true, kind: 'gave_up', reason }
+  }
+  return { transient: false, kind: 'other', reason: msg.slice(0, 200) || 'Unknown error' }
+}
+function finish(id: string, capped: string[]) {
+  retry.delete(id)
+  const p = photos.get(id)
+  if (capped.length && p) failures.set(id, { id, name: p.name, kind: 'cap', at: Date.now(), reason: `Dropbox allows 20 tags per file and this file is full — not written: ${capped.join(', ')}` })
+  else failures.delete(id)
+}
+function fail(id: string, e: any) {
+  const p = photos.get(id); if (!p) { retry.delete(id); return }
+  const c = classify(e), now = Date.now()
+  if (!c.transient) { retry.delete(id); failures.set(id, { id, name: p.name, kind: c.kind, reason: c.reason, at: now }); return }
+  const r = retry.get(id) ?? { n: 0, first: now, next: now, reason: c.reason }
+  r.n++; r.reason = c.reason
+  if (now - r.first > retryWindowMs()) {
+    retry.delete(id)
+    failures.set(id, { id, name: p.name, kind: 'gave_up', at: now, reason: `Still failing after retrying for ${Math.round(retryWindowMs() / 60_000) || '<1'} min: ${c.reason}` })
+    return
+  }
+  r.next = now + queueBackoff(r.n); retry.set(id, r); dirty.add(id)
+}
+
+/**
+ * Write pending changes to Dropbox. `force` (default — Verify, Disconnect, tests) also retries photos that are
+ * waiting out a backoff right now. Resolves when this pass is done; photos that hit a transient error stay queued.
+ */
+export function flush(force = true): Promise<void> {
   if (timer) { clearTimeout(timer); timer = null }
   flushing = flushing.then(async () => {
     const c = activeDropbox()
     if (!c) return
-    const ids = [...dirty]; dirty.clear()
+    const now = Date.now()
+    const ids = [...dirty].filter((id) => force || (retry.get(id)?.next ?? 0) <= now)
+    for (const id of ids) { dirty.delete(id); inflight.add(id) }
+    emitStatus()
     const doPeople = peopleDirty; peopleDirty = false
     let i = 0
     const worker = async () => {
       while (i < ids.length) {
         const id = ids[i++]
-        if (!photos.has(id)) continue
-        await syncNativeTags(c, id)
-        try { await c.writeMeta(metaPath(photos.get(id)!), await sidecar(id)) } catch (e) { dirty.add(id); onWriteError?.(e) }
+        try {
+          if (!photos.has(id)) { retry.delete(id); continue }
+          const capped = await syncNativeTags(c, id)
+          await c.writeMeta(metaPath(photos.get(id)!), await sidecar(id))
+          finish(id, capped)
+        } catch (e) { fail(id, e) } finally { inflight.delete(id); emitStatus(); persistQueue() }
       }
     }
-    await Promise.all([worker(), worker(), worker()])
-    if (doPeople) { try { await c.writeMeta(PEOPLE_PATH, JSON.stringify({ app: 'photo-tagger', version: 1, people })) } catch (e) { peopleDirty = true; onWriteError?.(e) } }
+    await Promise.all(Array.from({ length: CONCURRENCY }, worker))
+    if (doPeople) {
+      try { await c.writeMeta(PEOPLE_PATH, JSON.stringify({ app: 'photo-tagger', version: 1, people })) }
+      catch (e) { peopleDirty = true; if (!classify(e).transient) onWriteError?.(e) }
+    }
+    persistQueue(); emitStatus()
+    if (dirty.size || peopleDirty) {
+      const next = Math.min(...[...dirty].map((id) => retry.get(id)?.next ?? Date.now()), peopleDirty ? Date.now() + queueBackoff(1) : Infinity)
+      schedule(Math.max(50, next - Date.now()))
+    }
   })
   return flushing
+}
+/** Retry every photo on the failure list now (fresh retry window). */
+export function retryFailed(ids?: string[]) {
+  for (const f of [...failures.values()]) if (!ids || ids.includes(f.id)) { failures.delete(f.id); syncedKey.delete(f.id); retry.delete(f.id); if (photos.has(f.id)) { dirty.add(f.id); batch.add(f.id) } }
+  emitStatus(); persistQueue(); schedule(0)
+}
+export function dismissFailures() { failures.clear(); emitStatus(); persistQueue() }
+/** After loading sidecars: put back edits that had not reached Dropbox when the app was closed, and queue them. */
+function resumePersisted() {
+  const q = persistedQueue()
+  for (const it of q.items) {
+    const p = photos.get(it.id); if (!p) continue
+    photos.set(it.id, { ...p, tags: it.tags, rejected: it.rejected, dropboxRemoved: it.dropboxRemoved })
+    dirty.add(it.id); batch.add(it.id)
+  }
+  if (q.people) peopleDirty = true
+  if (q.items.length || q.people) { emitStatus(); schedule(300) }
 }
 ;(globalThis as any).__ptFlushDropbox = flush
 
@@ -134,7 +263,7 @@ export async function verifyDropboxTags(list: readonly Photo[], onProgress?: (do
           const p = photos.get(p0.id) ?? p0 // flush may have applied remote deletions/suppressions
           const native = actual.get(path)
           if (!native) results.set(p.id, { id: p.id, name: p.name, landed: [], missing: [], atCap: [], error: 'Dropbox returned no tag result for this file. Try again.' })
-          else results.set(p.id, { id: p.id, name: p.name, nativeCount: c.tagCount(path), ...compareDropboxTags(desiredDropboxTags(p), native, c.tagCount(path), DBX_TAGS_PER_FILE) })
+          else results.set(p.id, { id: p.id, name: p.name, nativeCount: c.tagCount(path), ...compareDropboxTags(desiredDropboxTags(p), native, c.tagCount(path), DBX_TAGS_PER_FILE), ...(dirty.has(p.id) ? { pending: `Still saving to Dropbox — retrying (${retry.get(p.id)?.reason ?? 'queued'})` } : failures.has(p.id) && failures.get(p.id)!.kind !== 'cap' ? { pending: `Could not save: ${failures.get(p.id)!.reason}` } : {}) })
         }
       } catch (e) {
         for (const p of chunk) if (paths.has(p.id)) results.set(p.id, { id: p.id, name: p.name, landed: [], missing: [], atCap: [], error: tagVerificationError(e) })
@@ -166,7 +295,10 @@ async function tagPath(c: DropboxClient, p: Photo): Promise<string> {
 
 export async function importNativeTags(ids?: string[]): Promise<string[]> {
   const c = activeDropbox(); if (!c) return []
-  const list = (ids ?? [...photos.keys()]).map((id) => photos.get(id)).filter((p): p is Photo => !!p?.dropbox)
+  // local edits not yet in Dropbox win: write them first, and don't re-import a photo that is still queued
+  const want = ids ?? [...photos.keys()]
+  if (want.some((id) => dirty.has(id) || inflight.has(id))) await flush(true)
+  const list = want.filter((id) => !dirty.has(id) && !inflight.has(id)).map((id) => photos.get(id)).filter((p): p is Photo => !!p?.dropbox)
   if (!list.length) return []
   let tags: Map<string, string[]>
   const paths = new Map<string, string>()
@@ -192,49 +324,43 @@ export async function importNativeTags(ids?: string[]): Promise<string[]> {
 }
 /** native tags Photo Tagger added, per photo id (persisted in the sidecar, independent of the app's photo objects) */
 const owned = new Map<string, string[]>()
-let tagErrorShown = false
-async function syncNativeTags(c: DropboxClient, id: string) {
+/** Make the file's native tags match; returns desired tags that could not be written because the file has 20 tags. Throws on API errors (the queue retries). */
+async function syncNativeTags(c: DropboxClient, id: string): Promise<string[]> {
   let p = photos.get(id)
-  if (!p?.dropbox) return
+  if (!p?.dropbox) return []
   let want = desiredDropboxTags(p)
   const key = want.join('|') + '#' + (owned.get(id) ?? []).join('|')
-  if (syncedKey.get(id) === key) return
-  try {
-    const path = await tagPath(c, p)
-    const current = new Set(await c.getTags(path))
-    // older sidecars have no ownership record: tags we want that are already on the file count as ours,
-    // so deleting one in Dropbox later is recognized (first-time missing tags are simply written)
-    if (!(owned.get(id) ?? []).length) owned.set(id, want.filter((t) => current.has(t)).sort())
-    // tags we had written that are gone from the file were deleted in Dropbox — honor that instead of writing them back
-    const gone = (owned.get(id) ?? []).filter((t) => !current.has(t))
-    if (gone.length) {
-      p = applyRemoteRemovals(photos.get(id) ?? p, gone)
-      photos.set(id, p); dirty.add(id); emitPhotos([id])
-      want = desiredDropboxTags(p)
-    }
-    const ours = new Set((owned.get(id) ?? []).filter((t) => current.has(t)))
-    // Dropbox allows 20 tags per file; tags from you/other apps keep their slots, the rest go to our highest-priority tags.
-    // (Before 1.0.13 the low-priority tags already on a full file blocked every newly added tag.)
-    const fit = want.slice(0, Math.max(0, DBX_TAGS_PER_FILE - [...current].filter((t) => !ours.has(t)).length))
-    // remove only tags Photo Tagger itself added that are stale or crowded out
-    for (const t of [...ours]) if (!fit.includes(t)) { await c.removeTag(path, t); ours.delete(t); current.delete(t) }
-    let room = DBX_TAGS_PER_FILE - current.size
-    for (const t of fit) {
-      if (current.has(t)) continue // already there (ours, or added by you / another app — left alone)
-      if (room <= 0) break
-      try { await c.addTag(path, t); ours.add(t); current.add(t); room-- } catch (e: any) { if (/too_many_tags/.test(e?.message)) break; if (e?.status !== 409) throw e }
-    }
-    const list = [...ours].sort()
-    owned.set(id, list)
-    syncedKey.set(id, want.join('|') + '#' + list.join('|'))
-  } catch (e: any) {
-    if (!tagErrorShown) {
-      tagErrorShown = true
-      onWriteError?.(new Error(/missing_scope|403|app folder|not support/i.test(String(e?.message)) ? 'Dropbox search tags need the files.metadata.write permission and Full Dropbox access — enable it, then Disconnect and Connect again (Settings → Dropbox)' : String(e?.message || e)))
-    }
+  if (syncedKey.get(id) === key) return failures.get(id)?.kind === 'cap' ? want.filter((t) => !(owned.get(id) ?? []).includes(t)) : []
+  const path = await tagPath(c, p)
+  const current = new Set(await c.getTags(path))
+  // older sidecars have no ownership record: tags we want that are already on the file count as ours,
+  // so deleting one in Dropbox later is recognized (first-time missing tags are simply written)
+  if (!(owned.get(id) ?? []).length) owned.set(id, want.filter((t) => current.has(t)).sort())
+  // tags we had written that are gone from the file were deleted in Dropbox — honor that instead of writing them back
+  const gone = (owned.get(id) ?? []).filter((t) => !current.has(t))
+  if (gone.length) {
+    p = applyRemoteRemovals(photos.get(id) ?? p, gone)
+    photos.set(id, p); emitPhotos([id])
+    want = desiredDropboxTags(p)
   }
+  const ours = new Set((owned.get(id) ?? []).filter((t) => current.has(t)))
+  // Dropbox allows 20 tags per file; tags from you/other apps keep their slots, the rest go to our highest-priority tags.
+  const fit = want.slice(0, Math.max(0, DBX_TAGS_PER_FILE - [...current].filter((t) => !ours.has(t)).length))
+  // remove only tags Photo Tagger itself added that are stale or crowded out
+  for (const t of [...ours]) if (!fit.includes(t)) { await c.removeTag(path, t); ours.delete(t); current.delete(t); owned.set(id, [...ours].sort()) }
+  let room = DBX_TAGS_PER_FILE - current.size
+  for (const t of fit) {
+    if (current.has(t)) continue // already there (ours, or added by you / another app — left alone)
+    if (room <= 0) break
+    try { await c.addTag(path, t); ours.add(t); current.add(t); room--; owned.set(id, [...ours].sort()) }
+    catch (e: any) { if (/too_many_tags/.test(e?.message)) break; if (!(e?.status === 409 && !isTransientDropboxError(e) && !/not_found/.test(e?.message))) throw e }
+  }
+  const list = [...ours].sort()
+  owned.set(id, list)
+  syncedKey.set(id, want.join('|') + '#' + list.join('|'))
+  return current.size >= DBX_TAGS_PER_FILE ? want.filter((t) => !current.has(t)) : []
 }
-const touch = (id: string) => { dirty.add(id); schedule() }
+const touch = (id: string) => { dirty.add(id); batch.add(id); if (!retry.has(id)) schedule(); emitStatus(); persistQueue() }
 
 // ---------- store operations (called by storage.ts) ----------
 export function putPhoto(p: Photo) { photos.set(p.id, p); touch(p.id) }
@@ -245,7 +371,7 @@ export function putEmbedding(id: string, e: Float32Array) { embeddings.set(id, e
 export function putFaces(fs: Face[]) { for (const f of fs) { faces.set(f.id, f); touch(f.photoId) } }
 export function deleteFaceIds(ids: string[]) { for (const id of ids) { const f = faces.get(id); if (f) { faces.delete(id); touch(f.photoId) } } }
 export function clearFaces() { const ids = new Set([...faces.values()].map((f) => f.photoId)); faces.clear(); ids.forEach(touch) }
-export function setPeople(list: Person[]) { people = list; peopleDirty = true; schedule() }
+export function setPeople(list: Person[]) { people = list; peopleDirty = true; schedule(); persistQueue() }
 
 /** Remove from the app; deletes only Photo Tagger's sidecar in Dropbox, never the photo. */
 export async function deletePhotos(ids: string[]) {
@@ -301,7 +427,7 @@ async function thumbSlot<T>(fn: () => Promise<T>): Promise<T> {
 
 /** Forget everything held in memory (on disconnect / app wipe). Dropbox is untouched. */
 export function clearMemory() {
-  photos.clear(); thumbs.clear(); views.clear(); embeddings.clear(); faces.clear(); people = []; dirty.clear(); peopleDirty = false; syncedKey.clear(); owned.clear(); tagErrorShown = false
+  photos.clear(); thumbs.clear(); views.clear(); embeddings.clear(); faces.clear(); people = []; dirty.clear(); peopleDirty = false; syncedKey.clear(); owned.clear(); retry.clear(); failures.clear(); inflight.clear(); batch.clear(); emitStatus()
 }
 
 /** Read every sidecar from Dropbox into memory. */
@@ -331,6 +457,7 @@ export async function loadFromDropbox(c: DropboxClient = activeDropbox()!) {
   faces.clear(); nextFaces.forEach((v, k) => faces.set(k, v))
   embeddings.clear(); nextEmb.forEach((v, k) => embeddings.set(k, v))
   try { people = pj ? (JSON.parse(pj).people ?? []) : [] } catch { people = [] }
+  resumePersisted()
 }
 /** Tell listeners (People) that remote data changed — call after the photo list is refreshed. */
 export const notifyRemote = emit

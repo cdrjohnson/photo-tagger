@@ -29,4 +29,12 @@ eq(v.compareDropboxTags(['jane', 'beach'], ['jane'], 20), { landed: ['jane'], mi
 eq(v.compareDropboxTags([], Array.from({ length: 20 }, (_, i) => 'external_' + i)), { landed: [], missing: [], atCap: [] }, 'no desired tags is all good')
 eq(v.compareDropboxTags(['beach'], ['beach']), { landed: ['beach'], missing: [], atCap: [] }, 'all landed')
 if (!v.tagVerificationError(new Error('403 missing_scope')).includes('Full Dropbox')) throw new Error('scope hint missing')
+// 1.0.26: Dropbox retry policy
+const rb = await build({ entryPoints: ['src/dbxRetry.ts'], bundle: true, format: 'esm', write: false, platform: 'neutral' })
+const r = await import('data:text/javascript;base64,' + Buffer.from(rb.outputFiles[0].text).toString('base64'))
+const T = (status, message) => r.isTransientDropboxError({ status, message })
+eq([T(429, 'too_many_requests'), T(500, 'x'), T(503, 'x'), T(0, 'Network error'), T(409, 'too_many_write_operations/')], [true, true, true, true, true], 'transient errors')
+eq([T(403, 'missing_scope'), T(409, 'path/not_found/'), T(409, 'too_many_tags/'), T(400, 'bad'), T(401, 'invalid_access_token')], [false, false, false, false, false], 'permanent errors')
+for (let a = 0; a < 20; a++) { const ms = r.backoffMs(a, 1000, 60000); if (ms < 500 || ms > 60000) throw new Error('backoff out of range ' + ms) }
+if (!(r.backoffMs(10, 1000, 60000) >= 30000)) throw new Error('backoff grows to the cap')
 console.log('unit-tags: ok')

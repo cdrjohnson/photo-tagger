@@ -3,6 +3,8 @@
 // Tokens live only in local storage (IndexedDB / the desktop library's kv), never on a server.
 import { invoke } from '@tauri-apps/api/core'
 import { isDesktop } from './platform'
+import { backoffMs, isTransientDropboxError } from './dbxRetry'
+export { backoffMs, isTransientDropboxError }
 
 export const ENV_DROPBOX_KEY: string = (import.meta.env.VITE_DROPBOX_APP_KEY as string | undefined) ?? ''
 
@@ -94,7 +96,7 @@ async function tokenRequest(body: Record<string, string>): Promise<any> {
     body: new URLSearchParams(body).toString(),
   })
   const j = await r.json().catch(() => ({}))
-  if (!r.ok) throw new Error(`Dropbox sign-in failed: ${j.error_description || j.error || r.status}`)
+  if (!r.ok) throw new DropboxError(`Dropbox sign-in failed: ${j.error_description || j.error || r.status}${r.status === 400 || r.status === 401 ? ' — connect again in Settings → Dropbox' : ''}`, r.status === 400 ? 401 : r.status)
   return j
 }
 
@@ -155,6 +157,14 @@ export class DropboxError extends Error {
   constructor(message: string, public status: number) { super(message) }
 }
 
+const RPC_TIMEOUT_MS = 60_000
+function sleep(ms: number, signal?: AbortSignal) {
+  return new Promise<void>((res, rej) => {
+    const t = setTimeout(res, ms)
+    signal?.addEventListener('abort', () => { clearTimeout(t); rej(new DOMException('Aborted', 'AbortError')) }, { once: true })
+  })
+}
+
 export class DropboxClient {
   constructor(
     public appKey: string,
@@ -175,21 +185,43 @@ export class DropboxClient {
     return this.refreshing
   }
 
-  private async call(url: string, init: (token: string) => RequestInit, signal?: AbortSignal): Promise<Response> {
-    if (Date.now() > this.session.expiresAt - 60_000) await this.refresh()
-    let r = await fetch(url, { ...init(this.session.accessToken), signal })
-    if (r.status === 401) { await this.refresh(); r = await fetch(url, { ...init(this.session.accessToken), signal }) }
-    // Rate limited: honour Retry-After (capped) a few times
-    for (let n = 0; r.status === 429 && n < 3; n++) {
-      const wait = Math.min(10, Number(r.headers.get('retry-after')) || 1 + n)
-      await new Promise((res) => setTimeout(res, wait * 1000))
-      r = await fetch(url, { ...init(this.session.accessToken), signal })
+  /** Adaptive throttle: after a 429 every request from this client waits until Dropbox's Retry-After has passed. */
+  private pauseUntil = 0
+  /** How many times one request is retried for transient errors before the caller (e.g. the write queue) takes over. */
+  maxAttempts = 6
+
+  private async call(url: string, init: (token: string) => RequestInit, signal?: AbortSignal, timeoutMs = 0): Promise<Response> {
+    let refreshed = false
+    for (let attempt = 0; ; attempt++) {
+      const pause = this.pauseUntil - Date.now()
+      if (pause > 0) await sleep(pause, signal)
+      if (Date.now() > this.session.expiresAt - 60_000) await this.refresh()
+      let r: Response
+      const ctl = timeoutMs ? new AbortController() : null
+      const t = ctl ? setTimeout(() => ctl.abort(), timeoutMs) : 0
+      const onAbort = () => ctl?.abort()
+      signal?.addEventListener('abort', onAbort)
+      try {
+        r = await fetch(url, { ...init(this.session.accessToken), signal: ctl ? ctl.signal : signal })
+      } catch (e: any) {
+        if (signal?.aborted) throw e
+        // network error / our own timeout: transient
+        const err = new DropboxError(ctl?.signal.aborted ? 'Dropbox request timed out' : `Network error talking to Dropbox (${e?.message || e})`, 0)
+        if (attempt + 1 >= this.maxAttempts) throw err
+        await sleep(backoffMs(attempt), signal); continue
+      } finally { if (t) clearTimeout(t); signal?.removeEventListener('abort', onAbort) }
+      // token expired mid-way (e.g. during a long write queue): refresh once and retry
+      if (r.status === 401 && !refreshed) { refreshed = true; await this.refresh(); attempt--; continue }
+      if (r.ok) return r
+      const text = await r.text().catch(() => '')
+      const err = new DropboxError(`Dropbox request failed (${r.status})${text ? `: ${text.slice(0, 160)}` : ''}`, r.status)
+      if (!isTransientDropboxError(err) || attempt + 1 >= this.maxAttempts) throw err
+      // honour Retry-After (no low cap; at most 15 minutes) and slow every request down while rate limited
+      const ra = Number(r.headers.get('retry-after'))
+      const wait = Number.isFinite(ra) && ra > 0 ? Math.min(ra * 1000, 15 * 60_000) : backoffMs(attempt)
+      if (r.status === 429 || /too_many_write_operations|too_many_requests/.test(text)) this.pauseUntil = Math.max(this.pauseUntil, Date.now() + wait)
+      await sleep(wait, signal)
     }
-    if (!r.ok) {
-      const t = await r.text().catch(() => '')
-      throw new DropboxError(`Dropbox request failed (${r.status})${t ? `: ${t.slice(0, 160)}` : ''}`, r.status)
-    }
-    return r
   }
 
   async rpc<T>(endpoint: string, body: unknown, signal?: AbortSignal): Promise<T> {
@@ -197,7 +229,7 @@ export class DropboxClient {
       method: 'POST',
       headers: { Authorization: `Bearer ${tok}`, ...(body === null ? {} : { 'Content-Type': 'application/json' }) },
       body: body === null ? undefined : JSON.stringify(body),
-    }), signal)
+    }), signal, RPC_TIMEOUT_MS)
     return r.json() as Promise<T>
   }
 

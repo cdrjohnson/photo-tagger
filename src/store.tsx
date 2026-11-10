@@ -235,8 +235,11 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
   }
   useEffect(() => {
     let warned = false
-    Remote.setWriteErrorHandler((e: any) => { if (!warned) { warned = true; toast(`Could not save tags to Dropbox: ${e?.message || e}. Will retry.`, 'error') } })
-    return () => Remote.setWriteErrorHandler(null)
+    Remote.setWriteErrorHandler((e: any) => { if (!warned) { warned = true; toast(`Could not save to Dropbox: ${e?.message || e}. Will retry.`, 'error') } })
+    // closing while tags are still being written: warn (web); either way the queue resumes on next open
+    const leave = (e: BeforeUnloadEvent) => { if (Remote.pendingWrites() > 0 && !(window as any).__PT_E2E__) { e.preventDefault(); e.returnValue = '' } }
+    window.addEventListener('beforeunload', leave)
+    return () => { Remote.setWriteErrorHandler(null); window.removeEventListener('beforeunload', leave) }
   }, [toast])
   async function loadDropboxState(st: Settings) {
     const key = st.dropboxAppKey || ENV_DROPBOX_KEY
@@ -1101,6 +1104,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
 
   const clearEverything = useCallback(async () => {
     await DB.clearAll()
+    Remote.clearPersistedQueue()
     customEmb.current = new Map()
     photosRef.current = []; setPhotos([])
     settingsRef.current = DEFAULT_SETTINGS; setSettings(DEFAULT_SETTINGS)
