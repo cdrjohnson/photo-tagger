@@ -2253,7 +2253,7 @@ dependencies = [
 
 [[package]]
 name = "photo-tagger"
-version = "1.0.30"
+version = "1.0.31"
 dependencies = [
  "base64 0.22.1",
  "rusqlite",

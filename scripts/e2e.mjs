@@ -703,6 +703,11 @@ const assertNothingLocal = async (pg) => {
   }
   eq((await idb(pg, getAll('faces'))).filter((f) => !localIds.has(f.photoId)).length, 0, 'no Dropbox faces in IndexedDB')
 }
+// 1.0.31: the old "Tag N new photo(s) here" button is gone — Add all remaining (with its confirmation for big adds) replaces it
+const addAll = async (pg = page) => {
+  await pg.getByTestId('dropbox-add-batch').getByTestId('folder-add-remaining').click()
+  if (await pg.getByTestId('add-confirm').count()) await pg.getByTestId('add-confirm-ok').click()
+}
 const connectDropbox = async (pg, key) => {
   await pg.getByTestId('open-settings').click(); await pg.getByTestId('tab-dropbox').click()
   await pg.getByTestId('dropbox-key').fill(key)
@@ -756,7 +761,7 @@ await test('Dropbox: in-app browser lists folders and images (paginated), skips 
 
 await test('Dropbox: tag a folder — saved with Dropbox id, thumbnail + preview, no full original stored', async () => {
   dbx.flakyOnce.add('id:dbx-b') // first download aborts — retried, no error toast
-  await page.getByTestId('dropbox-process').click()
+  await addAll(page)
   await page.getByTestId('dropbox-browser').waitFor({ state: 'detached' })
   await page.waitForFunction(() => /Tagging from Dropbox|Processing|Listing/.test(document.querySelector('[data-testid=job-label]')?.textContent || ''), null, { timeout: 15_000 })
   ok(await page.getByTestId('job-cancel').count(), 'cancellable banner')
@@ -1021,7 +1026,7 @@ await test('Dropbox: Refresh re-lists linked folders and skips already-seen file
   await page.locator('[data-testid=dropbox-folder][data-name="Photos"]').click()
   await page.locator('[data-testid=dropbox-file][data-name="from-dropbox.jpg"] [data-testid=dropbox-in-library]').waitFor()
   await page.getByTestId('dropbox-recursive').check()
-  await page.getByTestId('dropbox-process').click()
+  await addAll(page)
   await waitTile('trip.jpg')
   await settled(); await keepDupes()
   eq([dbx.downloads['id:dbx-a'], dbx.downloads['id:dbx-c']], [before['id:dbx-a'], 1], 'only the new file downloaded')
@@ -1051,7 +1056,7 @@ await test('Dropbox: Cancel stops remaining work; already-processed photos stay'
   await page.getByTestId('add-btn').click()
   await page.locator('[data-testid=dropbox-folder][data-name="Slow"]').click()
   await page.locator('[data-testid=dropbox-file][data-name="cancel-stop-b.jpg"]').waitFor()
-  await page.getByTestId('dropbox-process').click()
+  await addAll(page)
   await waitTile('cancel-stop-a.jpg', page, 60_000)
   await page.getByTestId('job-cancel').click()
   await page.getByTestId('cancel-dropbox-confirm').waitFor()
@@ -1085,8 +1090,8 @@ await test('Dropbox: pick individual files (click, Ctrl-click, Shift-click, drag
   await row(1).click(); await row(2).click({ modifiers: ['Control'] })
   ok(await row(2).getByTestId('dropbox-file-check').isChecked(), 'checkbox in sync')
   eq(await page.getByTestId('dropbox-selected-count').innerText(), '2 selected')
-  eq(await page.getByTestId('dropbox-process').innerText(), 'Add selected (2)', 'button adds only the selection')
-  await page.getByTestId('dropbox-process').click()
+  eq(await page.getByTestId('dropbox-add-selected').innerText(), 'Add selected (2)', 'button adds only the selection')
+  await page.getByTestId('dropbox-add-selected').click()
   await waitTile('pick-1.jpg', page, 60_000); await waitTile('pick-2.jpg', page, 60_000)
   await settled(); await keepDupes()
   eq([await tile('pick-3.jpg').count(), await tile('pick-4.jpg').count()], [0, 0], 'unselected files not tagged')
@@ -1119,7 +1124,7 @@ await test('Dropbox picker: lazy thumbnails, date/size, in-library rows show a d
   await page.getByTestId('dropbox-crumb').first().click()
   await page.locator('[data-testid=dropbox-folder][data-name="Movies"]').click()
   await row('clip.mp4').waitFor(); await row('noframe.mov').waitFor()
-  await page.getByTestId('dropbox-process').click()
+  await addAll(page)
   await waitTile('clip.mp4', page, 60_000)
   await page.locator('.toast', { hasText: /1 video\(s\) skipped/ }).first().waitFor({ timeout: 30_000 })
   await settled(); await keepDupes()
@@ -1204,7 +1209,7 @@ await test('Dropbox write queue (1.0.26): bulk add survives 429/5xx/network/401;
     await p7.getByTestId('empty').getByRole('button', { name: 'From Dropbox' }).click()
     await p7.locator('[data-testid=dropbox-folder][data-name="Picks"]').click()
     await p7.locator('[data-testid=dropbox-file][data-name="pick-4.jpg"]').waitFor()
-    await p7.getByTestId('dropbox-process').click()
+    await addAll(p7)
     await p7.getByTestId('preimport-check').waitFor() // empty library → "Check your detection list first"
     await p7.getByTestId('preimport-proceed').click()
     for (const n of ['pick-1.jpg', 'pick-2.jpg', 'pick-3.jpg', 'pick-4.jpg']) await waitTile(n, p7, 300_000)
@@ -1257,7 +1262,10 @@ await test('Dropbox write queue (1.0.26): bulk add survives 429/5xx/network/401;
     st.inject.length = 0
     await p7.getByTestId('save-retry-all').click()
     await p7.waitForFunction(() => /1 photo could not/.test(document.querySelector('[data-testid=save-failed-count]')?.textContent || ''), null, { timeout: 60_000 })
+    // the count can read "1 photo" while the retried two are still in flight — wait for them to land
+    for (let i = 0; i < 300 && !(tagsOn('id:p1').includes('perm_check') && tagsOn('id:p2').includes('perm_check')); i++) await p7.waitForTimeout(100)
     ok(tagsOn('id:p1').includes('perm_check') && tagsOn('id:p2').includes('perm_check'), 'Retry now landed the fixed ones')
+    await p7.getByTestId('save-progress').waitFor({ state: 'detached', timeout: 60_000 }).catch(() => {})
     if (await p7.getByTestId('save-failures').count()) await p7.keyboard.press('Escape')
     // 3) a long outage: after the retry window the photo is listed instead of retrying silently forever
     await p7.evaluate(() => { window.__PT_RETRY_WINDOW_MS = 400 })
@@ -1334,11 +1342,11 @@ await test('Large Dropbox imports (1.0.27): "Check your detection list first" on
     // folder progress before anything is imported (metadata only)
     await openArchive()
     ok(/0 of 12 in library \(this folder only\)/.test(await here().textContent()), 'progress before import: ' + await here().textContent())
-    ok(/Add next batch \(10\)/.test(await p8.getByTestId('dropbox-here-progress').textContent()), 'next batch = batch size')
+    ok(/Add next batch \(10\)/.test(await p8.getByTestId('dropbox-add-batch').textContent()), 'next batch = batch size')
     eq(archDl(), [], 'counting a folder downloads nothing')
 
     // 1) Cancel → nothing imported, nothing downloaded
-    await p8.getByTestId('dropbox-process').click()
+    await addAll(p8)
     const dlg = p8.getByTestId('preimport-check')
     await dlg.waitFor()
     ok(/Check your detection list first/.test(await dlg.textContent()), 'title')
@@ -1351,7 +1359,7 @@ await test('Large Dropbox imports (1.0.27): "Check your detection list first" on
     await p8.waitForTimeout(800)
     eq([archDl(), await tiles(), await p8.getByTestId('job-label').count()], [[], 0, 0], 'Enter did not import')
     await openArchive()
-    await p8.getByTestId('dropbox-process').click()
+    await addAll(p8)
     await dlg.waitFor()
     await p8.getByTestId('preimport-cancel').click()
     await dlg.waitFor({ state: 'detached' })
@@ -1360,7 +1368,7 @@ await test('Large Dropbox imports (1.0.27): "Check your detection list first" on
 
     // 2) Review detection list (from Add next batch) → Settings → Tags, Detection card in view and focused; nothing imported
     await openArchive()
-    await p8.getByTestId('dropbox-here-progress').getByTestId('folder-next-batch').click()
+    await p8.getByTestId('dropbox-add-batch').getByTestId('folder-next-batch').click()
     await dlg.waitFor()
     await p8.getByTestId('preimport-review').click()
     await p8.getByTestId('settings').waitFor()
@@ -1377,7 +1385,7 @@ await test('Large Dropbox imports (1.0.27): "Check your detection list first" on
       new MutationObserver(() => { const t = document.querySelector('[data-testid=job-label]')?.textContent; if (t && window.__labels.at(-1) !== t) window.__labels.push(t) }).observe(document.body, { subtree: true, childList: true, characterData: true })
     })
     await openArchive()
-    await p8.getByTestId('dropbox-process').click()
+    await addAll(p8)
     await dlg.waitFor()
     await p8.getByTestId('preimport-dont-ask').check()
     await p8.getByTestId('preimport-proceed').click()
@@ -1407,7 +1415,7 @@ await test('Large Dropbox imports (1.0.27): "Check your detection list first" on
     await p8.getByTestId('settings-close').click()
     const dl0 = archDl().length
     await openArchive()
-    await p8.getByTestId('dropbox-here-progress').getByTestId('folder-add-remaining').click()
+    await addAll(p8)
     await p8.getByTestId('job-label').waitFor({ timeout: 15_000 })
     eq(await dlg.count(), 0, 'no prompt once turned off')
     await p8.waitForFunction(() => document.querySelectorAll('[data-testid=photo-tile]').length >= 2, null, { timeout: 300_000 })
@@ -1434,7 +1442,7 @@ await test('Large Dropbox imports (1.0.27): "Check your detection list first" on
     await p8.keyboard.press('Escape')
     await dlg.waitFor({ state: 'detached' })
     await openArchive()
-    await p8.getByTestId('dropbox-process').click()
+    await addAll(p8)
     await dlg.waitFor()
     await p8.getByTestId('preimport-cancel').click()
     await p8.waitForTimeout(1500)
@@ -1660,7 +1668,7 @@ await test('Remove from app (1.0.29): 200 of 210 removed through a paced, retryi
     const row = p10.locator(`[data-testid=dropbox-file][data-name="${late}"]`)
     await row.waitFor({ timeout: 30_000 })
     await row.click()
-    await p10.getByTestId('dropbox-process').click()
+    await p10.getByTestId('dropbox-add-selected').click()
     await p10.locator(`[data-testid=photo-tile][data-name="${late}"]`).waitFor({ timeout: 300_000 })
     await p10.waitForFunction(() => /^11 photos/.test(document.querySelector('[data-testid=count]')?.textContent || ''), null, { timeout: 60_000 })
     await p10.waitForFunction((n) => document.querySelector(`[data-testid=photo-tile][data-name="${n}"]`)?.dataset.status !== 'pending', late, { timeout: 300_000 })
@@ -1675,7 +1683,7 @@ await test('Remove from app (1.0.29): 200 of 210 removed through a paced, retryi
   }
 })
 
-await test('More ways to add (1.0.30): count picker + order, add by date, folder ticks + Add selected, windowed 2,000-photo folder', async () => {
+await test('More ways to add (1.0.30) + sectioned panel (1.0.31): sections, confirmation, list follows Order, count picker, add by date, ticks + Add selected, windowed 2,000-photo folder', async () => {
   const N = 2000, DAY = 86_400_000, BASE = Date.UTC(2015, 0, 1)
   const big = []
   for (let i = 1; i <= N; i++) {
@@ -1731,19 +1739,58 @@ await test('More ways to add (1.0.30): count picker + order, add by date, folder
     eq(bigDl(), [], 'listing/counting downloads nothing')
     ok(st.lists.some((l) => l.include_media_info === true), 'list_folder asks for media info (time taken)')
 
+    // 1.0.31 layout: clear sections in order; Include subfolders lives in Folder; no big "Tag N new photo(s) here" button
+    eq(await p11.locator('[data-testid=dropbox-browser] .dbx-sec-h').allInnerTexts().then((a) => a.map((t) => t.trim().toLowerCase())), ['folder', 'add a batch', 'add by date', 'pick specific photos'], 'sections')
+    ok(await p11.getByTestId('dbx-sec-folder').getByTestId('dropbox-recursive').count() === 1, 'Include subfolders is in the Folder section')
+    ok(await p11.getByTestId('dbx-sec-folder').getByTestId('dropbox-here-progress').count() === 1, 'progress line in the Folder section')
+    eq(await p11.getByTestId('dropbox-process').count(), 0, 'old Tag N new photo(s) here button removed')
+    ok(!/Tag \d+ new photo/.test(await p11.getByTestId('dropbox-browser').innerText()), 'no Tag N new photo(s) text')
+    ok(await p11.getByTestId('dropbox-add-batch').getByTestId('folder-next-batch').evaluate((b) => b.classList.contains('primary')), 'Add next batch is the primary button')
+    ok(!(await p11.getByTestId('dropbox-add-batch').getByTestId('folder-add-remaining').evaluate((b) => b.classList.contains('primary'))), 'Add all remaining is secondary')
+    eq([await p11.getByTestId('dropbox-add-selected').innerText(), await p11.getByTestId('dropbox-add-selected').isDisabled()], ['Add selected (0)', true], 'Add selected disabled with nothing ticked')
+    ok(await p11.getByTestId('dbx-sec-pick').getByTestId('dropbox-add-selected').count() === 1, 'Add selected sits in the pick section, under the list')
+    // big adds ask first; Cancel (or Esc) adds nothing and keeps the panel open
+    await p11.getByTestId('dropbox-add-batch').getByTestId('folder-add-remaining').click()
+    eq(await p11.getByTestId('add-confirm-text').innerText(), "Add 2,000 photos? They'll be tagged in 200 batches of 10.", 'confirmation text')
+    await p11.getByTestId('add-confirm-cancel').click()
+    await p11.keyboard.press('Escape') // nothing open → would close; reopen below
+    await p11.getByTestId('dropbox-browser').waitFor({ state: 'detached' })
+    await openBig()
+    await p11.getByTestId('dropbox-add-batch').getByTestId('folder-add-remaining').click()
+    await p11.getByTestId('add-confirm').waitFor()
+    await p11.keyboard.press('Escape')
+    eq([await p11.getByTestId('add-confirm').count(), await p11.getByTestId('dropbox-browser').count()], [0, 1], 'Esc closes only the confirmation')
+    await p11.waitForTimeout(500)
+    eq([bigDl(), await p11.getByTestId('job-label').count()], [[], 0], 'cancelled confirmation adds nothing')
+    // fits a ~620 px window without sideways scrolling
+    await p11.setViewportSize({ width: 620, height: 900 })
+    await p11.waitForTimeout(200)
+    ok(await p11.locator('.dbx-card').evaluate((el) => el.scrollWidth <= el.clientWidth + 1 && [...el.querySelectorAll('.dbx-sec')].every((x) => x.scrollWidth <= x.clientWidth + 1)), 'no horizontal overflow at 620 px')
+    await p11.setViewportSize({ width: 1280, height: 900 })
+
     // 1) count picker defaults to Photos per batch (10, shown as a custom number); 25 + Newest first → 25 newest in 3 batches
     eq(await p11.getByTestId('add-count-select').inputValue(), 'custom', 'batch size 10 is not a preset → custom')
     eq(await p11.getByTestId('add-count-custom').inputValue(), '10', 'default = Photos per batch')
-    ok(/Add next batch \(10\)/.test(await p11.getByTestId('dropbox-here-progress').textContent()), 'button follows the default')
+    ok(/Add next batch \(10\)/.test(await p11.getByTestId('dropbox-add-batch').textContent()), 'button follows the default')
     eq(await p11.getByTestId('add-order').inputValue(), 'name', 'order defaults to Name')
     await p11.getByTestId('add-count-select').selectOption('25')
     await p11.getByTestId('add-order').selectOption('newest')
-    ok(/Add next batch \(25\)/.test(await p11.getByTestId('dropbox-here-progress').textContent()), 'button shows the picked count')
+    ok(/Add next batch \(25\)/.test(await p11.getByTestId('dropbox-add-batch').textContent()), 'button shows the picked count')
+    // the list follows Order: folders stay on top, then newest first — what you see is what Add next batch takes
+    await p11.waitForFunction(() => document.querySelector('[data-testid=dropbox-list]')?.dataset.order === 'newest')
+    const newestFirst = [...byDate].reverse()
+    eq(await p11.getByTestId('dropbox-file').evaluateAll((r) => r.slice(0, 5).map((e) => e.dataset.name)), newestFirst.slice(0, 5).map((f) => f.name), 'list sorted newest first')
+    ok(await p11.locator('[data-testid=dropbox-list] > :first-child').getAttribute('data-testid') === 'dropbox-folder-row', 'folders stay on top')
+    await p11.getByTestId('add-order').selectOption('oldest')
+    eq(await p11.getByTestId('dropbox-file').first().getAttribute('data-name'), byDate[0].name, 'list sorted oldest first')
+    await p11.getByTestId('add-order').selectOption('newest')
     await p11.evaluate(() => {
       window.__labels = []
       new MutationObserver(() => { const t = document.querySelector('[data-testid=job-label]')?.textContent; if (t && window.__labels.at(-1) !== t) window.__labels.push(t) }).observe(document.body, { subtree: true, childList: true, characterData: true })
     })
-    await p11.getByTestId('dropbox-here-progress').getByTestId('folder-next-batch').click()
+    await p11.getByTestId('dropbox-add-batch').getByTestId('folder-next-batch').click()
+    eq(await p11.getByTestId('add-confirm-text').innerText(), "Add 25 photos? They'll be tagged in 3 batches of 10.", 'Add next batch bigger than a batch asks first')
+    await p11.getByTestId('add-confirm-ok').click()
     await p11.getByTestId('preimport-check').waitFor()
     await p11.getByTestId('preimport-proceed').click()
     await waitCount(25); await waitIdle()
@@ -1760,13 +1807,18 @@ await test('More ways to add (1.0.30): count picker + order, add by date, folder
     await openBig()
     eq(await p11.getByTestId('add-order').inputValue(), 'newest', 'order remembered after reload')
     ok(/25 of 2,?000 in library/.test(await here().textContent()), 'progress after: ' + await here().textContent())
+    // screenshot of the new panel (stub data) for the release notes
+    await p11.setViewportSize({ width: 1280, height: 1300 })
+    await p11.waitForFunction(() => [...document.querySelectorAll('[data-testid=dropbox-thumb]')].slice(0, 6).every((t) => t.dataset.state !== 'waiting'), null, { timeout: 20_000 }).catch(() => {})
+    await p11.locator('.dbx-card').screenshot({ path: process.env.PICKER_SHOT || '/workspace/pt-1.0.31-picker.png' })
+    await p11.setViewportSize({ width: 1280, height: 900 })
 
     // custom count + Oldest first → the 7 oldest (photos Dropbox knows a capture date for come first)
     await p11.getByTestId('add-order').selectOption('oldest')
     await p11.getByTestId('add-count-custom').fill('7')
-    ok(/Add next batch \(7\)/.test(await p11.getByTestId('dropbox-here-progress').textContent()), 'custom count shown')
+    ok(/Add next batch \(7\)/.test(await p11.getByTestId('dropbox-add-batch').textContent()), 'custom count shown')
     const before = bigDl().length
-    await p11.getByTestId('dropbox-here-progress').getByTestId('folder-next-batch').click()
+    await p11.getByTestId('dropbox-add-batch').getByTestId('folder-next-batch').click()
     await waitCount(32); await waitIdle()
     eq(bigDl().slice(before).sort(), byDate.slice(0, 7).map((f) => f.id).sort(), 'the 7 oldest were added')
 
@@ -1792,12 +1844,15 @@ await test('More ways to add (1.0.30): count picker + order, add by date, folder
     eq(await p11.getByTestId('dbx-date-add').innerText(), `Add ${inRange.length - have.length} from these dates`, 'date add button')
     const before2 = bigDl().length
     await p11.getByTestId('dbx-date-add').click()
+    ok(/^Add \d+ photos\? They'll be tagged in \d+ batches of 10\.$/.test(await p11.getByTestId('add-confirm-text').innerText()), 'big date range asks first')
+    await p11.getByTestId('add-confirm-ok').click()
     const n3 = 32 + inRange.length - have.length
     await waitCount(n3); await waitIdle()
     eq(bigDl().slice(before2).sort(), inRange.filter((f) => !have.includes(f)).map((f) => f.id).sort(), 'only the new photos in the date range were added')
 
     // 3) ticks: in-library rows disabled; pick 2 files + a subfolder → Add selected (3)
     await openBig()
+    await p11.getByTestId('add-order').selectOption('name')
     const inLib = p11.locator('[data-testid=dropbox-file][aria-disabled=true]')
     const lib1 = byDate[0].name // an oldest one already in the library
     await p11.getByTestId('dropbox-list').evaluate((el, i) => { el.scrollTop = i * 68 }, +lib1.slice(4, 8) - 1)
@@ -1811,17 +1866,18 @@ await test('More ways to add (1.0.30): count picker + order, add by date, folder
     await p11.locator(`[data-testid=dropbox-file][data-name="${freshNames[1]}"]`).click({ modifiers: ['Control'] })
     await p11.locator('[data-testid=dropbox-folder-row][data-name="Sub"]').getByTestId('dropbox-folder-check').check()
     eq(await p11.getByTestId('dropbox-selected-count').innerText(), '3 selected (2 photos/videos, 1 folder)', 'selection summary')
-    eq(await p11.getByTestId('dropbox-process').innerText(), 'Add selected (3)', 'Add selected button')
+    eq(await p11.getByTestId('dropbox-add-selected').innerText(), 'Add selected (3)', 'Add selected button')
     await p11.getByTestId('dropbox-select-all').click()
     ok(/^\d[\d,]* selected/.test(await p11.getByTestId('dropbox-selected-count').innerText()), 'select all')
-    eq(await p11.getByTestId('dropbox-process').innerText(), `Add selected (${N - (n3 - 0) + 1})`, 'select all = every new photo + the folder')
+    eq(await p11.getByTestId('dropbox-add-selected').innerText(), `Add selected (${(N - n3 + 1).toLocaleString('en-US')})`, 'select all = every new photo + the folder')
     await p11.getByTestId('dropbox-deselect-all').click()
     eq(await p11.getByTestId('dropbox-deselect-all').innerText(), 'Select none', 'Select none label')
-    ok(/^Tag /.test(await p11.getByTestId('dropbox-process').innerText()), 'nothing selected')
+    ok(await p11.getByTestId('dropbox-add-selected').isDisabled(), 'nothing selected → Add selected disabled')
     await p11.locator(`[data-testid=dropbox-file][data-name="${freshNames[0]}"]`).click()
     await p11.locator(`[data-testid=dropbox-file][data-name="${freshNames[1]}"]`).click({ modifiers: ['Control'] })
     await p11.locator('[data-testid=dropbox-folder-row][data-name="Sub"]').getByTestId('dropbox-folder-check').check()
-    await p11.getByTestId('dropbox-process').click()
+    await p11.getByTestId('dropbox-add-selected').click()
+    eq(await p11.getByTestId('add-confirm').count(), 0, '5 photos ≤ batch size: no confirmation')
     await waitCount(n3 + 5); await waitIdle()
     for (const n of [...freshNames, 'sub-1.png', 'sub-2.png', 'sub-3.png']) ok(await p11.locator(`[data-testid=photo-tile][data-name="${n}"]`).count() === 1, `${n} added`)
     const linked = await idb(p11, `return new Promise((res) => { const q = db.transaction('kv').objectStore('kv').get('dropboxFolders'); q.onsuccess = () => res(q.result) })`)
@@ -1847,7 +1903,7 @@ await test('Dropbox: face recognition runs on Dropbox-backed photos (People clus
     await p4.getByTestId('empty').getByRole('button', { name: 'From Dropbox' }).click()
     await p4.locator('[data-testid=dropbox-folder][data-name="Faces"]').click()
     await p4.locator('[data-testid=dropbox-file][data-name="biden-2021.jpg"]').waitFor()
-    await p4.getByTestId('dropbox-process').click()
+    await addAll(p4)
     await p4.getByTestId('preimport-check').waitFor()
     await p4.getByTestId('preimport-proceed').click()
     for (const n of ['obama-portrait.jpg', 'biden-2013.jpg', 'biden-2021.jpg']) await waitTile(n, p4, 300_000)

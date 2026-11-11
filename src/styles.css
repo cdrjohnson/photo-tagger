@@ -295,7 +295,7 @@ dl.meta dt { color: var(--muted); } dl.meta dd { margin: 0; word-break: break-wo
 .detail-img > .spinner { position: absolute; left: 50%; top: 50%; margin: -16px 0 0 -16px; }
 
 /* Dropbox folder browser */
-.dbx-card { width: min(640px, 100%); }
+.dbx-card { width: min(680px, 100%); gap: 12px; }
 .dbx-crumbs { font-size: .95em; overflow-wrap: anywhere; }
 .linkish { background: none; border: 0; padding: 0; font: inherit; color: var(--accent); cursor: pointer; }
 .linkish:hover { text-decoration: underline; }
@@ -369,3 +369,21 @@ button.dbx-row:hover { background: var(--panel2); }
 .dbx-date-fields { gap: 6px 12px; margin: 6px 0; }
 .dbx-folder-check { margin: 0 0 0 8px; }
 .dbx-folder-row.on { background: rgba(79,70,229,.14); border-radius: 8px; }
+/* 1.0.31 add-photos panel: clear sections */
+.dbx-sec { display: grid; gap: 8px; min-width: 0; padding: 10px 12px; border: 1px solid var(--border); border-radius: 12px; background: color-mix(in srgb, var(--panel2) 55%, var(--panel)); }
+.dbx-sec-h { margin: 0; font-size: .82rem; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+details.dbx-sec > summary { cursor: pointer; list-style-position: inside; }
+details.dbx-sec > summary .dbx-sec-h { display: inline; }
+details.dbx-sec[open] > summary { margin-bottom: 4px; }
+.dbx-date { font-size: inherit; padding: 10px 12px; }
+.dbx-sec .check { margin: 0; }
+.dbx-recursive small { display: block; }
+.dbx-batch-btns { gap: 8px; align-items: center; }
+.dbx-row-btns { display: inline-flex; flex-wrap: wrap; gap: 6px; }
+.dbx-sec .dbx-list { background: var(--panel); }
+.dbx-foot { display: grid; gap: 6px; }
+.dbx-note { margin: 0; font-size: .85rem; }
+.dbx-confirm-wrap { position: fixed; inset: 0; z-index: 60; display: grid; place-items: center; padding: 16px; background: rgba(0,0,0,.35); }
+.dbx-confirm { background: var(--panel); color: var(--text); border-radius: 14px; box-shadow: var(--shadow); padding: 16px; width: min(420px, 100%); display: grid; gap: 12px; }
+.dbx-confirm p { margin: 0; }
+.dbx-confirm-btns { justify-content: flex-end; gap: 8px; }
