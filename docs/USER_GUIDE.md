@@ -72,6 +72,8 @@ Each photo can carry four kinds of tags, shown with a coloured dot:
 - 🟣 **Detected in image** – found by the AI (for example `dog`, `pets`, `beach`, `city`, `screenshot`). In the detail view each shows its confidence.
 - 🟢 **Added by you** – tags you typed yourself.
 - 🟠 **From photo metadata** – the year it was taken, the camera, and `geotagged` if the photo has GPS coordinates.
+  - **Camera tags are short (since 1.0.28):** the brand + model, without company names or “digital camera” filler, and at most 32 characters, so the Dropbox tag is never cut off. For example, `EASTMAN KODAK COMPANY` + `KODAK CX7530 ZOOM DIGITAL CAMERA` → `kodak cx7530`, `NIKON CORPORATION` + `NIKON D70` → `nikon d70`, `OLYMPUS IMAGING CORP.` + `E-M5` → `olympus e-m5`. The detail panel's **Camera** field still shows the full make and model, and search still matches it. When you open 1.0.28, existing photos switch to the short camera tag right away. Their Dropbox tags are updated in the background through the normal paced save queue (the old long tag, e.g. `eastman_kodak_company_kodak_cx75`, is removed and the short one is written; the save bar shows progress). Tags you added yourself are never changed.
+  - **Tag names are tidied on load (since 1.0.28):** older versions could save a long tag ending in a space (for example the Kodak camera tag), which then couldn't be removed with ✕. These names are cleaned up when the library loads, and duplicates are merged (keeping the stronger kind: person > yours > Dropbox > detected > metadata). This doesn't change anything in Dropbox, because the Dropbox form of the name stays the same. ✕ now also removes a tag whose stored name differs only by spaces or capitals.
 - 🔴 **Quality check** – `blurry`, `dark` or `bright`.
 
 ## 3. Find photos
@@ -160,6 +162,16 @@ Tag edits show in Photo Tagger immediately and are written to Dropbox in the bac
 - The bar then shows **“⚠ N photos could not be fully saved to Dropbox”** with **View** (the list: each photo, the reason, and a Retry button) and **Retry now** (tries them all again). **Dismiss list** hides it.
 - **Closing the app mid-save is safe:** unsaved edits (just photo ids and their tags, a few hundred bytes each) are kept on this device and the save resumes the next time you open Photo Tagger and Dropbox loads. In the browser you also get a “leave site?” warning while a save is running.
 - **Verify Dropbox tags** first pushes everything queued; a photo that is still retrying is marked “Still saving to Dropbox — retrying (…)” in the results.
+
+### Files moved, renamed or deleted in Dropbox
+
+Photo Tagger remembers each Dropbox photo by its **Dropbox file id**, which stays the same when you move or rename the file. When a photo's tags are read or saved and the old path no longer exists, Photo Tagger looks the file up by its id:
+
+- **Moved or renamed** (to any folder, including one you never linked): it is followed automatically. The photo's path and name are updated, its tags are read and written at the new location, and the new path is saved (in its `/.photo-tagger/` file), so it is still right after a restart. You don't see a message for this.
+- **Deleted**: after it's checked, a calm notice appears under the header: **“1 photo is no longer in Dropbox”** (or “N photos are no longer in Dropbox”) with **View** (each file's name and the path it was at), **Remove from app** (asks first, then forgets the photo and its tags in Photo Tagger and deletes only Photo Tagger's own `/.photo-tagger/` file for it — nothing else in Dropbox is touched) and **Dismiss** (hides the notice for those files on this device). Deleted files are not retried and are not listed as save failures. Their tags stay in Photo Tagger until you remove them; if you restore the file in Dropbox, it's picked up again on the next start.
+- One missing file no longer stops tags from being read for the rest of the library. Dropbox rejects a whole batch of 20 when one path in it is gone, so Photo Tagger splits that batch and reads the others.
+- If tags really can't be read (for example, no network after several retries), the message says **“Could not read Dropbox tags for N photos (…)”**. It doesn't say “save” or “retry”. Those photos' tags in Photo Tagger are left unchanged and are checked again on Refresh or the next start. Temporary Dropbox problems (rate limits, server errors, network drops) are retried automatically with growing waits before any message appears.
+- **Verify Dropbox tags** checks moved files at their new path and marks deleted ones **“No longer in Dropbox — the file was deleted…”**.
 
 ### Verify Dropbox tags
 

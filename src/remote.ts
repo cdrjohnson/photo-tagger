@@ -3,9 +3,9 @@
  * and persists tags / faces / embeddings as JSON sidecars under /.photo-tagger/meta/ in the user's Dropbox.
  * Nothing about these photos is written to IndexedDB or the desktop library folder.
  */
-import { activeDropbox, isTransientDropboxError, META_ROOT, toDropboxTagText, type DropboxClient } from './dropbox'
+import { activeDropbox, isNotFoundError, isTransientDropboxError, META_ROOT, toDropboxTagText, type DropboxClient } from './dropbox'
 import type { Face, Person, Photo } from './types'
-import { addTag, removeTag } from './tags'
+import { addTag, removeTag, repairPhotoTags } from './tags'
 import { compareDropboxTags, tagVerificationError, type TagVerification } from './tagVerification'
 
 const photos = new Map<string, Photo>()
@@ -65,6 +65,51 @@ let timer: ReturnType<typeof setTimeout> | null = null
 let flushing: Promise<void> = Promise.resolve()
 export let onWriteError: ((e: unknown) => void) | null = null
 export const setWriteErrorHandler = (fn: ((e: unknown) => void) | null) => { onWriteError = fn }
+/** Reading tags from Dropbox failed for some photos (after the client's own retries). Never phrased as a save error. */
+export let onReadError: ((e: unknown, count: number) => void) | null = null
+export const setReadErrorHandler = (fn: ((e: unknown, count: number) => void) | null) => { onReadError = fn }
+
+// ---------- files that are no longer in Dropbox (1.0.28) ----------
+/** A photo whose Dropbox file was deleted (its id no longer resolves). Moved/renamed files are relinked instead. */
+export interface MissingFile { id: string; name: string; path: string; at: number }
+/** thrown inside the queue / verify when a photo's file is gone from Dropbox (not an error to retry) */
+export class MissingFileError extends Error { constructor(name: string) { super(`${name} is no longer in Dropbox`) } }
+const missing = new Map<string, MissingFile>()
+const MISSING_DISMISS_KEY = 'pt.dropboxMissingDismissed.v1'
+const dismissedMissing = (): string[] => { try { return JSON.parse(localStorage.getItem(MISSING_DISMISS_KEY) || '[]') } catch { return [] } }
+/** photos whose tags were repaired on load (1.0.28); their Dropbox writes are queued after the startup tag read */
+const repaired = new Set<string>()
+/** photos whose Dropbox path changed this session (moved / renamed in Dropbox) */
+const relinked = new Set<string>()
+function markMissing(p: Photo) {
+  missing.set(p.id, { id: p.id, name: p.name, path: p.dropbox?.path ?? '', at: Date.now() })
+  // never retried or listed as a save failure: it is reported once, in the "no longer in Dropbox" notice
+  dirty.delete(p.id); retry.delete(p.id); failures.delete(p.id); syncedKey.delete(p.id)
+  emitStatus(); persistQueue()
+}
+export const isMissing = (id: string) => missing.has(id)
+/** Hide the notice for these files (remembered on this device until they show up again or are removed). */
+export function dismissMissing() {
+  try { localStorage.setItem(MISSING_DISMISS_KEY, JSON.stringify([...new Set([...dismissedMissing(), ...missing.keys()])])) } catch { /* ignore */ }
+  emitStatus()
+}
+/**
+ * The stored path is gone: look the file up by its Dropbox id (ids survive moves and renames).
+ * Found → the photo's path (and name) are updated, the sidecar is rewritten so it persists, and the new path is returned.
+ * Deleted → listed as missing, returns null. Other errors (network…) throw.
+ */
+async function relink(c: DropboxClient, id: string): Promise<string | null> {
+  const p = photos.get(id); if (!p?.dropbox) return null
+  const loc = await c.locate(p.dropbox.id)
+  if (!loc) { markMissing(p); return null }
+  missing.delete(id)
+  const latest = photos.get(id) ?? p
+  if (latest.dropbox && (latest.dropbox.path !== loc.path || latest.name !== loc.name)) {
+    photos.set(id, { ...latest, name: loc.name, dropbox: { ...latest.dropbox, path: loc.path } })
+    relinked.add(id); syncedKey.delete(id); touch(id); emitPhotos([id])
+  }
+  return loc.path
+}
 
 const E2E = typeof window !== 'undefined' && !!(window as any).__PT_E2E__
 /** How long one photo keeps retrying transient errors before it is listed as failed (Retry now restarts it). */
@@ -83,6 +128,8 @@ export interface SaveStatus {
   retrying: number
   /** last transient problem while retrying, e.g. "Dropbox is rate limiting" */ retryReason?: string
   failures: SaveFailure[]
+  /** photos whose file was deleted from Dropbox (not dismissed) */
+  missing: MissingFile[]
 }
 const retry = new Map<string, { n: number; first: number; next: number; reason: string }>()
 const failures = new Map<string, SaveFailure>()
@@ -94,7 +141,11 @@ export function saveStatus(): SaveStatus {
   const pending = new Set([...dirty, ...inflight])
   const total = pending.size ? batch.size : 0
   const rs = [...retry.values()].sort((a, b) => b.n - a.n)
-  return { total, done: total - pending.size, remaining: pending.size, retrying: retry.size, retryReason: rs[0]?.reason, failures: [...failures.values()].sort((a, b) => a.name.localeCompare(b.name)) }
+  return { total, done: total - pending.size, remaining: pending.size, retrying: retry.size, retryReason: rs[0]?.reason, failures: [...failures.values()].sort((a, b) => a.name.localeCompare(b.name)), missing: missingList() }
+}
+function missingList(): MissingFile[] {
+  const hide = new Set(dismissedMissing())
+  return [...missing.values()].filter((m) => photos.has(m.id) && !hide.has(m.id)).sort((a, b) => a.name.localeCompare(b.name))
 }
 /** Photos with edits not yet confirmed in Dropbox (used to warn before closing). */
 export const pendingWrites = () => new Set([...dirty, ...inflight]).size + (peopleDirty ? 1 : 0)
@@ -183,11 +234,11 @@ export function flush(force = true): Promise<void> {
       while (i < ids.length) {
         const id = ids[i++]
         try {
-          if (!photos.has(id)) { retry.delete(id); continue }
+          if (!photos.has(id) || missing.has(id)) { retry.delete(id); continue }
           const capped = await syncNativeTags(c, id)
           await c.writeMeta(metaPath(photos.get(id)!), await sidecar(id))
           finish(id, capped)
-        } catch (e) { fail(id, e) } finally { inflight.delete(id); emitStatus(); persistQueue() }
+        } catch (e) { if (e instanceof MissingFileError) dirty.delete(id); else fail(id, e) } finally { inflight.delete(id); emitStatus(); persistQueue() }
       }
     }
     await Promise.all(Array.from({ length: CONCURRENCY }, worker))
@@ -220,7 +271,7 @@ export function waitForSaved(ids: string[], signal?: AbortSignal): Promise<void>
 export function reportVerifyProblems(rows: TagVerification[]): number {
   let n = 0
   for (const r of rows) {
-    if (r.skipped || r.pending || !photos.has(r.id)) continue
+    if (r.skipped || r.pending || !photos.has(r.id) || missing.has(r.id)) continue
     let f: SaveFailure | null = null
     if (r.error) f = { id: r.id, name: r.name, kind: 'other', at: Date.now(), reason: `Checking tags in Dropbox failed: ${r.error}` }
     else if (r.atCap.length) f = { id: r.id, name: r.name, kind: 'cap', at: Date.now(), reason: `Dropbox allows 20 tags per file and this file is full — not written: ${r.atCap.join(', ')}` }
@@ -241,7 +292,7 @@ function resumePersisted() {
   const q = persistedQueue()
   for (const it of q.items) {
     const p = photos.get(it.id); if (!p) continue
-    photos.set(it.id, { ...p, tags: it.tags, rejected: it.rejected, dropboxRemoved: it.dropboxRemoved })
+    photos.set(it.id, repairPhotoTags({ ...p, tags: it.tags, rejected: it.rejected, dropboxRemoved: it.dropboxRemoved }))
     dirty.add(it.id); batch.add(it.id)
   }
   if (q.people) peopleDirty = true
@@ -268,38 +319,67 @@ export async function verifyDropboxTags(list: readonly Photo[], onProgress?: (do
   await flush()
   const c = activeDropbox()
   const out: TagVerification[] = []
+  const GONE = 'No longer in Dropbox — the file was deleted. It is listed under “no longer in Dropbox”, where you can remove it from the app.'
   for (let i = 0; i < list.length; i += 20) {
     const chunk = list.slice(i, i + 20)
     const paths = new Map<string, string>()
     const results = new Map<string, TagVerification>()
+    const row = (p: Photo): TagVerification => ({ id: p.id, name: photos.get(p.id)?.name ?? p.name, landed: [], missing: [], atCap: [] })
     for (const p of chunk) {
-      const row: TagVerification = { id: p.id, name: p.name, landed: [], missing: [], atCap: [] }
-      if (!p.dropbox) results.set(p.id, { ...row, skipped: 'Not Dropbox-backed — skipped' })
-      else if (!c) results.set(p.id, { ...row, error: 'Connect Dropbox in Settings → Dropbox to verify tags.' })
+      if (!p.dropbox) results.set(p.id, { ...row(p), skipped: 'Not Dropbox-backed — skipped' })
+      else if (!c) results.set(p.id, { ...row(p), error: 'Connect Dropbox in Settings → Dropbox to verify tags.' })
       else {
-        try { paths.set(p.id, await tagPath(c, p)) }
-        catch (e) { results.set(p.id, { ...row, error: tagVerificationError(e) }) }
+        try { paths.set(p.id, await tagPath(c, photos.get(p.id) ?? p)) }
+        catch (e) { results.set(p.id, { ...row(p), error: e instanceof MissingFileError ? GONE : tagVerificationError(e) }) }
       }
     }
     if (c && paths.size) {
-      try {
-        // getTagsMany uses Dropbox's 20-path batch size; no photo/video downloads.
-        const actual = await c.getTagsMany([...paths.values()])
-        for (const p0 of chunk) {
-          const path = paths.get(p0.id); if (!path) continue
-          const p = photos.get(p0.id) ?? p0 // flush may have applied remote deletions/suppressions
-          const native = actual.get(path)
-          if (!native) results.set(p.id, { id: p.id, name: p.name, landed: [], missing: [], atCap: [], error: 'Dropbox returned no tag result for this file. Try again.' })
-          else results.set(p.id, { id: p.id, name: p.name, nativeCount: c.tagCount(path), ...compareDropboxTags(desiredDropboxTags(p), native, c.tagCount(path), DBX_TAGS_PER_FILE), ...(dirty.has(p.id) ? { pending: `Still saving to Dropbox — retrying (${retry.get(p.id)?.reason ?? 'queued'})` } : failures.has(p.id) && failures.get(p.id)!.kind !== 'cap' ? { pending: `Could not save: ${failures.get(p.id)!.reason}` } : {}) })
-        }
-      } catch (e) {
-        for (const p of chunk) if (paths.has(p.id)) results.set(p.id, { id: p.id, name: p.name, landed: [], missing: [], atCap: [], error: tagVerificationError(e) })
+      // getTagsSafe: 20 paths per request; a moved/deleted file doesn't spoil the rest of its batch. No photo/video downloads.
+      const got = await readTags(c, paths)
+      for (const p0 of chunk) {
+        if (results.has(p0.id)) continue
+        const p = photos.get(p0.id) ?? p0 // flush may have applied remote deletions/suppressions; relink may have moved it
+        if (missing.has(p.id)) { results.set(p.id, { ...row(p), error: GONE }); continue }
+        const err = got.errors.get(p.id)
+        if (err) { results.set(p.id, { ...row(p), error: tagVerificationError(err) }); continue }
+        const path = paths.get(p.id)!
+        const native = got.tags.get(p.id)
+        if (!native) results.set(p.id, { ...row(p), error: 'Dropbox returned no tag result for this file. Try again.' })
+        else results.set(p.id, { id: p.id, name: p.name, nativeCount: c.tagCount(path), ...compareDropboxTags(desiredDropboxTags(p), native, c.tagCount(path), DBX_TAGS_PER_FILE), ...(dirty.has(p.id) ? { pending: `Still saving to Dropbox — retrying (${retry.get(p.id)?.reason ?? 'queued'})` } : failures.has(p.id) && failures.get(p.id)!.kind !== 'cap' ? { pending: `Could not save: ${failures.get(p.id)!.reason}` } : {}) })
       }
     }
     out.push(...chunk.map((p) => results.get(p.id)!))
     onProgress?.(out.length, list.length)
   }
   return out
+}
+
+/**
+ * Read native tags for photos (id → path). Paths that are gone are looked up by file id: moved/renamed files are
+ * relinked (paths map updated) and read again; deleted ones are marked missing. Per-batch errors stay per photo.
+ */
+async function readTags(c: DropboxClient, paths: Map<string, string>): Promise<{ tags: Map<string, string[]>; errors: Map<string, unknown> }> {
+  const tags = new Map<string, string[]>(), errors = new Map<string, unknown>()
+  const take = (r: Awaited<ReturnType<DropboxClient['getTagsSafe']>>, ids: string[]) => {
+    const again: string[] = []
+    for (const id of ids) {
+      const path = paths.get(id)!
+      const t = r.tags.get(path)
+      if (t) tags.set(id, t)
+      else if (r.failed.has(path)) errors.set(id, r.failed.get(path))
+      else if (r.notFound.has(path)) again.push(id)
+    }
+    return again
+  }
+  const ids = [...paths.keys()]
+  const gone = take(await c.getTagsSafe([...new Set(paths.values())]), ids)
+  const moved: string[] = []
+  for (const id of gone) {
+    try { const np = await relink(c, id); if (np) { paths.set(id, np); moved.push(id) } }
+    catch (e) { errors.set(id, e) }
+  }
+  if (moved.length) for (const id of take(await c.getTagsSafe(moved.map((id) => paths.get(id)!)), moved)) errors.set(id, new Error('File not found in Dropbox (it moved again?) — try again'))
+  return { tags, errors }
 }
 
 const syncedKey = new Map<string, string>()
@@ -312,11 +392,11 @@ const syncedKey = new Map<string, string>()
  */
 /** The '/…' path the Dropbox Tags API requires (it rejects 'id:…' with a 400). Resolves and remembers it if missing. */
 async function tagPath(c: DropboxClient, p: Photo): Promise<string> {
-  const cur = p.dropbox?.path
+  if (missing.has(p.id)) throw new MissingFileError(p.name)
+  const cur = (photos.get(p.id) ?? p).dropbox?.path
   if (cur && cur.startsWith('/')) return cur
-  const path = await c.pathFor(p.dropbox!.id)
-  const latest = photos.get(p.id)
-  if (latest?.dropbox) { photos.set(p.id, { ...latest, dropbox: { ...latest.dropbox, path } }); touch(p.id) }
+  const path = await relink(c, p.id)
+  if (!path) throw new MissingFileError(p.name)
   return path
 }
 
@@ -327,26 +407,38 @@ export async function importNativeTags(ids?: string[]): Promise<string[]> {
   if (want.some((id) => dirty.has(id) || inflight.has(id))) await flush(true)
   const list = want.filter((id) => !dirty.has(id) && !inflight.has(id)).map((id) => photos.get(id)).filter((p): p is Photo => !!p?.dropbox)
   if (!list.length) return []
-  let tags: Map<string, string[]>
   const paths = new Map<string, string>()
-  try {
-    for (const p of list) paths.set(p.id, await tagPath(c, p))
-    tags = await c.getTagsMany([...paths.values()])
-  } catch (e: any) { onWriteError?.(new Error(`Could not read Dropbox tags: ${e?.message || e}`)); return [] }
-  const changed: string[] = []
+  const readErrors: unknown[] = []
+  relinked.clear()
+  for (const p of list) {
+    try { paths.set(p.id, await tagPath(c, p)) }
+    catch (e) { if (!(e instanceof MissingFileError)) readErrors.push(e) }
+  }
+  // one moved/deleted file no longer aborts the import for the whole library (1.0.28)
+  const got = paths.size ? await readTags(c, paths) : { tags: new Map<string, string[]>(), errors: new Map<string, unknown>() }
+  readErrors.push(...got.errors.values())
+  if (readErrors.length) onReadError?.(readErrors[0], readErrors.length)
+  const changed: string[] = [...relinked]
   for (const p0 of list) {
     const p = photos.get(p0.id); if (!p) continue
-    const native = (tags.get(paths.get(p.id)!) ?? []).filter((t) => toDropboxTag(t) === t && t.length > 0)
+    const read = got.tags.get(p.id)
+    if (!read) continue // not read this time (deleted, or a read error): leave its tags alone
+    const native = read.filter((t) => toDropboxTag(t) === t && t.length > 0)
     const prev = owned.get(p.id) ?? []
     let next = applyRemoteRemovals(p, prev.filter((t) => !native.includes(t)))
     // a suppressed tag that is back on the file was re-added in Dropbox
     if (next.dropboxRemoved?.some((t) => native.includes(t))) next = { ...next, dropboxRemoved: next.dropboxRemoved.filter((t) => !native.includes(t)) }
     const have = new Set(next.tags.map((t) => toDropboxTag(t.name)))
-    for (const t of native) if (!have.has(t)) { next = addTag(next, t, 'dropbox'); have.add(t) }
+    // a tag Photo Tagger wrote that the app no longer has (e.g. the old long camera tag after the 1.0.28 repair) is ours to
+    // remove on the next save, not a new Dropbox tag to import
+    for (const t of native) if (!have.has(t) && !prev.includes(t)) { next = addTag(next, t, 'dropbox'); have.add(t) }
     const own = new Set([...prev.filter((t) => native.includes(t)), ...native.filter((t) => have.has(t))])
     owned.set(p.id, [...own].sort())
-    if (next !== p) { photos.set(p.id, next); changed.push(p.id); touch(p.id) }
+    if (next !== p) { photos.set(p.id, next); if (!changed.includes(p.id)) changed.push(p.id); touch(p.id) }
   }
+  // repaired-on-load photos: write the corrected tags (and swap the old camera tag in Dropbox) through the paced queue
+  for (const id of [...repaired]) if (!ids || ids.includes(id)) { repaired.delete(id); if (photos.has(id) && !missing.has(id)) touch(id) }
+  emitStatus()
   return changed
 }
 /** native tags Photo Tagger added, per photo id (persisted in the sidecar, independent of the app's photo objects) */
@@ -358,8 +450,18 @@ async function syncNativeTags(c: DropboxClient, id: string): Promise<string[]> {
   let want = desiredDropboxTags(p)
   const key = want.join('|') + '#' + (owned.get(id) ?? []).join('|')
   if (syncedKey.get(id) === key) return failures.get(id)?.kind === 'cap' ? want.filter((t) => !(owned.get(id) ?? []).includes(t)) : []
-  const path = await tagPath(c, p)
-  const current = new Set(await c.getTags(path))
+  let path = await tagPath(c, p)
+  let tagsNow: string[]
+  try { tagsNow = await c.getTags(path) }
+  catch (e) {
+    if (!isNotFoundError(e)) throw e
+    // moved or renamed in Dropbox: follow the file id; deleted: list it once, don't retry
+    const np = await relink(c, id)
+    if (!np) throw new MissingFileError(p.name)
+    path = np; p = photos.get(id) ?? p
+    tagsNow = await c.getTags(path)
+  }
+  const current = new Set(tagsNow)
   // older sidecars have no ownership record: tags we want that are already on the file count as ours,
   // so deleting one in Dropbox later is recognized (first-time missing tags are simply written)
   if (!(owned.get(id) ?? []).length) owned.set(id, want.filter((t) => current.has(t)).sort())
@@ -409,9 +511,11 @@ export async function deletePhotos(ids: string[]) {
     gone.push(p); photos.delete(id); thumbs.delete(id); views.delete(id); embeddings.delete(id); dirty.delete(id)
     for (const f of [...faces.values()]) if (f.photoId === id) faces.delete(f.id)
   }
+  emitStatus()
   if (c) await Promise.all(gone.map(async (p) => {
     // take back only the native tags Photo Tagger added; the photo itself is untouched
-    const tp = await tagPath(c, p).catch(() => null)
+    const tp = missing.has(p.id) ? null : await tagPath(c, p).catch(() => null)
+    missing.delete(p.id)
     if (tp) for (const t of owned.get(p.id) ?? []) await c.removeTag(tp, t).catch(() => {})
     owned.delete(p.id); syncedKey.delete(p.id)
     await c.deleteMeta(metaPath(p)).catch(() => {})
@@ -454,7 +558,7 @@ async function thumbSlot<T>(fn: () => Promise<T>): Promise<T> {
 
 /** Forget everything held in memory (on disconnect / app wipe). Dropbox is untouched. */
 export function clearMemory() {
-  photos.clear(); thumbs.clear(); views.clear(); embeddings.clear(); faces.clear(); people = []; dirty.clear(); peopleDirty = false; syncedKey.clear(); owned.clear(); retry.clear(); failures.clear(); inflight.clear(); batch.clear(); emitStatus()
+  photos.clear(); thumbs.clear(); views.clear(); embeddings.clear(); faces.clear(); people = []; dirty.clear(); peopleDirty = false; syncedKey.clear(); owned.clear(); missing.clear(); relinked.clear(); repaired.clear(); retry.clear(); failures.clear(); inflight.clear(); batch.clear(); emitStatus()
 }
 
 /** Read every sidecar from Dropbox into memory. */
@@ -470,7 +574,10 @@ export async function loadFromDropbox(c: DropboxClient = activeDropbox()!) {
         const blob = await c.downloadRaw(e.id); if (!blob) continue
         const j = JSON.parse(await blob.text())
         if (j?.app !== 'photo-tagger' || !j.photo?.id) continue
-        const p: Photo = { ...j.photo, hasOriginal: false, source: 'dropbox', relPath: undefined }
+        const raw: Photo = { ...j.photo, hasOriginal: false, source: 'dropbox', relPath: undefined }
+        // 1.0.28 repair: stray spaces in tag names, duplicates, old long camera tag → saved later via the paced queue
+        const p = repairPhotoTags(raw)
+        if (p !== raw) repaired.add(p.id)
         nextPhotos.set(p.id, p)
         if (Array.isArray(j.photo.dropboxTags)) owned.set(p.id, j.photo.dropboxTags)
         if (j.embedding) nextEmb.set(p.id, b64ToF32(j.embedding))

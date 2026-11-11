@@ -92,6 +92,7 @@ async function stubDropbox(ctx) {
     const regex400 = () => r.fulfill({ status: 400, headers: CORS, contentType: 'text/plain', body: 'Error in call to API function "files/tags/get": Value must be a string conforming to regex (/(.|[\r\n])*)' })
     if (url.pathname === '/2/files/get_metadata') {
       const b = JSON.parse(req.postData() || '{}')
+      ;(st.metaLookups ??= []).push(b.path)
       const e = Object.values(DBX_TREE).flat().find((x) => x.id === b.path || x.path_lower === String(b.path).toLowerCase())
       return e ? json(e) : json({ error_summary: 'path/not_found/' }, 409)
     }
@@ -99,6 +100,8 @@ async function stubDropbox(ctx) {
       const b = JSON.parse(req.postData() || '{}')
       if (b.paths.some(badPath)) { st.tagBad++; return regex400() }
       if (st.tagReadError) return json({ error_summary: 'missing_scope/files.metadata.write/' }, 403)
+      // like Dropbox: one path that no longer exists fails the whole request
+      if (b.paths.some((p) => !idByPath(p))) { (st.tagGet409 ??= []).push([...b.paths]); return json({ error: { '.tag': 'path', path: { '.tag': 'not_found' } }, error_summary: 'path/not_found/' }, 409) }
       st.tagBatches ??= []; st.tagBatches.push([...b.paths])
       st.tagGets.push(...b.paths)
       return json({ paths_to_tags: b.paths.map((p) => ({ path: p, tags: [...(st.fileTags.get(idByPath(p)) ?? [])].map((t) => ({ '.tag': 'user_generated_tag', tag_text: t })) })) })
@@ -1424,6 +1427,131 @@ await test('Large Dropbox imports (1.0.27): "Check your detection list first" on
   } finally {
     await c8.close()
     delete DBX_TREE['/archive']; DBX_TREE[''].splice(DBX_TREE[''].findIndex((e) => e.name === 'Archive'), 1)
+  }
+})
+
+await test('Dropbox files moved or deleted (1.0.28): startup reads tags for the rest, relinks moved files by id, lists deleted ones; no "Could not save" toast; legacy tag names and long camera tags repaired; camera tag removable', async () => {
+  // a library from an earlier version: 25 sidecars already in Dropbox; file 05 was moved+renamed, file 17 was deleted
+  const ids = Array.from({ length: 25 }, (_, i) => 'id:old' + String(i + 1).padStart(2, '0'))
+  const pics = ['beach.jpg', 'cat.jpg', 'city.jpg', 'pizza.jpg', 'mountain.jpg']
+  const oldPath = (i) => `/Old/old-${String(i + 1).padStart(2, '0')}.jpg`
+  DBX_TREE['/old'] = []
+  ids.forEach((id, i) => {
+    if (i === 16) return // deleted in Dropbox
+    SAMPLE_BY_ID[id] = pics[i % pics.length]
+    if (i === 4) return
+    DBX_TREE['/old'].push(dbxFile(id, `old-${String(i + 1).padStart(2, '0')}.jpg`, '/Old'))
+  })
+  DBX_TREE['/new place'] = [dbxFile('id:old05', 'renamed-05.jpg', '/New Place')]
+  const c9 = await browser.newContext({ viewport: { width: 1280, height: 860 } })
+  await routeModel(c9).catch(() => {})
+  const st = await stubDropbox(c9)
+  ids.forEach((id, i) => {
+    const n = i + 1
+    const photo = { id: 'p-old' + n, fp: 'fp' + n, name: `old-${String(n).padStart(2, '0')}.jpg`, size: 1000, type: 'image/jpeg', addedAt: Date.now() - 1e6 + n, dateSource: 'added', width: 400, height: 300,
+      quality: { sharpness: 100, brightness: 120, blurry: false, dark: false, bright: false }, tags: [{ name: 'kept_tag', source: 'manual' }], rejected: [], source: 'dropbox',
+      dropbox: { id, path: oldPath(i), rev: 'r' + n }, dropboxTags: ['kept_tag'], hasOriginal: false, status: 'ready', facesScanned: true, faceCount: 0 }
+    st.fileTags.set(id, new Set(['kept_tag', 'from_dropbox_' + n]))
+    // 1.0.28 legacy data: old long camera tag with a trailing space (and its truncated native tag), and a duplicate "sunset " / "sunset"
+    if (n === 1) {
+      photo.camera = 'EASTMAN KODAK COMPANY KODAK CX7530 ZOOM DIGITAL CAMERA'
+      photo.tags.push({ name: 'eastman kodak company kodak cx7530 zoom ', source: 'exif' })
+      photo.dropboxTags.push('eastman_kodak_company_kodak_cx75'); st.fileTags.get(id).add('eastman_kodak_company_kodak_cx75')
+    }
+    if (n === 2) { photo.tags.push({ name: 'sunset ', source: 'auto', score: 0.3 }, { name: 'sunset', source: 'manual' }); photo.dropboxTags.push('sunset'); st.fileTags.get(id).add('sunset') }
+    st.meta.set(`/.photo-tagger/meta/${id.slice(3)}.json`, JSON.stringify({ app: 'photo-tagger', version: 1, file: photo.dropbox, photo, faces: [] }))
+  })
+  const p9 = await c9.newPage()
+  const errs9 = []; p9.on('pageerror', (e) => errs9.push(e.message))
+  const toasts = []; await p9.exposeFunction('__toastSeen', (t) => toasts.push(t))
+  await p9.addInitScript(() => { new MutationObserver(() => document.querySelectorAll('.toast:not([data-seen])').forEach((t) => { t.dataset.seen = '1'; window.__toastSeen(t.textContent) })).observe(document, { subtree: true, childList: true }) })
+  const t9 = (n) => p9.locator(`[data-testid=photo-tile][data-name="${n}"]`)
+  const tags9 = async (n) => ((await t9(n).getAttribute('data-tags')) ?? '').split('|')
+  const imported = () => p9.evaluate(() => [...document.querySelectorAll('[data-testid=photo-tile]')].filter((t) => /(^|\|)from_dropbox_\d+/.test(t.dataset.tags || '')).length)
+  try {
+    await p9.goto(URL_BASE); await p9.getByTestId('empty').waitFor()
+    st.inject.push({ ep: '/2/files/tags/get', status: 503, summary: 'internal_error', times: 2 }) // transient read errors are retried quietly
+    await connectDropbox(p9, 'moved_key')
+    await p9.waitForFunction(() => document.querySelectorAll('[data-testid=photo-tile]').length === 25, null, { timeout: 60_000 })
+    await p9.waitForFunction(() => [...document.querySelectorAll('[data-testid=photo-tile]')].filter((t) => /(^|\|)from_dropbox_\d+/.test(t.dataset.tags || '')).length === 24, null, { timeout: 60_000 })
+    ok((st.tagGet409 ?? []).length >= 1, 'a whole tags/get batch was rejected (409) by the stub')
+    ok(st.injected >= 2, 'transient 503s on tags/get were retried')
+    ok(st.tagBatches.some((b) => b.length === 5), 'the other batch (5 paths) was read normally')
+    // moved + renamed file: followed by its id, new path/name, tags imported
+    await t9('renamed-05.jpg').waitFor()
+    eq(await t9('old-05.jpg').count(), 0, 'old name replaced')
+    ok((await tags9('renamed-05.jpg')).includes('from_dropbox_5'), 'moved file tags imported: ' + await tags9('renamed-05.jpg'))
+    ok(st.metaLookups.includes('id:old05') && st.metaLookups.includes('id:old17'), 'looked up by Dropbox id: ' + st.metaLookups)
+    // deleted file: one calm notice, its tags left alone
+    const notice = p9.getByTestId('missing-files')
+    await notice.waitFor({ timeout: 30_000 })
+    eq((await p9.getByTestId('missing-count').textContent()).trim(), '1 photo is no longer in Dropbox', 'notice text')
+    eq(await tags9('old-17.jpg'), ['kept_tag'], 'deleted file keeps its tags in the app')
+    await p9.evaluate(() => window.__ptFlushDropbox())
+    const side5 = JSON.parse(st.meta.get('/.photo-tagger/meta/old05.json'))
+    eq([side5.photo.dropbox.path, side5.photo.name, side5.file.path], ['/New Place/renamed-05.jpg', 'renamed-05.jpg', '/New Place/renamed-05.jpg'], 'new path saved in the sidecar')
+    ok(st.fileTags.get('id:old05').has('kept_tag'), 'tags on the moved file intact')
+    eq(await p9.getByTestId('save-failed-count').count(), 0, 'deleted file is not a save failure')
+    // legacy tags repaired on load; the camera tag swap goes to Dropbox through the queue, no churn for the trailing-space fix
+    const k1 = await tags9('old-01.jpg'), s2 = await tags9('old-02.jpg')
+    ok(k1.includes('kodak cx7530') && !k1.some((t) => /eastman/.test(t)), 'camera tag shortened in the app: ' + k1)
+    eq(s2.filter((t) => /sunset/.test(t)), ['sunset'], 'trailing-space duplicate merged')
+    await p9.waitForFunction(() => !document.querySelector('[data-testid=save-progress]'), null, { timeout: 30_000 })
+    eq([...st.fileTags.get('id:old01')].sort(), ['from_dropbox_1', 'kept_tag', 'kodak_cx7530'], 'old native camera tag replaced in Dropbox')
+    ok(!st.tagRemoves.some((x) => x.tag_text === 'sunset') && st.fileTags.get('id:old02').has('sunset'), 'no tag churn for the repaired name')
+    eq(JSON.parse(st.meta.get('/.photo-tagger/meta/old01.json')).photo.tags.filter((t) => t.source === 'exif').map((t) => t.name), ['kodak cx7530'], 'repaired tags saved in the sidecar')
+    // the camera tag can be removed with ✕ and stays removed in Dropbox
+    await t9('old-01.jpg').click()
+    const kt = p9.locator('[data-testid=detail-tag][data-tag="kodak cx7530"]')
+    await kt.locator('[data-testid=remove-tag]').click()
+    await kt.waitFor({ state: 'detached' })
+    await p9.keyboard.press('Escape')
+    await p9.evaluate(() => window.__ptFlushDropbox())
+    ok(!st.fileTags.get('id:old01').has('kodak_cx7530'), 'camera tag removed in Dropbox')
+    ok(!(await tags9('old-01.jpg')).includes('kodak cx7530'), 'camera tag gone from the tile')
+    ok(!toasts.some((t) => /Could not save|Will retry|Could not read/i.test(t)), 'no save/read error toast: ' + toasts.join(' | '))
+    // survives reload: no new lookup for the moved file, deleted one listed again
+    const lookups = st.metaLookups.length, looked05 = st.metaLookups.filter((x) => x === 'id:old05').length
+    await p9.reload()
+    await p9.waitForFunction(() => document.querySelectorAll('[data-testid=photo-tile]').length === 25, null, { timeout: 60_000 })
+    await t9('renamed-05.jpg').waitFor()
+    await notice.waitFor({ timeout: 30_000 })
+    eq(st.metaLookups.filter((x) => x === 'id:old05').length, looked05, 'moved file not looked up again after reload (path persisted)')
+    ok(st.metaLookups.length > lookups, 'deleted file checked again on start')
+    eq(await imported(), 24, 'tags still read for every existing file after reload')
+    ok(!(await tags9('old-01.jpg')).some((t) => /kodak/.test(t)) && !st.fileTags.get('id:old01').has('kodak_cx7530'), 'removed camera tag stays removed after reload: ' + await tags9('old-01.jpg'))
+    // View lists name + old path
+    await p9.getByTestId('missing-view').click()
+    const item = p9.locator('[data-testid=missing-file][data-name="old-17.jpg"]')
+    await item.waitFor()
+    ok(/was at \/Old\/old-17\.jpg/.test(await item.textContent()), 'old path shown')
+    await p9.keyboard.press('Escape')
+    await p9.getByTestId('missing-list-dialog').waitFor({ state: 'detached' })
+    // Verify Dropbox tags (whole library): moved file verifies fine, deleted one is explained
+    await p9.getByTestId('open-settings').click(); await p9.getByTestId('tab-vocab').click()
+    await p9.getByTestId('verify-dropbox-library').click()
+    await p9.getByTestId('verify-summary').waitFor({ timeout: 60_000 })
+    const vrow = (n) => p9.locator(`[data-testid=verify-row][data-name="${n}"]`)
+    ok(/No longer in Dropbox/.test(await vrow('old-17.jpg').textContent()), 'verify explains the deleted file')
+    ok(/from_dropbox_5/.test(await vrow('renamed-05.jpg').getByTestId('verify-landed').textContent()), 'moved file verified at its new path')
+    ok(/24 Dropbox file\(s\) checked · 0 skipped · 1 errors · 0 with missing tags/.test(await p9.getByTestId('verify-summary').textContent()), 'summary: ' + await p9.getByTestId('verify-summary').textContent())
+    await p9.keyboard.press('Escape'); await p9.getByTestId('settings-close').click()
+    eq(await p9.getByTestId('save-failed-count').count(), 0, 'verify did not list the deleted file as a save failure')
+    // Remove from app (with confirm): only the app forgets it; nothing deleted in Dropbox
+    await p9.getByTestId('missing-remove').click()
+    await p9.getByTestId('remove-confirm').waitFor()
+    eq(await p9.evaluate(() => document.activeElement?.dataset.testid), 'remove-cancel', 'Cancel focused')
+    await p9.getByTestId('remove-confirm-btn').click()
+    await notice.waitFor({ state: 'detached' })
+    await t9('old-17.jpg').waitFor({ state: 'detached' })
+    eq(await p9.getByTestId('photo-tile').count(), 24, '24 photos left')
+    ok(!st.meta.has('/.photo-tagger/meta/old17.json'), "the app's own tag file for it is removed")
+    eq(st.writes, 0, 'nothing outside /.photo-tagger was written or deleted')
+    ok(!toasts.some((t) => /Could not save|Will retry|Could not read/i.test(t)), 'still no error toast: ' + toasts.join(' | '))
+    eq(errs9, [], 'no page errors')
+  } finally {
+    await c9.close()
+    delete DBX_TREE['/old']; delete DBX_TREE['/new place']
   }
 })
 

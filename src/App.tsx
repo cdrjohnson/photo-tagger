@@ -10,6 +10,7 @@ import { VerifyDropboxTags } from './components/VerifyDropboxTags'
 import { SaveStatus } from './components/SaveStatus'
 import { ImportResume } from './components/ImportResume'
 import { PreImportCheck } from './components/PreImportCheck'
+import { MissingFiles } from './components/MissingFiles'
 
 /** set only by the automated test harness (to load fixture photos); never in normal use */
 const E2E = typeof window !== 'undefined' && !!(window as any).__PT_E2E__
@@ -174,6 +175,7 @@ export default function App() {
       )}
 
       <SaveStatus />
+      <MissingFiles />
       <ImportResume />
 
       {view === 'photos' && lib.photos.length > 0 && (

@@ -7,13 +7,15 @@ import * as idb from './db'
 import * as desk from './desktopDb'
 import * as remote from './remote'
 import type { Face, Person, Photo } from './types'
+import { repairPhotoTags } from './tags'
 
 const local = () => (isDesktop() ? desk : idb)
 const isRemote = (p: Photo) => remote.isRemotePhoto(p)
 const remoteFace = (f: Face) => remote.hasRemote(f.photoId)
 
 export async function allPhotos(): Promise<Photo[]> {
-  const ps = await local().allPhotos()
+  // 1.0.28 load repair (stray spaces in tag names, duplicate tags, old long camera tag); saved back only when changed
+  const ps = (await local().allPhotos()).map((p) => { const r = repairPhotoTags(p); if (r !== p) void local().putPhoto(r).catch(() => {}); return r })
   return [...ps, ...remote.remotePhotos()]
 }
 export async function putPhoto(p: Photo): Promise<void> {

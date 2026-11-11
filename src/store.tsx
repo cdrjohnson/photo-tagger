@@ -266,11 +266,15 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
   }
   useEffect(() => {
     let warned = false
-    Remote.setWriteErrorHandler((e: any) => { if (!warned) { warned = true; toast(`Could not save to Dropbox: ${e?.message || e}. Will retry.`, 'error') } })
+    // only problems that retrying can't fix reach here (transient ones are retried by the queue and shown in its bar)
+    Remote.setWriteErrorHandler((e: any) => { if (!warned) { warned = true; toast(`Could not save to Dropbox: ${e?.message || e}`, 'error') } })
+    // reading tags is not saving: say so, and only once per session
+    let readWarned = false
+    Remote.setReadErrorHandler((e: any, n: number) => { if (!readWarned) { readWarned = true; toast(`Could not read Dropbox tags for ${n} photo${n === 1 ? '' : 's'} (${e?.message || e}). Their tags in Photo Tagger are unchanged; they are checked again on Refresh or next start.`, 'error') } })
     // closing while tags are still being written: warn (web); either way the queue resumes on next open
     const leave = (e: BeforeUnloadEvent) => { if (Remote.pendingWrites() > 0 && !(window as any).__PT_E2E__) { e.preventDefault(); e.returnValue = '' } }
     window.addEventListener('beforeunload', leave)
-    return () => { Remote.setWriteErrorHandler(null); window.removeEventListener('beforeunload', leave) }
+    return () => { Remote.setWriteErrorHandler(null); Remote.setReadErrorHandler(null); window.removeEventListener('beforeunload', leave) }
   }, [toast])
   async function loadDropboxState(st: Settings) {
     const key = st.dropboxAppKey || ENV_DROPBOX_KEY

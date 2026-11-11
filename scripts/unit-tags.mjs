@@ -37,4 +37,31 @@ eq([T(429, 'too_many_requests'), T(500, 'x'), T(503, 'x'), T(0, 'Network error')
 eq([T(403, 'missing_scope'), T(409, 'path/not_found/'), T(409, 'too_many_tags/'), T(400, 'bad'), T(401, 'invalid_access_token')], [false, false, false, false, false], 'permanent errors')
 for (let a = 0; a < 20; a++) { const ms = r.backoffMs(a, 1000, 60000); if (ms < 500 || ms > 60000) throw new Error('backoff out of range ' + ms) }
 if (!(r.backoffMs(10, 1000, 60000) >= 30000)) throw new Error('backoff grows to the cap')
+// 1.0.28: normTag never leaves stray spaces; short camera tags; load repair; robust removeTag
+const kodak = 'EASTMAN KODAK COMPANY KODAK CX7530 ZOOM DIGITAL CAMERA'
+for (const x of [kodak, '  a  b  ', 'x'.repeat(39) + ' yz', 'Abcdefghij Abcdefghij Abcdefghij Abcdefgh ij']) {
+  const n = m.normTag(x); eq([n === n.trim(), n.length <= 40, /\s\s/.test(n)], [true, true, false], 'normTag clean: ' + JSON.stringify(n))
+}
+eq(m.normTag(kodak), 'eastman kodak company kodak cx7530 zoom', 'Kodak name: cut then trimmed')
+const cams = {
+  [kodak]: 'kodak cx7530', 'Canon PowerShot SD1000': 'canon powershot sd1000', 'Canon Canon EOS 5D': 'canon eos 5d',
+  'NIKON D70': 'nikon d70', 'NIKON CORPORATION NIKON D70': 'nikon d70', 'OLYMPUS IMAGING CORP. E-M5': 'olympus e-m5',
+  'OLYMPUS OPTICAL CO.,LTD C2500L': 'olympus c2500l', 'iPhone 12': 'iphone 12', 'Apple iPhone 12 Pro Max': 'apple iphone 12 pro max',
+  'SAMSUNG SM-G991B': 'samsung sm-g991b', 'Samsung Electronics Galaxy S21': 'samsung galaxy s21', 'Hewlett-Packard HP PhotoSmart 320': 'hp photosmart 320',
+  'SampleCam X': 'samplecam x',
+}
+for (const [c, want] of Object.entries(cams)) { eq(m.cameraTag(c), want, 'camera ' + c); if (m.cameraTag(c).length > 32) throw new Error('camera tag too long') }
+const longCam = m.cameraTag('Superlongbrandname Ultrazoom Professional Model Mark Seven Edition')
+eq([longCam.length <= 32, longCam === longCam.trim(), /\s\S+$/.test(longCam) || !longCam.includes(' ')], [true, true, true], 'long camera cut at a word: ' + longCam)
+const legacy = { camera: kodak, rejected: ['blurry '], dropboxRemoved: [], tags: [
+  { name: 'eastman kodak company kodak cx7530 zoom ', source: 'exif' }, { name: 'beach ', source: 'auto', score: 0.4 }, { name: 'beach', source: 'manual' },
+  { name: 'jane', source: 'person' }, { name: 'eastman kodak company kodak cx7530 zoom digital', source: 'manual' }] }
+const fixed = m.repairPhotoTags(legacy)
+eq(fixed.tags.map((t) => [t.name, t.source]), [['kodak cx7530', 'exif'], ['beach', 'manual'], ['jane', 'person'], ['eastman kodak company kodak cx7530 zoom', 'manual']], 'repair: trimmed, merged (manual wins), camera shortened, manual untouched apart from trim')
+eq(fixed.rejected, ['blurry'], 'rejected trimmed')
+const clean = { camera: 'NIKON D70', rejected: [], tags: [{ name: 'nikon d70', source: 'exif' }, { name: 'dog', source: 'auto', score: 0.5 }] }
+if (m.repairPhotoTags(clean) !== clean) throw new Error('repair must return the same object when nothing changes')
+const withSpace = { tags: [{ name: 'eastman kodak company kodak cx7530 zoom ', source: 'exif' }, { name: 'dog', source: 'auto' }], rejected: [] }
+eq(m.removeTag(withSpace, 'eastman kodak company kodak cx7530 zoom').tags.map((t) => t.name), ['dog'], 'removeTag matches a trailing-space variant')
+eq(m.removeTag(withSpace, 'dog').rejected, ['dog'], 'removed auto tag is rejected')
 console.log('unit-tags: ok')

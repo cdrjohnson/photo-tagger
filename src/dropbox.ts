@@ -156,6 +156,8 @@ const headerJson = (o: unknown) => JSON.stringify(o).replace(/[\u007f-\uffff]/g,
 export class DropboxError extends Error {
   constructor(message: string, public status: number) { super(message) }
 }
+/** Dropbox 409 path/not_found (or path_lookup/not_found): the file is not at that path (moved, renamed or deleted). */
+export const isNotFoundError = (e: any) => Number(e?.status) === 409 && /not_found/.test(String(e?.message ?? ''))
 
 const RPC_TIMEOUT_MS = 60_000
 function sleep(ms: number, signal?: AbortSignal) {
@@ -330,17 +332,49 @@ export class DropboxClient {
     if (!path || !String(path).startsWith('/')) throw new Error('Dropbox did not return a path for ' + id)
     return path
   }
-  /** Native tags for many files at once (batched). Map keyed by the path/id passed in. */
-  async getTagsMany(paths: string[]): Promise<Map<string, string[]>> {
-    const out = new Map<string, string[]>()
-    for (let i = 0; i < paths.length; i += 20) {
-      const chunk = paths.slice(i, i + 20)
-      const j = await this.rpc<any>('files/tags/get', { paths: chunk })
-      ;(j?.paths_to_tags ?? []).forEach((pt: any, k: number) => {
-        out.set(chunk[k] ?? pt.path, this.norm(chunk[k] ?? pt.path, pt.tags))
-      })
+  /**
+   * Where a file is now, by its Dropbox id (ids survive moves and renames). null when the file was deleted
+   * (get_metadata says not_found / deleted). Other errors throw.
+   */
+  async locate(id: string): Promise<{ path: string; name: string } | null> {
+    try {
+      const j = await this.rpc<any>('files/get_metadata', { path: id, include_deleted: false })
+      if (!j || j['.tag'] === 'deleted') return null
+      const path = j.path_display ?? j.path_lower
+      if (!path || !String(path).startsWith('/')) return null
+      return { path, name: j.name ?? String(path).split('/').pop() }
+    } catch (e: any) {
+      if (isNotFoundError(e)) return null
+      throw e
     }
-    return out
+  }
+  /** Native tags for many files at once (batched). Map keyed by the path/id passed in. Throws if any path is gone — use getTagsSafe. */
+  async getTagsMany(paths: string[]): Promise<Map<string, string[]>> {
+    const r = await this.getTagsSafe(paths)
+    if (r.failed.size) throw [...r.failed.values()][0]
+    if (r.notFound.size) throw new DropboxError('Dropbox request failed (409): path/not_found/', 409)
+    return r.tags
+  }
+  /**
+   * Native tags for many files, 20 paths per request. Dropbox rejects a whole request (409 path/not_found) when one
+   * path in it no longer exists, so such a batch is split in halves until the missing path(s) are isolated —
+   * the other paths still get their tags. Other errors only affect their own batch (reported in `failed`).
+   */
+  async getTagsSafe(paths: string[]): Promise<{ tags: Map<string, string[]>; notFound: Set<string>; failed: Map<string, unknown> }> {
+    const tags = new Map<string, string[]>(), notFound = new Set<string>(), failed = new Map<string, unknown>()
+    const run = async (chunk: string[]): Promise<void> => {
+      try {
+        const j = await this.rpc<any>('files/tags/get', { paths: chunk })
+        ;(j?.paths_to_tags ?? []).forEach((pt: any, k: number) => { tags.set(chunk[k] ?? pt.path, this.norm(chunk[k] ?? pt.path, pt.tags)) })
+      } catch (e: any) {
+        if (!isNotFoundError(e)) { for (const x of chunk) failed.set(x, e); return }
+        if (chunk.length === 1) { notFound.add(chunk[0]); return }
+        const mid = Math.ceil(chunk.length / 2)
+        await run(chunk.slice(0, mid)); await run(chunk.slice(mid))
+      }
+    }
+    for (let i = 0; i < paths.length; i += 20) await run(paths.slice(i, i + 20))
+    return { tags, notFound, failed }
   }
   /** Add / remove one native Dropbox tag (metadata only — the file's bytes are untouched). */
   async addTag(path: string, tag: string) { await this.rpc('files/tags/add', { path, tag_text: tag }) }
