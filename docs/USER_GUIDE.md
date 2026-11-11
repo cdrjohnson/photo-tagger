@@ -163,6 +163,16 @@ Tag edits show in Photo Tagger immediately and are written to Dropbox in the bac
 - **Closing the app mid-save is safe:** unsaved edits (just photo ids and their tags, a few hundred bytes each) are kept on this device and the save resumes the next time you open Photo Tagger and Dropbox loads. In the browser you also get a “leave site?” warning while a save is running.
 - **Verify Dropbox tags** first pushes everything queued; a photo that is still retrying is marked “Still saving to Dropbox — retrying (…)” in the results.
 
+### Removing photos from the app (Dropbox)
+
+**Remove from app** (selection bar, photo detail, or the “no longer in Dropbox” notice) asks first, then takes the photos out of Photo Tagger right away. In Dropbox, Photo Tagger then takes back the tags it added to each file and deletes its own tag file in `/.photo-tagger/meta/`. The photo itself is never touched. This runs in the background, two photos at a time, with a bar under the header: **“Removing from app: 37 of 200”**. You can keep working, and removing hundreds of photos is fine.
+
+- **Dropbox rate limits, “too many write operations”, server errors and network drops** are retried automatically with growing waits. Anything that still fails after 30 minutes (or can't be fixed by retrying, e.g. missing permission) goes on the **⚠ could not be fully saved** list with the reason and **Retry**.
+- **Closing the app mid-removal is safe:** the unfinished removals (just ids and paths) are kept on this device and finish the next time you open Photo Tagger. Removed photos are never loaded again, even while their tag files are still being deleted.
+- **Removed stays removed:** a tag edit that was still waiting to be saved, a late tagging/face result, or a queued repair can't bring a removed photo back. Photo Tagger also keeps a small list of removed photo ids in Dropbox (`/.photo-tagger/removed.json`; finished entries are pruned after 90 days), so another device or a reinstall doesn't load them either. If an old tag file of a removed photo turns up, it's skipped and deleted.
+- **Adding it again on purpose works:** pick the file in the Dropbox browser (or Tag the folder / Refresh a linked folder) and it comes back as a new photo. Note that **Refresh** re-adds every file in a linked folder that isn't in the library, including ones you removed. To keep removed photos out for good, don't link that folder (pick photos instead), or click **forget** next to the folder in the Dropbox browser’s linked-folders list.
+- **Photos that came back after earlier versions:** before 1.0.29, removing many photos at once could silently leave their tag files in Dropbox (rate limits, or closing the app too early), so those photos reappeared on the next start. Photo Tagger can't tell which of them you meant to remove, so it doesn't delete anything on its own. Select them and **Remove from app** again — with 1.0.29 it sticks.
+
 ### Files moved, renamed or deleted in Dropbox
 
 Photo Tagger remembers each Dropbox photo by its **Dropbox file id**, which stays the same when you move or rename the file. When a photo's tags are read or saved and the old path no longer exists, Photo Tagger looks the file up by its id:

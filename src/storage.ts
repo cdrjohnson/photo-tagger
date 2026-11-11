@@ -38,6 +38,7 @@ export async function getBlob(store: 'thumbs' | 'views' | 'originals', id: strin
   return local().getBlob(store, id)
 }
 export async function putEmbedding(id: string, e: Float32Array) {
+  if (remote.isRemoved(id)) return
   if (remote.hasRemote(id)) return remote.putEmbedding(id, e)
   return local().putEmbedding(id, e)
 }
@@ -85,6 +86,7 @@ export async function allFaces(): Promise<Face[]> {
   return [...(await local().allFaces()), ...remote.remoteFaces()]
 }
 export async function putFaces(fs: Face[]) {
+  fs = fs.filter((f) => !remote.isRemoved(f.photoId)) // removed from the app: drop late face results
   const r = fs.filter(remoteFace), l = fs.filter((f) => !remoteFace(f))
   if (r.length) remote.putFaces(r)
   if (l.length) await local().putFaces(l)

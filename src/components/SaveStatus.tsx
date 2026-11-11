@@ -16,7 +16,8 @@ export function SaveStatus() {
   }, [open])
   useEffect(() => { if (!st.failures.length) setOpen(false) }, [st.failures.length])
   const saving = st.remaining > 0
-  if (!saving && !st.failures.length) return null
+  const removing = st.removeTotal > 0
+  if (!saving && !removing && !st.failures.length) return null
   return (
     <div className="banner save-status" role="status" data-testid="save-status">
       {saving && (
@@ -25,6 +26,12 @@ export function SaveStatus() {
             {st.retrying > 0 && <> · <span data-testid="save-retrying">retrying {st.retrying}{st.retryReason ? ` (${st.retryReason})` : ''}</span></>}
           </span>
           <div className="bar"><i style={{ width: `${st.total ? Math.min(100, (st.done / st.total) * 100) : 0}%` }} /></div>
+        </div>
+      )}
+      {removing && (
+        <div className="bar-line" data-testid="remove-progress">
+          <span>Removing from app: {st.removeDone} of {st.removeTotal}{!saving && st.retrying > 0 && <> · <span data-testid="remove-retrying">retrying{st.retryReason ? ` (${st.retryReason})` : ''}</span></>}</span>
+          <div className="bar"><i style={{ width: `${Math.min(100, (st.removeDone / st.removeTotal) * 100)}%` }} /></div>
         </div>
       )}
       {st.failures.length > 0 && (

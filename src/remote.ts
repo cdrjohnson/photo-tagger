@@ -130,6 +130,9 @@ export interface SaveStatus {
   failures: SaveFailure[]
   /** photos whose file was deleted from Dropbox (not dismissed) */
   missing: MissingFile[]
+  /** Remove from app (1.0.29): photos in the current removal run, and how many are finished */
+  removeTotal: number
+  removeDone: number
 }
 const retry = new Map<string, { n: number; first: number; next: number; reason: string }>()
 const failures = new Map<string, SaveFailure>()
@@ -141,17 +144,18 @@ export function saveStatus(): SaveStatus {
   const pending = new Set([...dirty, ...inflight])
   const total = pending.size ? batch.size : 0
   const rs = [...retry.values()].sort((a, b) => b.n - a.n)
-  return { total, done: total - pending.size, remaining: pending.size, retrying: retry.size, retryReason: rs[0]?.reason, failures: [...failures.values()].sort((a, b) => a.name.localeCompare(b.name)), missing: missingList() }
+  return { total, done: total - pending.size, remaining: pending.size, retrying: retry.size, retryReason: rs[0]?.reason, failures: [...failures.values()].sort((a, b) => a.name.localeCompare(b.name)), missing: missingList(), ...removeProgress() }
 }
 function missingList(): MissingFile[] {
   const hide = new Set(dismissedMissing())
   return [...missing.values()].filter((m) => photos.has(m.id) && !hide.has(m.id)).sort((a, b) => a.name.localeCompare(b.name))
 }
 /** Photos with edits not yet confirmed in Dropbox (used to warn before closing). */
-export const pendingWrites = () => new Set([...dirty, ...inflight]).size + (peopleDirty ? 1 : 0)
+export const pendingWrites = () => new Set([...dirty, ...inflight]).size + (peopleDirty ? 1 : 0) + removals.size
 let statusRaf = 0
 function emitStatus() {
   if (!dirty.size && !inflight.size) batch.clear()
+  if (![...removals.keys()].some((id) => !failures.has(id))) rmBatch.clear()
   if (statusRaf) return
   statusRaf = 1
   queueMicrotask(() => { statusRaf = 0; const st = saveStatus(); statusListeners.forEach((f) => f(st)) })
@@ -177,7 +181,95 @@ function persistQueue() {
 export function persistedQueue(): { people: boolean; items: QueuedState[] } {
   try { const j = JSON.parse(localStorage.getItem(QUEUE_KEY) || 'null'); return j?.v === 1 ? { people: !!j.people, items: j.items ?? [] } : { people: false, items: [] } } catch { return { people: false, items: [] } }
 }
-export function clearPersistedQueue() { try { localStorage.removeItem(QUEUE_KEY) } catch { /* ignore */ } }
+export function clearPersistedQueue() { try { localStorage.removeItem(QUEUE_KEY); localStorage.removeItem(REMOVE_KEY) } catch { /* ignore */ } }
+
+// ---------- Remove from app: durable, paced removal queue + tombstones (1.0.29) ----------
+/**
+ * One photo being removed from the app: take back the native tags Photo Tagger added, then delete its sidecar.
+ * While pending it is a tombstone — nothing may write its sidecar again and loading skips it.
+ */
+interface Removal { id: string; file: string; name: string; meta: string; path?: string; tags: string[]; n?: number; first?: number; next?: number }
+const removals = new Map<string, Removal>()
+const rmBatch = new Set<string>()
+const REMOVE_KEY = 'pt.dropboxRemovals.v1'
+/** removed photo ids, also kept in Dropbox (/.photo-tagger/removed.json) so other devices / reinstalls don't bring them back */
+type RemovedEntry = { id: string; file: string; at: number; done?: number }
+let removedLog: RemovedEntry[] = []
+const removedIds = new Set<string>()
+let removedLogDirty = false
+const REMOVED_PATH = `${META_ROOT}/removed.json`
+const REMOVED_KEEP_MS = 90 * 24 * 3600_000
+export const isRemoved = (id: string) => removedIds.has(id) || removals.has(id)
+function removeProgress() {
+  const total = rmBatch.size
+  const left = [...rmBatch].filter((id) => removals.has(id) && !failures.has(id)).length
+  return { removeTotal: left ? total : 0, removeDone: left ? total - left : 0 }
+}
+function persistRemovals() {
+  try {
+    const items = [...removals.values()].map(({ id, file, name, meta, path, tags }) => ({ id, file, name, meta, path, tags }))
+    if (items.length) localStorage.setItem(REMOVE_KEY, JSON.stringify({ v: 1, items }))
+    else localStorage.removeItem(REMOVE_KEY)
+  } catch { /* storage unavailable: the in-memory queue still runs */ }
+}
+function restoreRemovals() {
+  try {
+    const j = JSON.parse(localStorage.getItem(REMOVE_KEY) || 'null')
+    for (const r of (j?.v === 1 ? j.items : []) as Removal[]) if (r?.id && r.meta && !removals.has(r.id)) { removals.set(r.id, { ...r, tags: r.tags ?? [] }); rmBatch.add(r.id); removedIds.add(r.id) }
+  } catch { /* ignore */ }
+}
+function addRemovedLog(id: string, file: string) {
+  if (!removedLog.some((e) => e.id === id)) removedLog.push({ id, file, at: Date.now() })
+  removedIds.add(id)
+  removedLogDirty = true
+}
+/** Merge our removed list into Dropbox's (other devices may have added theirs), prune old finished entries, write it. */
+async function writeRemovedLog(c: DropboxClient) {
+  const cur = await c.downloadRaw(REMOVED_PATH).then((b) => b?.text()).catch(() => null)
+  let theirs: RemovedEntry[] = []
+  try { theirs = cur ? (JSON.parse(cur).removed ?? []) : [] } catch { theirs = [] }
+  const by = new Map<string, RemovedEntry>()
+  for (const e of [...theirs, ...removedLog]) { const o = by.get(e.id); by.set(e.id, o ? { ...o, ...e, done: Math.max(o.done ?? 0, e.done ?? 0) || undefined } : e) }
+  const now = Date.now()
+  removedLog = [...by.values()].filter((e) => !e.done || now - e.done < REMOVED_KEEP_MS || removals.has(e.id)).slice(-20_000)
+  removedLog.forEach((e) => removedIds.add(e.id))
+  await c.writeMeta(REMOVED_PATH, JSON.stringify({ app: 'photo-tagger', version: 1, removed: removedLog }))
+}
+/** Queue a removal (from a live photo, or a leftover sidecar of an already-removed id found while loading). */
+function queueRemoval(r: Removal) {
+  removals.set(r.id, r); rmBatch.add(r.id); addRemovedLog(r.id, r.file)
+}
+async function processRemoval(c: DropboxClient, r: Removal, liveFiles: Set<string>) {
+  // re-added on purpose since then: the new photo owns this file and its sidecar now — nothing to undo
+  if (liveFiles.has(r.file)) { removals.delete(r.id); owned.delete(r.id); return }
+  const tags = [...new Set([...r.tags, ...(owned.get(r.id) ?? [])])]
+  if (tags.length && r.path) {
+    for (let i = 0; i < tags.length; i++) {
+      const t = tags[i]
+      try { await c.removeTag(r.path, t) }
+      catch (e) {
+        if (!isNotFoundError(e)) throw e
+        const loc = await c.locate(r.file) // moved/renamed: follow the id; deleted: no tags left to take back
+        if (!loc) { r.path = undefined; break }
+        r.path = loc.path
+        await c.removeTag(r.path, t)
+      }
+      r.tags = tags.slice(i + 1); owned.set(r.id, (owned.get(r.id) ?? []).filter((x) => x !== t))
+      persistRemovals()
+    }
+  }
+  await c.deleteMeta(r.meta) // not_found = already gone
+  removals.delete(r.id); owned.delete(r.id); retry.delete('rm:' + r.id); failures.delete(r.id)
+  const e = removedLog.find((x) => x.id === r.id); if (e) e.done = Date.now()
+  removedLogDirty = true
+}
+function failRemoval(r: Removal, e: any) {
+  const k = classify(e), now = Date.now()
+  r.n = (r.n ?? 0) + 1; r.first ??= now
+  if (k.transient && now - r.first <= retryWindowMs()) { r.next = now + queueBackoff(r.n); retry.set('rm:' + r.id, { n: r.n, first: r.first, next: r.next, reason: k.reason }); return }
+  retry.delete('rm:' + r.id); r.next = Infinity
+  failures.set(r.id, { id: r.id, name: r.name, kind: k.transient ? 'gave_up' : k.kind, at: now, reason: `Could not finish removing it from Dropbox (Photo Tagger's tags/tag file are still there; the photo itself is never touched): ${k.reason}` })
+}
 
 function schedule(ms = 500) {
   if (timer) clearTimeout(timer)
@@ -236,19 +328,43 @@ export function flush(force = true): Promise<void> {
         try {
           if (!photos.has(id) || missing.has(id)) { retry.delete(id); continue }
           const capped = await syncNativeTags(c, id)
-          await c.writeMeta(metaPath(photos.get(id)!), await sidecar(id))
+          // removed meanwhile: never (re)create its sidecar
+          if (isRemoved(id) || !photos.has(id)) { retry.delete(id); continue }
+          const body = await sidecar(id)
+          if (isRemoved(id) || !photos.has(id)) { retry.delete(id); continue }
+          await c.writeMeta(metaPath(photos.get(id)!), body)
           finish(id, capped)
         } catch (e) { if (e instanceof MissingFileError) dirty.delete(id); else fail(id, e) } finally { inflight.delete(id); emitStatus(); persistQueue() }
       }
     }
     await Promise.all(Array.from({ length: CONCURRENCY }, worker))
+    // Remove from app: paced like the writes (two at a time), never while that photo's own upload is still in flight
+    const due = [...removals.values()].filter((r) => !inflight.has(r.id) && (r.next ?? 0) !== Infinity && (force || (r.next ?? 0) <= Date.now()))
+    if (due.length) {
+      // record the tombstones in Dropbox first, so a reinstall / other device never loads these photos again
+      if (removedLogDirty) { removedLogDirty = false; try { await writeRemovedLog(c) } catch { removedLogDirty = true } }
+      const liveFiles = new Set([...photos.values()].map((p) => p.dropbox?.id).filter(Boolean) as string[])
+      let k = 0
+      const rmWorker = async () => {
+        while (k < due.length) {
+          const r = due[k++]
+          try { await processRemoval(c, r, liveFiles) } catch (e) { failRemoval(r, e) } finally { persistRemovals(); emitStatus() }
+        }
+      }
+      await Promise.all(Array.from({ length: CONCURRENCY }, rmWorker))
+    }
+    if (removedLogDirty) {
+      removedLogDirty = false
+      try { await writeRemovedLog(c) } catch { removedLogDirty = true }
+    }
     if (doPeople) {
       try { await c.writeMeta(PEOPLE_PATH, JSON.stringify({ app: 'photo-tagger', version: 1, people })) }
       catch (e) { peopleDirty = true; if (!classify(e).transient) onWriteError?.(e) }
     }
     persistQueue(); emitStatus()
-    if (dirty.size || peopleDirty) {
-      const next = Math.min(...[...dirty].map((id) => retry.get(id)?.next ?? Date.now()), peopleDirty ? Date.now() + queueBackoff(1) : Infinity)
+    const rmNext = [...removals.values()].map((r) => r.next ?? Date.now()).filter((t) => t !== Infinity)
+    if (dirty.size || peopleDirty || rmNext.length || removedLogDirty) {
+      const next = Math.min(...[...dirty].map((id) => retry.get(id)?.next ?? Date.now()), ...rmNext, peopleDirty || removedLogDirty ? Date.now() + queueBackoff(1) : Infinity)
       schedule(Math.max(50, next - Date.now()))
     }
   })
@@ -283,7 +399,12 @@ export function reportVerifyProblems(rows: TagVerification[]): number {
 }
 /** Retry every photo on the failure list now (fresh retry window). */
 export function retryFailed(ids?: string[]) {
-  for (const f of [...failures.values()]) if (!ids || ids.includes(f.id)) { failures.delete(f.id); syncedKey.delete(f.id); retry.delete(f.id); if (photos.has(f.id)) { dirty.add(f.id); batch.add(f.id) } }
+  for (const f of [...failures.values()]) if (!ids || ids.includes(f.id)) {
+    failures.delete(f.id); syncedKey.delete(f.id); retry.delete(f.id)
+    const r = removals.get(f.id)
+    if (r) { r.n = 0; r.first = undefined; r.next = 0; rmBatch.add(r.id) }
+    else if (photos.has(f.id)) { dirty.add(f.id); batch.add(f.id) }
+  }
   emitStatus(); persistQueue(); schedule(0)
 }
 export function dismissFailures() { failures.clear(); emitStatus(); persistQueue() }
@@ -492,34 +613,32 @@ async function syncNativeTags(c: DropboxClient, id: string): Promise<string[]> {
 const touch = (id: string) => { dirty.add(id); batch.add(id); if (!retry.has(id)) schedule(); emitStatus(); persistQueue() }
 
 // ---------- store operations (called by storage.ts) ----------
-export function putPhoto(p: Photo) { photos.set(p.id, p); touch(p.id) }
+// a removed photo (tombstone) is never brought back by a late write from tagging/face scanning
+export function putPhoto(p: Photo) { if (isRemoved(p.id)) return; photos.set(p.id, p); touch(p.id) }
 export function savePhotoWithBlobs(p: Photo, b: { thumb: Blob; view: Blob }) {
+  if (isRemoved(p.id)) return
   photos.set(p.id, p); thumbs.set(p.id, b.thumb); views.set(p.id, b.view); touch(p.id)
 }
-export function putEmbedding(id: string, e: Float32Array) { embeddings.set(id, e); touch(id) }
-export function putFaces(fs: Face[]) { for (const f of fs) { faces.set(f.id, f); touch(f.photoId) } }
+export function putEmbedding(id: string, e: Float32Array) { if (isRemoved(id) || !photos.has(id)) return; embeddings.set(id, e); touch(id) }
+export function putFaces(fs: Face[]) { for (const f of fs) { if (isRemoved(f.photoId)) continue; faces.set(f.id, f); touch(f.photoId) } }
 export function deleteFaceIds(ids: string[]) { for (const id of ids) { const f = faces.get(id); if (f) { faces.delete(id); touch(f.photoId) } } }
 export function clearFaces() { const ids = new Set([...faces.values()].map((f) => f.photoId)); faces.clear(); ids.forEach(touch) }
 export function setPeople(list: Person[]) { people = list; peopleDirty = true; schedule(); persistQueue() }
 
-/** Remove from the app; deletes only Photo Tagger's sidecar in Dropbox, never the photo. */
+/**
+ * Remove from the app; deletes only Photo Tagger's sidecar (and the native tags it added) in Dropbox, never the photo.
+ * The photo leaves the app at once; the Dropbox side runs through the paced, retrying, persisted removal queue
+ * ("Removing from app: n of N"), and the id stays tombstoned until its sidecar is confirmed deleted.
+ */
 export async function deletePhotos(ids: string[]) {
-  const c = activeDropbox()
-  const gone: Photo[] = []
   for (const id of ids) {
     const p = photos.get(id); if (!p) continue
-    gone.push(p); photos.delete(id); thumbs.delete(id); views.delete(id); embeddings.delete(id); dirty.delete(id)
+    if (p.dropbox) queueRemoval({ id, file: p.dropbox.id, name: p.name, meta: metaPath(p), path: missing.has(id) ? undefined : p.dropbox.path, tags: owned.get(id) ?? [] })
+    photos.delete(id); thumbs.delete(id); views.delete(id); embeddings.delete(id)
+    dirty.delete(id); retry.delete(id); failures.delete(id); missing.delete(id); syncedKey.delete(id); repaired.delete(id); relinked.delete(id)
     for (const f of [...faces.values()]) if (f.photoId === id) faces.delete(f.id)
   }
-  emitStatus()
-  if (c) await Promise.all(gone.map(async (p) => {
-    // take back only the native tags Photo Tagger added; the photo itself is untouched
-    const tp = missing.has(p.id) ? null : await tagPath(c, p).catch(() => null)
-    missing.delete(p.id)
-    if (tp) for (const t of owned.get(p.id) ?? []) await c.removeTag(tp, t).catch(() => {})
-    owned.delete(p.id); syncedKey.delete(p.id)
-    await c.deleteMeta(metaPath(p)).catch(() => {})
-  }))
+  persistRemovals(); persistQueue(); emitStatus(); schedule(0)
 }
 
 export async function getBlob(store: 'thumbs' | 'views' | 'originals', id: string): Promise<Blob | undefined> {
@@ -558,12 +677,17 @@ async function thumbSlot<T>(fn: () => Promise<T>): Promise<T> {
 
 /** Forget everything held in memory (on disconnect / app wipe). Dropbox is untouched. */
 export function clearMemory() {
-  photos.clear(); thumbs.clear(); views.clear(); embeddings.clear(); faces.clear(); people = []; dirty.clear(); peopleDirty = false; syncedKey.clear(); owned.clear(); missing.clear(); relinked.clear(); repaired.clear(); retry.clear(); failures.clear(); inflight.clear(); batch.clear(); emitStatus()
+  photos.clear(); thumbs.clear(); views.clear(); embeddings.clear(); faces.clear(); people = []; dirty.clear(); peopleDirty = false; syncedKey.clear(); owned.clear(); missing.clear(); relinked.clear(); repaired.clear(); removals.clear(); rmBatch.clear(); removedLog = []; removedIds.clear(); removedLogDirty = false; retry.clear(); failures.clear(); inflight.clear(); batch.clear(); emitStatus()
 }
 
 /** Read every sidecar from Dropbox into memory. */
 export async function loadFromDropbox(c: DropboxClient = activeDropbox()!) {
   if (!c) return
+  // tombstones: removals still pending on this device + Dropbox's list of removed ids (other devices, reinstalls)
+  restoreRemovals()
+  const rj = await c.downloadRaw(REMOVED_PATH).then((b) => b?.text()).catch(() => null)
+  try { for (const e of (rj ? JSON.parse(rj).removed ?? [] : []) as RemovedEntry[]) if (e?.id && !removedIds.has(e.id)) { removedLog.push(e); removedIds.add(e.id) } } catch { /* ignore */ }
+  for (const r of removals.values()) if (!removedLog.some((e) => e.id === r.id)) addRemovedLog(r.id, r.file)
   const list = (await c.listIfExists(`${META_ROOT}/meta`)).filter((e) => e.kind === 'file' && e.name.endsWith('.json'))
   const nextPhotos = new Map<string, Photo>(), nextFaces = new Map<string, Face>(), nextEmb = new Map<string, Float32Array>()
   let i = 0
@@ -574,6 +698,11 @@ export async function loadFromDropbox(c: DropboxClient = activeDropbox()!) {
         const blob = await c.downloadRaw(e.id); if (!blob) continue
         const j = JSON.parse(await blob.text())
         if (j?.app !== 'photo-tagger' || !j.photo?.id) continue
+        if (isRemoved(j.photo.id)) {
+          // removed from the app, but its sidecar is still there (e.g. closed mid-removal): finish removing, don't load it
+          if (!removals.has(j.photo.id) && j.photo.dropbox?.id) queueRemoval({ id: j.photo.id, file: j.photo.dropbox.id, name: j.photo.name, meta: metaPath(j.photo), path: j.photo.dropbox.path, tags: j.photo.dropboxTags ?? [] })
+          continue
+        }
         const raw: Photo = { ...j.photo, hasOriginal: false, source: 'dropbox', relPath: undefined }
         // 1.0.28 repair: stray spaces in tag names, duplicates, old long camera tag → saved later via the paced queue
         const p = repairPhotoTags(raw)
@@ -592,6 +721,8 @@ export async function loadFromDropbox(c: DropboxClient = activeDropbox()!) {
   embeddings.clear(); nextEmb.forEach((v, k) => embeddings.set(k, v))
   try { people = pj ? (JSON.parse(pj).people ?? []) : [] } catch { people = [] }
   resumePersisted()
+  persistRemovals()
+  if (removals.size || removedLogDirty) { emitStatus(); schedule(300) }
 }
 /** Tell listeners (People) that remote data changed — call after the photo list is refreshed. */
 export const notifyRemote = emit

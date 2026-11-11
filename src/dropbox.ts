@@ -312,7 +312,8 @@ export class DropboxClient {
   /** Delete one of Photo Tagger's own metadata files (never a photo). */
   async deleteMeta(path: string) {
     if (!path.startsWith(META_ROOT + '/')) throw new Error('refusing to delete outside Photo Tagger metadata folder')
-    try { await this.rpc('files/delete_v2', { path }) } catch (e: any) { if (e?.status !== 409) throw e }
+    // already gone = done; other 409s (e.g. too_many_write_operations) are real errors the removal queue retries
+    try { await this.rpc('files/delete_v2', { path }) } catch (e: any) { if (!isNotFoundError(e)) throw e }
   }
 
   /** List a folder; [] when it does not exist yet. */
