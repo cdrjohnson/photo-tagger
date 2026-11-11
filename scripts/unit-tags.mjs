@@ -64,4 +64,17 @@ if (m.repairPhotoTags(clean) !== clean) throw new Error('repair must return the 
 const withSpace = { tags: [{ name: 'eastman kodak company kodak cx7530 zoom ', source: 'exif' }, { name: 'dog', source: 'auto' }], rejected: [] }
 eq(m.removeTag(withSpace, 'eastman kodak company kodak cx7530 zoom').tags.map((t) => t.name), ['dog'], 'removeTag matches a trailing-space variant')
 eq(m.removeTag(withSpace, 'dog').rejected, ['dog'], 'removed auto tag is rejected')
+// 1.0.30: Dropbox dates + add order (time taken > modified > date in name; undated last; ties by path)
+const dbxB = await build({ entryPoints: ['src/dropbox.ts'], bundle: true, format: 'esm', write: false, platform: 'browser', define: { 'import.meta.env': '{}' } })
+const d = await import('data:text/javascript;base64,' + Buffer.from(dbxB.outputFiles[0].text).toString('base64'))
+eq(d.dropboxFileDate({ name: 'a.jpg', takenAt: '2010-06-01T10:00:00Z', clientModified: '2024-01-01T00:00:00Z' }), Date.UTC(2010, 5, 1, 10), 'time taken wins')
+eq(d.dropboxFileDate({ name: 'a.jpg', clientModified: '2024-01-01T00:00:00Z' }), Date.UTC(2024, 0, 1), 'else modified')
+eq(d.dropboxFileDate({ name: 'IMG_2019-07-04_x.jpg' }), Date.UTC(2019, 6, 4), 'else date in name')
+eq(d.dropboxFileDate({ name: 'x.jpg' }), 0, 'undated')
+const f = (n, t) => ({ id: 'id:' + n, name: n, pathLower: '/' + n, clientModified: t })
+const files = [f('c.jpg', '2020-01-01T00:00:00Z'), f('a.jpg', '2022-01-01T00:00:00Z'), f('z.jpg'), f('b.jpg', '2020-01-01T00:00:00Z'), { ...f('d.jpg', '2025-01-01T00:00:00Z'), takenAt: '2001-01-01T00:00:00Z' }]
+eq(d.orderDropboxFiles(files, 'name').map((x) => x.name), ['a.jpg', 'b.jpg', 'c.jpg', 'd.jpg', 'z.jpg'], 'name order')
+eq(d.orderDropboxFiles(files, 'oldest').map((x) => x.name), ['d.jpg', 'b.jpg', 'c.jpg', 'a.jpg', 'z.jpg'], 'oldest first, undated last, ties by path')
+eq(d.orderDropboxFiles(files, 'newest').map((x) => x.name), ['a.jpg', 'b.jpg', 'c.jpg', 'd.jpg', 'z.jpg'], 'newest first, undated last, ties by path')
+eq(files.map((x) => x.name), ['c.jpg', 'a.jpg', 'z.jpg', 'b.jpg', 'd.jpg'], 'input not mutated')
 console.log('unit-tags: ok')

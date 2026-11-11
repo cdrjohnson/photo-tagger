@@ -3,6 +3,7 @@
 // Run: npm run build && npm run test:e2e
 import fs from 'node:fs/promises'
 import { execSync } from 'node:child_process'
+import zlib from 'node:zlib'
 import path from 'node:path'
 import { devices } from 'playwright'
 import { launch, makeScreenshotSample, ROOT, sample, startPreview, URL_BASE, routeModel } from './testkit.mjs'
@@ -39,6 +40,19 @@ const SAMPLE_BY_ID = {
   'id:v1': 'dropbox-video-frame.jpg', // Dropbox's preview frame of clip.mp4 (id:v2 has no preview)
   'id:f1': 'obama-portrait.jpg', 'id:f2': 'biden-2013.jpg', 'id:f3': 'biden-2021.jpg',
 }
+// distinct little noise PNGs (1.0.30 big-folder test): no two are content- or near-duplicates
+const crcT = Array.from({ length: 256 }, (_, n) => { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; return c >>> 0 })
+const crc32 = (b) => { let c = 0xffffffff; for (const x of b) c = crcT[(c ^ x) & 255] ^ (c >>> 8); return (c ^ 0xffffffff) >>> 0 }
+function noisePng(seed, w = 48, h = 36) {
+  let r = (seed * 2654435761) >>> 0 || 1
+  const rnd = () => { r ^= r << 13; r >>>= 0; r ^= r >>> 17; r ^= r << 5; r >>>= 0; return r & 255 }
+  const raw = Buffer.alloc((w * 3 + 1) * h)
+  for (let y = 0; y < h; y++) { raw[y * (w * 3 + 1)] = 0; for (let x = 0; x < w * 3; x++) raw[y * (w * 3 + 1) + 1 + x] = rnd() }
+  const chunk = (type, data) => { const len = Buffer.alloc(4); len.writeUInt32BE(data.length); const td = Buffer.concat([Buffer.from(type), data]); const crc = Buffer.alloc(4); crc.writeUInt32BE(crc32(td)); return Buffer.concat([len, td, crc]) }
+  const ihdr = Buffer.alloc(13); ihdr.writeUInt32BE(w, 0); ihdr.writeUInt32BE(h, 4); ihdr[8] = 8; ihdr[9] = 2
+  return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', ihdr), chunk('IDAT', zlib.deflateSync(raw)), chunk('IEND', Buffer.alloc(0))])
+}
+const sampleBytes = async (f) => (Buffer.isBuffer(f) ? f : fs.readFile(sample(f)))
 const dbxFile = (id, name, dir) => ({ '.tag': 'file', id, name, path_display: `${dir}/${name}`, path_lower: `${dir}/${name}`.toLowerCase(), rev: 'r' + id.slice(3), size: 1000, content_hash: 'h' + id, client_modified: '2024-05-01T10:00:00Z' })
 const dbxDir = (name, dir) => ({ '.tag': 'folder', id: 'id:dir-' + name, name, path_display: `${dir}/${name}`, path_lower: `${dir}/${name}`.toLowerCase() })
 const DBX_TREE = {
@@ -171,7 +185,7 @@ async function stubDropbox(ctx) {
       if (st.thumbFailSmall.has(rid) && arg.size === 'w480h320') return r.fulfill({ status: 409, headers: CORS, contentType: 'application/json', body: '{"error_summary":"unsupported_image/"}' })
       const f = SAMPLE_BY_ID[rid]
       if (!f) return r.fulfill({ status: 409, headers: CORS, body: '{}' })
-      return r.fulfill({ status: 200, headers: { ...CORS, 'content-type': 'application/octet-stream' }, body: await fs.readFile(sample(f)) })
+      return r.fulfill({ status: 200, headers: { ...CORS, 'content-type': 'application/octet-stream' }, body: await sampleBytes(f) })
     }
     if (url.pathname !== '/2/files/download') { st.writes++; return r.fulfill({ status: 400, headers: CORS, body: 'no' }) }
     const id = arg.path
@@ -185,7 +199,7 @@ async function stubDropbox(ctx) {
     if (id === 'id:slow-b') await new Promise((res) => setTimeout(res, 8_000))
     const file = SAMPLE_BY_ID[id]
     if (!file) return r.fulfill({ status: 409, headers: CORS, contentType: 'application/json', body: '{"error_summary":"path/not_found/"}' })
-    return r.fulfill({ status: 200, headers: { ...CORS, 'content-type': 'application/octet-stream' }, body: await fs.readFile(sample(file)) })
+    return r.fulfill({ status: 200, headers: { ...CORS, 'content-type': 'application/octet-stream' }, body: await sampleBytes(file) })
   })
   return st
 }
@@ -1071,7 +1085,7 @@ await test('Dropbox: pick individual files (click, Ctrl-click, Shift-click, drag
   await row(1).click(); await row(2).click({ modifiers: ['Control'] })
   ok(await row(2).getByTestId('dropbox-file-check').isChecked(), 'checkbox in sync')
   eq(await page.getByTestId('dropbox-selected-count').innerText(), '2 selected')
-  ok(/Tag 2 selected photo/.test(await page.getByTestId('dropbox-process').innerText()), 'button tags only the selection')
+  eq(await page.getByTestId('dropbox-process').innerText(), 'Add selected (2)', 'button adds only the selection')
   await page.getByTestId('dropbox-process').click()
   await waitTile('pick-1.jpg', page, 60_000); await waitTile('pick-2.jpg', page, 60_000)
   await settled(); await keepDupes()
@@ -1658,6 +1672,165 @@ await test('Remove from app (1.0.29): 200 of 210 removed through a paced, retryi
   } finally {
     await c10.close()
     delete DBX_TREE['/many']; DBX_TREE[''].splice(DBX_TREE[''].findIndex((e) => e.name === 'Many'), 1)
+  }
+})
+
+await test('More ways to add (1.0.30): count picker + order, add by date, folder ticks + Add selected, windowed 2,000-photo folder', async () => {
+  const N = 2000, DAY = 86_400_000, BASE = Date.UTC(2015, 0, 1)
+  const big = []
+  for (let i = 1; i <= N; i++) {
+    const id = 'id:big' + String(i).padStart(4, '0'), name = `big-${String(i).padStart(4, '0')}.png`
+    const k = (i * 7919) % N
+    const f = { ...dbxFile(id, name, '/Big'), client_modified: new Date(BASE + k * 1.5 * DAY).toISOString().replace('.000', '') }
+    if (i % 100 === 0) f.media_info = { '.tag': 'metadata', metadata: { '.tag': 'photo', time_taken: new Date(Date.UTC(2010, 5, 1) + (i / 100) * DAY).toISOString().replace('.000', '') } }
+    SAMPLE_BY_ID[id] = noisePng(i)
+    big.push(f)
+  }
+  const sub = [1, 2, 3].map((i) => { const id = 'id:bigsub' + i; SAMPLE_BY_ID[id] = noisePng(5000 + i); return dbxFile(id, `sub-${i}.png`, '/Big/Sub') })
+  DBX_TREE['/big'] = [dbxDir('Sub', '/Big'), ...big]
+  DBX_TREE['/big/sub'] = sub
+  DBX_TREE[''].push(dbxDir('Big', ''))
+  const dateOf = (f) => Date.parse(f.media_info?.metadata?.time_taken ?? f.client_modified)
+  const byDate = [...big].sort((a, b) => dateOf(a) - dateOf(b))
+  const c11 = await browser.newContext({ viewport: { width: 1280, height: 900 }, timezoneId: 'UTC' })
+  await routeModel(c11).catch(() => {})
+  const st = await stubDropbox(c11)
+  const p11 = await c11.newPage()
+  const errs11 = []; p11.on('pageerror', (e) => errs11.push(e.message))
+  const bigDl = () => [...new Set((st.dlOrder ?? []).filter((id) => /^id:big\d/.test(id)))]
+  const count = async () => (await p11.getByTestId('count').innerText()).trim()
+  const waitCount = (n) => p11.waitForFunction((n) => new RegExp('^' + n + ' photos').test(document.querySelector('[data-testid=count]')?.textContent || ''), n, { timeout: 400_000 })
+  const waitIdle = () => p11.waitForFunction(() => (!document.querySelector('[data-testid=job-label]') || /Done|Cancelled/.test(document.querySelector('[data-testid=job-label]').textContent)) && ![...document.querySelectorAll('[data-testid=photo-tile]')].some((t) => t.dataset.status === 'pending'), null, { timeout: 400_000 })
+  const here = () => p11.locator('[data-testid=dropbox-here-progress] [data-testid=folder-progress][data-total]')
+  const openBig = async () => {
+    await p11.getByTestId('add-btn').click()
+    await p11.locator('[data-testid=dropbox-folder][data-name="Big"]').click()
+    await p11.locator('[data-testid=dropbox-list][data-count="2000"]').waitFor({ timeout: 30_000 })
+    await here().waitFor({ timeout: 30_000 })
+  }
+  const rowsInDom = () => p11.getByTestId('dropbox-file').count()
+  try {
+    await p11.goto(URL_BASE); await p11.getByTestId('empty').waitFor()
+    await connectDropbox(p11, 'more_ways_key')
+    await p11.getByTestId('open-settings').click(); await p11.getByTestId('tab-dropbox').click()
+    await p11.getByTestId('set-batch-size').fill('10')
+    await p11.getByTestId('settings-close').click()
+
+    // big folder: windowed list, last row reachable, nothing downloaded to list/count
+    const t0 = Date.now()
+    await openBig()
+    ok(Date.now() - t0 < 15_000, 'big folder opened in ' + (Date.now() - t0) + ' ms')
+    ok(/0 of 2,?000 in library/.test(await here().textContent()), 'progress: ' + await here().textContent())
+    const mounted = await rowsInDom()
+    ok(mounted > 0 && mounted < 200, 'only visible rows are mounted: ' + mounted)
+    await p11.getByTestId('dropbox-list').evaluate((el) => { el.scrollTop = el.scrollHeight })
+    await p11.locator('[data-testid=dropbox-file][data-name="big-2000.png"]').waitFor({ timeout: 10_000 })
+    ok(await rowsInDom() < 200, 'still windowed after scrolling')
+    await p11.getByTestId('dropbox-list').evaluate((el) => { el.scrollTop = 0 })
+    await p11.locator('[data-testid=dropbox-file][data-name="big-0001.png"]').waitFor({ timeout: 10_000 })
+    eq(bigDl(), [], 'listing/counting downloads nothing')
+    ok(st.lists.some((l) => l.include_media_info === true), 'list_folder asks for media info (time taken)')
+
+    // 1) count picker defaults to Photos per batch (10, shown as a custom number); 25 + Newest first → 25 newest in 3 batches
+    eq(await p11.getByTestId('add-count-select').inputValue(), 'custom', 'batch size 10 is not a preset → custom')
+    eq(await p11.getByTestId('add-count-custom').inputValue(), '10', 'default = Photos per batch')
+    ok(/Add next batch \(10\)/.test(await p11.getByTestId('dropbox-here-progress').textContent()), 'button follows the default')
+    eq(await p11.getByTestId('add-order').inputValue(), 'name', 'order defaults to Name')
+    await p11.getByTestId('add-count-select').selectOption('25')
+    await p11.getByTestId('add-order').selectOption('newest')
+    ok(/Add next batch \(25\)/.test(await p11.getByTestId('dropbox-here-progress').textContent()), 'button shows the picked count')
+    await p11.evaluate(() => {
+      window.__labels = []
+      new MutationObserver(() => { const t = document.querySelector('[data-testid=job-label]')?.textContent; if (t && window.__labels.at(-1) !== t) window.__labels.push(t) }).observe(document.body, { subtree: true, childList: true, characterData: true })
+    })
+    await p11.getByTestId('dropbox-here-progress').getByTestId('folder-next-batch').click()
+    await p11.getByTestId('preimport-check').waitFor()
+    await p11.getByTestId('preimport-proceed').click()
+    await waitCount(25); await waitIdle()
+    const labels = await p11.evaluate(() => window.__labels)
+    ok(labels.some((l) => /Batch 3 of 3 · tagging \d+ of 5/.test(l)), '25 with batch size 10 = 3 batches: ' + labels.slice(0, 30).join(' | '))
+    ok(!labels.some((l) => /of 4\b/.test(l) && /Batch/.test(l)), 'no 4th batch')
+    const newest25 = [...byDate].reverse().slice(0, 25).map((f) => f.id)
+    eq(bigDl().sort(), [...newest25].sort(), 'the 25 newest (by Dropbox date) were added')
+    eq(bigDl().slice(0, 10).sort(), newest25.slice(0, 10).sort(), 'first batch = 10 newest')
+    ok(newest25.every((id) => +id.slice(6) % 100 !== 0), 'time taken beats modified date (old shots with new modified dates skipped)')
+
+    // order persists across reopen and reload
+    await p11.reload(); await waitCount(25)
+    await openBig()
+    eq(await p11.getByTestId('add-order').inputValue(), 'newest', 'order remembered after reload')
+    ok(/25 of 2,?000 in library/.test(await here().textContent()), 'progress after: ' + await here().textContent())
+
+    // custom count + Oldest first → the 7 oldest (photos Dropbox knows a capture date for come first)
+    await p11.getByTestId('add-order').selectOption('oldest')
+    await p11.getByTestId('add-count-custom').fill('7')
+    ok(/Add next batch \(7\)/.test(await p11.getByTestId('dropbox-here-progress').textContent()), 'custom count shown')
+    const before = bigDl().length
+    await p11.getByTestId('dropbox-here-progress').getByTestId('folder-next-batch').click()
+    await waitCount(32); await waitIdle()
+    eq(bigDl().slice(before).sort(), byDate.slice(0, 7).map((f) => f.id).sort(), 'the 7 oldest were added')
+
+    // 2) Add by date: counts before adding (match / already in library / to add), then add only the new ones
+    await openBig()
+    await p11.getByTestId('dbx-date-range').locator('summary').click()
+    await p11.getByTestId('dbx-date-year').waitFor({ timeout: 30_000 })
+    const yearOpts = await p11.getByTestId('dbx-date-year').locator('option').allTextContents()
+    ok(yearOpts.includes('2010') && yearOpts.includes('2016'), 'years from Dropbox dates: ' + yearOpts)
+    await p11.getByTestId('dbx-date-year').selectOption('2016')
+    const in2016 = big.filter((f) => new Date(dateOf(f)).getUTCFullYear() === 2016).length
+    ok(new RegExp(`^${in2016} match · 0 already in library · ${in2016} to add`).test(await p11.getByTestId('dbx-date-summary').innerText()), `year summary (${in2016}): ` + await p11.getByTestId('dbx-date-summary').innerText())
+    eq([await p11.getByTestId('dbx-date-from').inputValue(), await p11.getByTestId('dbx-date-to').inputValue()], ['2016-01-01', '2016-12-31'], 'year fills from/to')
+    const top = [...byDate].reverse()
+    const day = (t) => new Date(t).toISOString().slice(0, 10)
+    const fromD = day(dateOf(top[40])), toD = day(dateOf(top[15]))
+    const lo = Date.parse(fromD + 'T00:00:00Z'), hi = Date.parse(toD + 'T23:59:59.999Z')
+    const inRange = big.filter((f) => dateOf(f) >= lo && dateOf(f) <= hi)
+    const have = inRange.filter((f) => newest25.includes(f.id))
+    ok(have.length > 0 && have.length < inRange.length, `range overlaps the library: ${have.length} of ${inRange.length}`)
+    await p11.getByTestId('dbx-date-from').fill(fromD); await p11.getByTestId('dbx-date-to').fill(toD)
+    eq(await p11.getByTestId('dbx-date-summary').innerText().then((t) => t.split('.')[0].trim()), `${inRange.length} match · ${have.length} already in library · ${inRange.length - have.length} to add`, 'range summary')
+    eq(await p11.getByTestId('dbx-date-add').innerText(), `Add ${inRange.length - have.length} from these dates`, 'date add button')
+    const before2 = bigDl().length
+    await p11.getByTestId('dbx-date-add').click()
+    const n3 = 32 + inRange.length - have.length
+    await waitCount(n3); await waitIdle()
+    eq(bigDl().slice(before2).sort(), inRange.filter((f) => !have.includes(f)).map((f) => f.id).sort(), 'only the new photos in the date range were added')
+
+    // 3) ticks: in-library rows disabled; pick 2 files + a subfolder → Add selected (3)
+    await openBig()
+    const inLib = p11.locator('[data-testid=dropbox-file][aria-disabled=true]')
+    const lib1 = byDate[0].name // an oldest one already in the library
+    await p11.getByTestId('dropbox-list').evaluate((el, i) => { el.scrollTop = i * 68 }, +lib1.slice(4, 8) - 1)
+    const libRow = p11.locator(`[data-testid=dropbox-file][data-name="${lib1}"]`)
+    await libRow.waitFor({ timeout: 10_000 })
+    ok(await libRow.getByTestId('dropbox-in-library').isVisible() && await libRow.getByTestId('dropbox-file-check').isDisabled(), 'in-library row is badged and its box disabled')
+    ok(await inLib.count() >= 1, 'in-library rows rendered disabled')
+    await p11.getByTestId('dropbox-list').evaluate((el) => { el.scrollTop = 0 })
+    const freshNames = big.slice(0, 20).filter((f) => !bigDl().includes(f.id)).slice(0, 2).map((f) => f.name)
+    await p11.locator(`[data-testid=dropbox-file][data-name="${freshNames[0]}"]`).click()
+    await p11.locator(`[data-testid=dropbox-file][data-name="${freshNames[1]}"]`).click({ modifiers: ['Control'] })
+    await p11.locator('[data-testid=dropbox-folder-row][data-name="Sub"]').getByTestId('dropbox-folder-check').check()
+    eq(await p11.getByTestId('dropbox-selected-count').innerText(), '3 selected (2 photos/videos, 1 folder)', 'selection summary')
+    eq(await p11.getByTestId('dropbox-process').innerText(), 'Add selected (3)', 'Add selected button')
+    await p11.getByTestId('dropbox-select-all').click()
+    ok(/^\d[\d,]* selected/.test(await p11.getByTestId('dropbox-selected-count').innerText()), 'select all')
+    eq(await p11.getByTestId('dropbox-process').innerText(), `Add selected (${N - (n3 - 0) + 1})`, 'select all = every new photo + the folder')
+    await p11.getByTestId('dropbox-deselect-all').click()
+    eq(await p11.getByTestId('dropbox-deselect-all').innerText(), 'Select none', 'Select none label')
+    ok(/^Tag /.test(await p11.getByTestId('dropbox-process').innerText()), 'nothing selected')
+    await p11.locator(`[data-testid=dropbox-file][data-name="${freshNames[0]}"]`).click()
+    await p11.locator(`[data-testid=dropbox-file][data-name="${freshNames[1]}"]`).click({ modifiers: ['Control'] })
+    await p11.locator('[data-testid=dropbox-folder-row][data-name="Sub"]').getByTestId('dropbox-folder-check').check()
+    await p11.getByTestId('dropbox-process').click()
+    await waitCount(n3 + 5); await waitIdle()
+    for (const n of [...freshNames, 'sub-1.png', 'sub-2.png', 'sub-3.png']) ok(await p11.locator(`[data-testid=photo-tile][data-name="${n}"]`).count() === 1, `${n} added`)
+    const linked = await idb(p11, `return new Promise((res) => { const q = db.transaction('kv').objectStore('kv').get('dropboxFolders'); q.onsuccess = () => res(q.result) })`)
+    ok(!(linked ?? []).some((f) => /\/big/.test(f.path.toLowerCase())), 'picked/ranged adds do not link folders: ' + JSON.stringify(linked))
+    eq(st.writes, 0, 'no photo was written or deleted in Dropbox')
+    eq(errs11, [], 'no page errors')
+  } finally {
+    await c11.close()
+    delete DBX_TREE['/big']; delete DBX_TREE['/big/sub']; DBX_TREE[''].splice(DBX_TREE[''].findIndex((e) => e.name === 'Big'), 1)
   }
 })
 

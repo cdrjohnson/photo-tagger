@@ -7,7 +7,7 @@ import { fingerprint, hashesFromBlob, isImageFile, pixelsFromBlob, prepare, type
 import { nearestPhash } from './hashes'
 import { buildZip, canPickFolder, clearSavedFolder, downloadBlob, ensurePermission, getSavedFolder, pickFolder, saveOneToFolder, saveToFolder, type DirHandle } from './folderSave'
 import { qualityFlags } from './imageUtils'
-import { completeWebRedirect, DropboxClient, ENV_DROPBOX_KEY, isDropboxMedia, isDropboxVideo, setActiveDropbox, startDropboxAuth, type DropboxEntry, type DropboxFile, type DropboxSession } from './dropbox'
+import { completeWebRedirect, DropboxClient, ENV_DROPBOX_KEY, isDropboxMedia, orderDropboxFiles, type DropboxAddOrder, isDropboxVideo, setActiveDropbox, startDropboxAuth, type DropboxEntry, type DropboxFile, type DropboxSession } from './dropbox'
 import * as Remote from './remote'
 import { fetchDropboxOriginal } from './dropbox'
 import { parseImport, toCSV, toJSON, download } from './exportImport'
@@ -57,10 +57,14 @@ export interface Library {
   refreshDropbox(): Promise<void>
   /** per-folder import progress derived from the library (metadata listing only, no downloads) */
   dropboxFolderProgress(path: string, recursive: boolean): Promise<FolderProgress>
-  /** add the next "Photos per batch" not-yet-imported files of a folder (sorted by path) */
-  addNextDropboxBatch(path: string, recursive: boolean): Promise<void>
+  /** add the next `count` (default: Photos per batch) not-yet-imported files of a folder, in the saved order (name / oldest / newest) */
+  addNextDropboxBatch(path: string, recursive: boolean, count?: number): Promise<void>
   /** add every remaining file of a folder, in batches */
   addAllRemainingDropbox(path: string, recursive: boolean): Promise<void>
+  /** every photo/video in a folder (metadata only, no downloads), with Dropbox's dates */
+  dropboxFolderFiles(path: string, recursive: boolean): Promise<DropboxFile[]>
+  /** add these files plus everything in these folders (picked in the browser, or a date range) through the batch pipeline; folders are not linked */
+  addDropboxSelection(files: DropboxFile[], folders?: string[], recursive?: boolean): Promise<void>
   forgetDropboxFolder(path: string): Promise<void>
   /** Abort remaining Dropbox downloads; already-finished files are still tagged. */
   cancelDropboxDownload(): void
@@ -800,7 +804,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
     return { path, recursive, total: files.length, inLibrary, skipped, remaining: files.length - inLibrary - skipped }
   }, [dropboxFolderFiles])
 
-  const processDropbox = useCallback(async (targets: LinkedFolder[], picked?: DropboxFile[], opts: { skipKnown?: boolean; run?: { path: string; recursive: boolean }; confirmed?: boolean } = {}) => {
+  const processDropbox = useCallback(async (targets: LinkedFolder[], picked?: DropboxFile[], opts: { skipKnown?: boolean; run?: { path: string; recursive: boolean }; confirmed?: boolean; order?: DropboxAddOrder } = {}) => {
     const c = dbxClientRef.current
     if (!c) { toast('Connect Dropbox first (Settings → Dropbox)', 'error'); return }
     if (dropboxAbortRef.current) { toast('A Dropbox job is already running'); return }
@@ -837,8 +841,8 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
           seen.add(e.id); files.push(e)
         }
       }
-      // deterministic order (by path) so "Add next batch" is predictable
-      files.sort((a, b) => (a.pathLower < b.pathLower ? -1 : a.pathLower > b.pathLower ? 1 : 0))
+      // deterministic order (name, or oldest/newest first — 1.0.30) so "Add next …" is predictable
+      files.splice(0, files.length, ...orderDropboxFiles(files, opts.order ?? 'name'))
       // remember a single-folder run so an interrupted import can be offered again on next open (one tiny record)
       const run = opts.run ?? (!picked && targets.length === 1 ? { path: targets[0].path, recursive: targets[0].recursive } : null)
       if (run && files.length) setRunRecord({ ...run, at: Date.now() })
@@ -947,20 +951,35 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
     if (!dbxFoldersRef.current.length) { toast('No Dropbox folders linked yet — open From Dropbox and tag a folder'); return }
     await processDropbox(dbxFoldersRef.current)
   }, [processDropbox, toast])
-  const addNextDropboxBatch = useCallback(async (path: string, recursive: boolean) => {
+  const addNextDropboxBatch = useCallback(async (path: string, recursive: boolean, count?: number) => {
     if (dropboxAbortRef.current) { toast('A Dropbox job is already running'); return }
     if (!(await confirmFirstImport())) return
     try {
       const files = await dropboxFolderFiles(path, recursive)
       const lib = new Set(photosRef.current.map((p) => p.dropbox?.id).filter(Boolean) as string[])
       const sk = skippedFiles()
-      const rest = files.filter((f) => !lib.has(f.id) && !sk[f.id])
+      const order = settingsRef.current.dropboxAddOrder ?? 'name'
+      const rest = orderDropboxFiles(files.filter((f) => !lib.has(f.id) && !sk[f.id]), order)
       if (!rest.length) { toast('All photos in this folder are already in your library', 'ok'); return }
-      const n = Math.max(10, Math.min(500, Math.round(settingsRef.current.dropboxBatchSize || 100)))
-      await processDropbox([], rest.slice(0, n), { skipKnown: true, run: { path, recursive }, confirmed: true })
+      // how many to add (count picker, 1.0.30); the batch size stays the per-round save/verify limit inside processDropbox
+      const n = Math.max(1, Math.round(count ?? settingsRef.current.dropboxBatchSize ?? 100))
+      await processDropbox([], rest.slice(0, n), { skipKnown: true, run: { path, recursive }, confirmed: true, order })
     } catch (e: any) { toast(e?.message || 'Dropbox failed', 'error') }
   }, [dropboxFolderFiles, processDropbox, toast, confirmFirstImport])
-  const addAllRemainingDropbox = useCallback((path: string, recursive: boolean) => processDropbox([{ path, recursive }], undefined, { skipKnown: true }), [processDropbox])
+  const addAllRemainingDropbox = useCallback((path: string, recursive: boolean) => processDropbox([{ path, recursive }], undefined, { skipKnown: true, order: settingsRef.current.dropboxAddOrder ?? 'name' }), [processDropbox])
+  const addDropboxSelection = useCallback(async (files: DropboxFile[], folders: string[] = [], recursive = false) => {
+    if (dropboxAbortRef.current) { toast('A Dropbox job is already running'); return }
+    if (!(await confirmFirstImport())) return
+    try {
+      const all = new Map(files.map((f) => [f.id, f]))
+      // picked subfolders: their photos/videos (and their subfolders' when Include subfolders is on) — metadata listing only
+      for (const path of folders) for (const f of await dropboxFolderFiles(path, recursive)) all.set(f.id, f)
+      const lib = new Set(photosRef.current.map((p) => p.dropbox?.id).filter(Boolean) as string[])
+      const list = [...all.values()].filter((f) => !lib.has(f.id))
+      if (!list.length) { toast('Everything you picked is already in your library', 'ok'); return }
+      await processDropbox([], list, { confirmed: true, order: settingsRef.current.dropboxAddOrder ?? 'name' })
+    } catch (e: any) { toast(e?.message || 'Dropbox failed', 'error') }
+  }, [dropboxFolderFiles, processDropbox, toast, confirmFirstImport])
   const forgetDropboxFolder = useCallback(async (path: string) => {
     await saveFolders(dbxFoldersRef.current.filter((f) => f.path !== path))
   }, [])
@@ -1230,7 +1249,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
     pendingCount: photos.filter((p) => p.status === 'pending').length,
     dropboxKey,
     dropbox: { connected: !!dbxSession, account: dbxSession?.name || dbxSession?.email || '', folders: dbxFolders, connecting: dbxConnecting },
-    connectDropbox, disconnectDropbox, listDropbox, dropboxThumb, processDropboxFolder, processDropboxFiles, preImportAsk, answerPreImport, refreshDropbox, dropboxFolderProgress, addNextDropboxBatch, addAllRemainingDropbox, forgetDropboxFolder,
+    connectDropbox, disconnectDropbox, listDropbox, dropboxThumb, processDropboxFolder, processDropboxFiles, preImportAsk, answerPreImport, refreshDropbox, dropboxFolderProgress, addNextDropboxBatch, addAllRemainingDropbox, dropboxFolderFiles, addDropboxSelection, forgetDropboxFolder,
     addFiles, cancelDropboxDownload, updatePhotos, addTags, removeTags, deletePhotos, retagAll, retagPhoto, pullDropboxTags, retryPending,
     saveSettings, addCustomLabel, removeCustomLabel, toggleLabel, toggleMetaTag, resetVocabulary, exportData, importTags,
     clearEverything, toast, preloadModel, setAfterIngest,
@@ -1238,7 +1257,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
     folderSupported: canPickFolder, folderName, chooseSaveFolder, clearSaveFolder: clearSaveFolderFn,
     libraryPath, isDesktop: DB.isDesktop(), chooseLibraryFolder, changeLibraryFolder, portable, useLibraryBesideApp,
     savePhotosToDisk, downloadPhotosZip,
-  }), [ready, photos, settings, custom, job, model, toasts, dropboxKey, dbxSession, dbxFolders, dbxConnecting, connectDropbox, disconnectDropbox, listDropbox, dropboxThumb, processDropboxFolder, processDropboxFiles, preImportAsk, answerPreImport, refreshDropbox, dropboxFolderProgress, addNextDropboxBatch, addAllRemainingDropbox, forgetDropboxFolder, addFiles, cancelDropboxDownload, updatePhotos, addTags, removeTags,
+  }), [ready, photos, settings, custom, job, model, toasts, dropboxKey, dbxSession, dbxFolders, dbxConnecting, connectDropbox, disconnectDropbox, listDropbox, dropboxThumb, processDropboxFolder, processDropboxFiles, preImportAsk, answerPreImport, refreshDropbox, dropboxFolderProgress, addNextDropboxBatch, addAllRemainingDropbox, dropboxFolderFiles, addDropboxSelection, forgetDropboxFolder, addFiles, cancelDropboxDownload, updatePhotos, addTags, removeTags,
     deletePhotos, retagAll, retagPhoto, pullDropboxTags, retryPending, saveSettings, addCustomLabel, removeCustomLabel, toggleLabel, toggleMetaTag, resetVocabulary, exportData,
     importTags, clearEverything, toast, preloadModel, setAfterIngest, nearDupes, resolveNearDupe, resolveAllNearDupes, findDuplicates,
     dismissDupePair, folderName, chooseSaveFolder, clearSaveFolderFn, savePhotosToDisk, downloadPhotosZip, libraryPath, chooseLibraryFolder, changeLibraryFolder, portable, useLibraryBesideApp])

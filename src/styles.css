@@ -357,3 +357,15 @@ button.dbx-row:hover { background: var(--panel2); }
 /* 1.0.27 pre-import check */
 .preimport-summary { margin: 8px 0 12px; padding-left: 18px; display: grid; gap: 4px; font-size: 0.92rem; }
 .tag-card.detect:focus { outline: 2px solid var(--accent, #3b82f6); outline-offset: 2px; }
+/* 1.0.30 more ways to add: count, order, date range, folder ticks, windowed list */
+.dbx-list { position: relative; }
+.dbx-list.virt .dbx-row.file { height: 68px; box-sizing: border-box; flex: none; }
+.dbx-add-opts { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; font-size: .9rem; }
+.dbx-opt { display: inline-flex; align-items: center; gap: 6px; }
+.dbx-opt select, .dbx-opt input { font: inherit; padding: 2px 6px; border-radius: 6px; border: 1px solid var(--border); background: var(--panel); color: var(--text); }
+.dbx-count-input { width: 7ch; }
+.dbx-date { font-size: .9rem; border: 1px solid var(--border); border-radius: 8px; padding: 4px 10px; }
+.dbx-date > summary { cursor: pointer; font-weight: 600; }
+.dbx-date-fields { gap: 6px 12px; margin: 6px 0; }
+.dbx-folder-check { margin: 0 0 0 8px; }
+.dbx-folder-row.on { background: rgba(79,70,229,.14); border-radius: 8px; }

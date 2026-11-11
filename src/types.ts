@@ -90,6 +90,8 @@ export interface Settings {
   dropboxBatchSize: number
   /** show "Check your detection list first" before a Dropbox import into an empty library (1.0.27) */
   askBeforeFirstImport: boolean
+  /** order for "Add next …" in the Dropbox browser (1.0.30) */
+  dropboxAddOrder: 'name' | 'oldest' | 'newest'
   /** when a save-folder is remembered and permission is still granted, write each newly tagged photo there */
   autoSaveFolder: boolean
 }
@@ -117,6 +119,7 @@ export const DEFAULT_SETTINGS: Settings = {
   dupeThreshold: 8,
   dropboxBatchSize: 100,
   askBeforeFirstImport: true,
+  dropboxAddOrder: 'name',
   autoSaveFolder: false,
 }
 

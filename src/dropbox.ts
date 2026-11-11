@@ -41,6 +41,27 @@ export interface DropboxFolder { kind: 'folder'; id: string; name: string; path:
 export interface DropboxFile {
   kind: 'file'; id: string; name: string; path: string; pathLower: string
   rev: string; size: number; contentHash?: string; clientModified?: string
+  /** when the photo/video was taken, from Dropbox's media info (if Dropbox has it) */
+  takenAt?: string
+}
+/** The date Photo Tagger uses to sort / filter a Dropbox file before adding it (no download): time taken, else modified, else a date in the name. ms, or 0 when unknown. */
+export function dropboxFileDate(f: Pick<DropboxFile, 'takenAt' | 'clientModified' | 'name'>): number {
+  for (const s of [f.takenAt, f.clientModified]) { const t = s ? Date.parse(s) : NaN; if (Number.isFinite(t)) return t }
+  const m = f.name.match(/(\d{4})[-_.]?(\d{2})[-_.]?(\d{2})/)
+  if (m) { const t = Date.UTC(+m[1], +m[2] - 1, +m[3]); if (Number.isFinite(t) && +m[1] > 1900) return t }
+  return 0
+}
+export type DropboxAddOrder = 'name' | 'oldest' | 'newest'
+/** Order for "Add next …": name (path), oldest first or newest first (undated files last). */
+export function orderDropboxFiles<T extends DropboxFile>(files: T[], order: DropboxAddOrder = 'name'): T[] {
+  const byPath = (a: T, b: T) => (a.pathLower < b.pathLower ? -1 : a.pathLower > b.pathLower ? 1 : 0)
+  if (order === 'name') return [...files].sort(byPath)
+  const d = new Map(files.map((f) => [f.id, dropboxFileDate(f)]))
+  return [...files].sort((a, b) => {
+    const x = d.get(a.id)!, y = d.get(b.id)!
+    if (!x !== !y) return x ? -1 : 1
+    return (order === 'oldest' ? x - y : y - x) || byPath(a, b)
+  })
 }
 export type DropboxEntry = DropboxFolder | DropboxFile
 
@@ -243,13 +264,14 @@ export class DropboxClient {
   /** List one folder (all pages). path '' = root. recursive lists every file below. */
   async listFolder(path: string, opts: { recursive?: boolean; signal?: AbortSignal } = {}): Promise<DropboxEntry[]> {
     const out: DropboxEntry[] = []
-    let j = await this.rpc<any>('files/list_folder', { path, recursive: !!opts.recursive, include_media_info: false, limit: 2000 }, opts.signal)
+    let j = await this.rpc<any>('files/list_folder', { path, recursive: !!opts.recursive, include_media_info: true, limit: 2000 }, opts.signal)
     for (;;) {
       for (const e of j.entries ?? []) {
         if (e['.tag'] === 'folder') out.push({ kind: 'folder', id: e.id, name: e.name, path: e.path_display ?? e.path_lower, pathLower: e.path_lower })
         else if (e['.tag'] === 'file') out.push({
           kind: 'file', id: e.id, name: e.name, path: e.path_display ?? e.path_lower, pathLower: e.path_lower,
           rev: e.rev, size: e.size, contentHash: e.content_hash, clientModified: e.client_modified,
+          takenAt: e.media_info?.metadata?.time_taken || undefined,
         })
       }
       if (!j.has_more) break
