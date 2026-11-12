@@ -5,6 +5,8 @@ import { skippedFiles, useLibrary, type FolderProgress } from '../store'
 /** rows taller lists switch to windowed rendering (only what's on screen is in the DOM) */
 const VIRTUAL_AFTER = 300
 const ROW_H = 68
+/** height of the "Not in library yet" / "Already in library" group headings (fixed so the windowed list can place rows) */
+const HEAD_H = 40
 const PRESETS = [25, 50, 100, 250, 500]
 
 /** Photo Tagger's own Dropbox folder browser (replaces the Chooser pop-up). */
@@ -16,8 +18,12 @@ export function DropboxBrowser({ onClose }: { onClose: () => void }) {
   const [recursive, setRecursive] = useState(false)
   /** picked file ids and picked subfolders ('dir:' + path) */
   const [picked, setPicked] = useState<Set<string>>(new Set())
-  /** how many "Add next batch" adds (1.0.30): defaults to Settings → Dropbox → Photos per batch */
-  const [addCount, setAddCount] = useState(() => Math.max(1, lib.settings.dropboxBatchSize || 100))
+  /** how many "Add next batch" adds: saved in settings (1.0.32 — it used to live only in this panel's state and was
+   *  lost whenever the panel closed, which every add does); falls back to Photos per batch until chosen */
+  const addCount = Math.max(1, Math.round(lib.settings.dropboxAddCount ?? lib.settings.dropboxBatchSize ?? 100))
+  const setAddCount = (n: number, custom: boolean) => { void lib.saveSettings({ dropboxAddCount: n, dropboxAddCountCustom: custom }) }
+  /** "Already in library" group in Pick specific photos — collapsed by default */
+  const [showHave, setShowHave] = useState(false)
   const anchor = useRef<number | null>(null)
   const selectAllRef = useRef<() => void>(() => {})
   const listRef = useRef<HTMLDivElement>(null)
@@ -34,7 +40,7 @@ export function DropboxBrowser({ onClose }: { onClose: () => void }) {
 
   useEffect(() => {
     let off = false
-    setEntries(null); setError(''); setPicked(new Set()); anchor.current = null
+    setEntries(null); setError(''); setPicked(new Set()); setShowHave(false); anchor.current = null
     if (listRef.current) listRef.current.scrollTop = 0
     lib.listDropbox(path).then((e) => { if (!off) setEntries(e) }).catch((e: any) => { if (!off) setError(e?.message || 'Could not list this folder') })
     return () => { off = true }
@@ -66,7 +72,8 @@ export function DropboxBrowser({ onClose }: { onClose: () => void }) {
   // modern file-list selection: click = only this, Ctrl/Cmd-click = toggle, Shift-click = range
   // (deselects the range if that file was already selected), drag across rows = paint a range
   const drag = useRef<{ from: number; base: Set<string>; remove: boolean } | null>(null)
-  const rangeIds = (a: number, b: number) => { const [x, y] = [a, b].sort((m, n) => m - n); return images.slice(x, y + 1).filter((f) => !inLibrary.has(f.id)).map((f) => f.id) }
+  // indices are positions in the "Not in library yet" group (the only rows you can tick)
+  const rangeIds = (a: number, b: number) => { const [x, y] = [a, b].sort((m, n) => m - n); return freshFiles.slice(x, y + 1).map((f) => f.id) }
   const apply = (base: Set<string>, ids: string[], remove: boolean) => { const n = new Set(base); ids.forEach((id) => (remove ? n.delete(id) : n.add(id))); return n }
   const press = (i: number, id: string, e: { shiftKey: boolean; ctrlKey: boolean; metaKey: boolean; onCheckbox?: boolean }) => {
     const from = anchor.current
@@ -95,21 +102,49 @@ export function DropboxBrowser({ onClose }: { onClose: () => void }) {
   const busy = !!lib.job?.cancellable
   const skipped = useMemo(() => skippedFiles(), [lib.photos, entries])
 
-  // windowed file list for big folders (2,000+ items stay smooth)
-  const virtual = images.length > VIRTUAL_AFTER
+  // 1.0.32: two groups — photos still to add first, then a collapsed "Already in library" group; each keeps the Order sort
+  const haveFiles = useMemo(() => images.filter((e) => inLibrary.has(e.id)), [images, inLibrary])
+  type Item = { k: 'head-new' } | { k: 'head-have' } | { k: 'file'; f: DropboxFile; i: number }
+  const items = useMemo(() => {
+    const a: Item[] = []
+    if (!images.length) return a
+    a.push({ k: 'head-new' })
+    freshFiles.forEach((f, i) => a.push({ k: 'file', f, i }))
+    if (haveFiles.length) { a.push({ k: 'head-have' }); if (showHave) haveFiles.forEach((f) => a.push({ k: 'file', f, i: -1 })) }
+    return a
+  }, [images.length, freshFiles, haveFiles, showHave])
+  const offs = useMemo(() => { const o = [0]; for (const it of items) o.push(o[o.length - 1] + (it.k === 'file' ? ROW_H : HEAD_H)); return o }, [items])
+  // windowed list for big folders (2,000+ items stay smooth)
+  const virtual = items.length > VIRTUAL_AFTER
   useEffect(() => {
     const el = listRef.current; if (!el || !virtual) return
+    const find = (y: number) => { let lo = 0, hi = items.length; while (lo < hi) { const m = (lo + hi) >> 1; if (offs[m + 1] <= y) lo = m + 1; else hi = m } return lo }
     const calc = () => {
       const top = (filesRef.current?.offsetTop ?? 0)
-      const a = Math.floor((el.scrollTop - top) / ROW_H) - 10, b = Math.ceil((el.scrollTop + el.clientHeight - top) / ROW_H) + 10
-      setWin((w) => { const from = Math.max(0, a), to = Math.min(images.length, Math.max(from + 1, b)); return w.from === from && w.to === to ? w : { from, to } })
+      const a = find(el.scrollTop - top) - 10, b = find(el.scrollTop + el.clientHeight - top) + 11
+      setWin((w) => { const from = Math.max(0, a), to = Math.min(items.length, Math.max(from + 1, b)); return w.from === from && w.to === to ? w : { from, to } })
     }
     calc()
     el.addEventListener('scroll', calc, { passive: true })
     const ro = new ResizeObserver(calc); ro.observe(el)
     return () => { el.removeEventListener('scroll', calc); ro.disconnect() }
-  }, [virtual, images.length, folders.length])
-  const from = virtual ? win.from : 0, to = virtual ? win.to : images.length
+  }, [virtual, items, offs, folders.length])
+  const from = virtual ? Math.min(win.from, items.length) : 0, to = virtual ? Math.min(win.to, items.length) : items.length
+  const renderItem = (it: Item) => {
+    if (it.k === 'head-new') return (
+      <div key="head-new" className="dbx-group-h new" data-testid="dropbox-group-new" data-count={freshFiles.length} role="presentation">
+        <span>Not in library yet ({fmtN(freshFiles.length)})</span>
+        {!freshFiles.length && <small className="muted">— everything here is already added</small>}
+      </div>
+    )
+    if (it.k === 'head-have') return (
+      <button key="head-have" type="button" className="dbx-group-h have" data-testid="dropbox-have-toggle" data-count={haveFiles.length} aria-expanded={showHave} onClick={() => setShowHave((v) => !v)}>
+        <span aria-hidden="true">{showHave ? '▾' : '▸'}</span><span>Already in library ({fmtN(haveFiles.length)})</span>
+        <small className="muted">{showHave ? 'hide' : 'show'}</small>
+      </button>
+    )
+    return fileRow(it.f, it.i)
+  }
 
   const fileRow = (file: DropboxFile, i: number) => {
     const have = inLibrary.has(file.id), on = picked.has(file.id)
@@ -119,7 +154,7 @@ export function DropboxBrowser({ onClose }: { onClose: () => void }) {
       <span className="dbx-file-text">
         <span className="dbx-file-name" title={file.name}>{isDropboxVideo(file.name) ? '🎬 ' : ''}{file.name}</span>
         <small className="muted dbx-file-meta" data-testid="dropbox-file-meta">{[fmtDate(file), fmtBytes(file.size)].filter(Boolean).join(' · ')}</small>
-        {have && <small className="dbx-have" data-testid="dropbox-in-library">Already in library</small>}
+        {have && <small className="dbx-have" data-testid="dropbox-in-library">✓ In library</small>}
         {!have && skipped[file.id] && <small className="muted" data-testid="dropbox-skipped">Skipped before ({skipped[file.id]})</small>}
       </span>
     </>)
@@ -178,7 +213,7 @@ export function DropboxBrowser({ onClose }: { onClose: () => void }) {
           <section className="dbx-sec" aria-labelledby="dbx-s-batch" data-testid="dropbox-add-batch">
             <h3 className="dbx-sec-h" id="dbx-s-batch">Add a batch</h3>
             <div className="dbx-add-opts" data-testid="dropbox-add-options">
-              <AddCount value={addCount} onChange={setAddCount} batch={batch} />
+              <AddCount value={addCount} custom={lib.settings.dropboxAddCount != null ? !!lib.settings.dropboxAddCountCustom || !PRESETS.includes(addCount) : !PRESETS.includes(addCount)} onChange={setAddCount} batch={batch} />
               <label className="dbx-opt">Order
                 <select data-testid="add-order" value={order} onChange={(e) => void lib.saveSettings({ dropboxAddOrder: e.target.value as DropboxAddOrder })}
                   title="Which photos “Add next batch” takes first — the list below follows it. Dates are the ones Dropbox lists (time taken when Dropbox knows it, else last modified).">
@@ -215,10 +250,10 @@ export function DropboxBrowser({ onClose }: { onClose: () => void }) {
                 <FolderImport path={f.path} recursive={recursive} busy={busy} count={addCount} guard={guard} onStart={onClose} />
               </div>
             ))}
-            <div ref={filesRef} aria-hidden="true" style={{ height: 0, flex: 'none' }} />
-            {from > 0 && <div aria-hidden="true" style={{ height: from * ROW_H, flex: 'none' }} />}
-            {images.slice(from, to).map((f, k) => fileRow(f, from + k))}
-            {to < images.length && <div aria-hidden="true" style={{ height: (images.length - to) * ROW_H, flex: 'none' }} />}
+            <div ref={filesRef} aria-hidden="true" data-testid="dropbox-files-top" style={{ height: 0, flex: 'none' }} />
+            {from > 0 && <div aria-hidden="true" style={{ height: offs[from], flex: 'none' }} />}
+            {items.slice(from, to).map(renderItem)}
+            {to < items.length && <div aria-hidden="true" style={{ height: offs[items.length] - offs[to], flex: 'none' }} />}
           </div>
           <div className="row wrap">
             <button className="btn primary" data-testid="dropbox-add-selected" disabled={busy || !nPicked || countingSel} onClick={() => void addSelected()}>
@@ -260,19 +295,21 @@ export function DropboxBrowser({ onClose }: { onClose: () => void }) {
 }
 
 /** "How many to add": 25 / 50 / 100 / 250 / 500 or a custom number (defaults to Photos per batch). */
-function AddCount({ value, onChange, batch }: { value: number; onChange: (n: number) => void; batch: number }) {
-  const [custom, setCustom] = useState(() => !PRESETS.includes(value))
+function AddCount({ value, custom: savedCustom, onChange, batch }: { value: number; custom: boolean; onChange: (n: number, custom: boolean) => void; batch: number }) {
+  const [customUi, setCustomUi] = useState(savedCustom)
+  const custom = customUi || savedCustom
   const [text, setText] = useState(String(value))
+  useEffect(() => { if (document.activeElement?.getAttribute('data-testid') !== 'add-count-custom') setText(String(value)) }, [value])
   return (
-    <label className="dbx-opt" title={`How many photos “Add next batch” adds. They are still tagged, saved and checked ${batch} at a time (Settings → Dropbox → Photos per batch).`}>How many to add
+    <label className="dbx-opt" title={`How many photos “Add next batch” adds — remembered until you change it. They are still tagged, saved and checked ${batch} at a time (Settings → Dropbox → Photos per batch).`}>How many to add
       <select data-testid="add-count-select" value={custom ? 'custom' : String(value)} onChange={(e) => {
-        if (e.target.value === 'custom') { setCustom(true); setText(String(value)) } else { setCustom(false); onChange(Number(e.target.value)) }
+        if (e.target.value === 'custom') { setCustomUi(true); setText(String(value)); onChange(value, true) } else { setCustomUi(false); onChange(Number(e.target.value), false) }
       }}>
         {PRESETS.map((n) => <option key={n} value={n}>{n}</option>)}
         <option value="custom">Custom…</option>
       </select>
       {custom && <input type="number" min={1} max={100000} inputMode="numeric" className="dbx-count-input" data-testid="add-count-custom" aria-label="Custom number of photos to add" value={text}
-        onChange={(e) => { setText(e.target.value); const n = Math.round(Number(e.target.value)); if (Number.isFinite(n) && n >= 1) onChange(Math.min(100000, n)) }} />}
+        onChange={(e) => { setText(e.target.value); const n = Math.round(Number(e.target.value)); if (Number.isFinite(n) && n >= 1) onChange(Math.min(100000, n), true) }} />}
     </label>
   )
 }

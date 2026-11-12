@@ -328,7 +328,7 @@ button.dbx-row:hover { background: var(--panel2); }
 .dbx-file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dbx-file-meta { white-space: nowrap; }
 .dbx-have { color: var(--muted); font-weight: 600; white-space: nowrap; }
-.dbx-row.file.have { opacity: 1; color: var(--muted); }
+.dbx-row.file.have { color: var(--muted); }
 
 /* Settings → Tags: tags in your library */
 .lib-tags { display: grid; gap: 8px; margin: 8px 0 16px; }
@@ -387,3 +387,19 @@ details.dbx-sec[open] > summary { margin-bottom: 4px; }
 .dbx-confirm { background: var(--panel); color: var(--text); border-radius: 14px; box-shadow: var(--shadow); padding: 16px; width: min(420px, 100%); display: grid; gap: 12px; }
 .dbx-confirm p { margin: 0; }
 .dbx-confirm-btns { justify-content: flex-end; gap: 8px; }
+/* 1.0.32 Pick specific photos: "Not in library yet" first, then a collapsed "Already in library" group */
+.dbx-group-h { height: 40px; box-sizing: border-box; flex: none; display: flex; align-items: center; gap: 8px; padding: 0 10px; margin: 0; font: inherit; font-size: .85rem; font-weight: 700; color: var(--text); background: none; border: 0; text-align: left; width: 100%; }
+.dbx-group-h.new { border-bottom: 1px solid var(--border); }
+.dbx-group-h.have { border-top: 2px solid var(--border); cursor: pointer; color: var(--muted); }
+.dbx-group-h.have:hover { background: var(--panel2); }
+.dbx-group-h small { font-weight: 400; }
+.dbx-group-h.have small { margin-left: auto; }
+.dbx-row.file.have { background: color-mix(in srgb, var(--c-person, #16a34a) 7%, transparent); }
+.dbx-row.file.have .dbx-thumb, .dbx-row.file.have .dbx-file-name { opacity: .55; }
+.dbx-row.file.have .dbx-have { color: var(--c-person, #16a34a); }
+/* 1.0.32 Turn all automatic tags off / on */
+.autotags-all { display: grid; gap: 6px; padding: 10px 12px; margin: 8px 0; border: 1px solid var(--border); border-radius: 10px; }
+.autotags-all .row { gap: 8px; align-items: center; }
+.autotags-all p { margin: 0; }
+.chip.static.off { opacity: .55; text-decoration: line-through; }
+.chip.static input { margin: 0 4px 0 0; }

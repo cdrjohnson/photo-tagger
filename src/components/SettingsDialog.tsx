@@ -169,6 +169,10 @@ function Vocab({ onDirty, focusDetection }: { onDirty: () => void; focusDetectio
   const off = new Set(lib.settings.disabledLabels)
   const offMeta = new Set(lib.settings.disabledMetaTags ?? [])
   const meta = META_TAGS.filter((l) => !q || l.label.toLowerCase().includes(q.toLowerCase()))
+  // 1.0.32: every automatic tag off? (built-in detection list, your detection tags, photo metadata)
+  const allOff = DEFAULT_LABELS.every((l) => off.has(l.id)) && lib.custom.every((c) => off.has(c.id)) && META_TAGS.every((m) => offMeta.has(m.id))
+  const backup = lib.settings.autoTagsBackup
+  const canRestore = !!backup && !(DEFAULT_LABELS.every((l) => backup.disabledLabels.includes(l.id)) && META_TAGS.every((m) => backup.disabledMetaTags.includes(m.id)))
   return (
     <>
       <LibraryTags onDirty={onDirty} />
@@ -180,6 +184,19 @@ function Vocab({ onDirty, focusDetection }: { onDirty: () => void; focusDetectio
         Tags Photo Tagger can look for automatically — not the tags already on your photos. Turn one off if you never want it detected, or add your own (for example “bike race”, “my dog Rex”,
         “whiteboard notes”). The first custom detection tag downloads a text model (≈72&nbsp;MB, once).
       </p>
+      <div className="autotags-all" data-testid="autotags-all">
+        <div className="row wrap">
+          <b>All automatic tags</b>
+          {allOff
+            ? <>
+                {canRestore && <button className="btn primary small" data-testid="autotags-restore" onClick={() => void lib.setAllAutoTags('restore')}>Restore previous</button>}
+                <button className={`btn small ${canRestore ? '' : 'primary'}`} data-testid="autotags-on" onClick={() => void lib.setAllAutoTags('on')}>Turn all on</button>
+              </>
+            : <button className="btn small" data-testid="autotags-off" onClick={() => void lib.setAllAutoTags('off')}>Turn all off</button>}
+        </div>
+        <p className="muted small">Switches every automatic tag at once — the detection list below, your own detection tags and Photo metadata (Year, Camera, Geotagged, Blurry, Dark, Bright). Saves right away and applies to new photos only; photos already in the library, tags you added yourself and people's names are not changed.</p>
+        {allOff && <p className="note" role="status" data-testid="autotags-off-note">Automatic tags are off — new photos are added with no automatic tags.</p>}
+      </div>
       <form className="add-label" onSubmit={async (e) => {
         e.preventDefault()
         if (!label.trim()) return
@@ -196,7 +213,8 @@ function Vocab({ onDirty, focusDetection }: { onDirty: () => void; focusDetectio
           <h4>Your tags</h4>
           <div className="chips">
             {lib.custom.map((c) => (
-              <span key={c.id} className="chip src-manual static" data-testid="custom-chip">{c.label}
+              <span key={c.id} className={`chip src-manual static ${off.has(c.id) ? 'off' : ''}`} data-testid="custom-chip" data-off={off.has(c.id) ? '1' : '0'}>
+                <input type="checkbox" checked={!off.has(c.id)} aria-label={`Detect ${c.label}`} data-testid="custom-toggle" onChange={(e) => { void lib.toggleLabel(c.id, e.target.checked); onDirty() }} />{c.label}
                 <button aria-label={`Delete label ${c.label}`} onClick={() => { void lib.removeCustomLabel(c.id); onDirty() }}>×</button>
               </span>
             ))}

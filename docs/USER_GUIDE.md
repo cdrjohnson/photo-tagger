@@ -71,11 +71,19 @@ The Dropbox browser is split into five sections, top to bottom:
 
 **Big adds ask first.** Anything bigger than your **Photos per batch** setting — **Add all remaining**, an **Add next batch** larger than a batch, a big **Add by date** range or a big ticked selection — first asks e.g. **“Add 4,026 photos? They'll be tagged in 41 batches of 100.”** with **Add** and **Cancel** (Esc also cancels; Cancel is focused, so Enter doesn't start it by accident). **Add** runs it through the same batches. Adds of one batch or less start right away.
 
+### Pick specific photos: two groups (1.0.32)
+
+In **Pick specific photos** the list is split so you can see at a glance what's left:
+
+- Subfolders stay at the top.
+- **Not in library yet (N)** — the photos and videos you can still add, in the chosen **Order**. **Select all**, Shift-click ranges and dragging only ever pick from this group.
+- **Already in library (M)** — a separate group after a divider, **collapsed** each time you open the panel or change folder. Click the heading to show or hide it. These rows are dimmed and tinted green with a **✓ In library** badge and can't be ticked; they're in the same Order.
+
 ### More ways to add (1.0.30)
 
 At the top of the Dropbox browser:
 
-- **How many to add** — 25, 50, 100, 250, 500 or **Custom…** (type any number). It starts at your **Photos per batch** setting (shown as a custom number if that isn't one of the presets) and sets the N in every **Add next batch (N)** button (this folder and each subfolder row). It's *how many* get added; **Photos per batch** still decides how many are tagged, saved and verified per round — e.g. 500 with a batch size of 100 runs as **Batch 1 of 5 … Batch 5 of 5**.
+- **How many to add** — 25, 50, 100, 250, 500 or **Custom…** (type any number). Until you pick one it uses your **Photos per batch** setting (shown as a custom number if that isn't one of the presets). **Since 1.0.32 your choice — a preset or a Custom number — is remembered** on this device: after a batch finishes, when you reopen the panel, switch folders or restart the app it's still there (until you change it). It sets the N in every **Add next batch (N)** button (this folder and each subfolder row). It's *how many* get added; **Photos per batch** still decides how many are tagged, saved and verified per round — e.g. 500 with a batch size of 100 runs as **Batch 1 of 5 … Batch 5 of 5**.
 - **Order** — **Name** (default), **Oldest first** or **Newest first**: which photos **Add next batch** (and **Add all remaining** / **Continue**) take first. Remembered on this device. Dates are the ones Dropbox lists: when the photo was **taken** if Dropbox knows it, otherwise when the file was last **modified** (otherwise a date in the file name); photos with no date come last.
 - **Add by date** (click to open) — pick a **Year** (only years that occur in the folder are listed) or a **From** / **To** date. Before anything is added it shows **“N match · M already in library · K to add”**; **Add K from these dates** adds only the new ones, through the same batches. Uses the same Dropbox dates (nothing is downloaded to filter) and follows **Include subfolders**; photos with no date never match.
 - **Ticks** — in **Pick specific photos**, tick photos, videos and folders in the list; photos already in the library have a greyed, ticked box and **Already in library** and can't be ticked. **Add selected (N)** adds them in batches.
@@ -221,7 +229,8 @@ Settings → **Tags** has two cards on one page. **Tags in your library** (first
 
 The second card, **Detection list** (*What the app can find*), holds the tags Photo Tagger *can* detect automatically — not the tags already on your photos (the same word, e.g. `beach`, can appear in both). You can:
 - **Photo metadata** (first group): **Year**, **Camera**, **Geotagged**, **Blurry**, **Dark**, **Bright** — all on by default. Switch one off and that tag is no longer added, and **Re-tag library** / **Re-run tagging** removes it from existing photos; switch it back on and re-tag to re-apply it. Closing Settings only saves your list — it does not change existing photos. Dates, camera, GPS, sorting, the detail panel, the quality badges and the quality filter keep working either way.
-- **Switch tags off** you don't want (for example `wedding`).
+- **Turn all off** (1.0.32, under *All automatic tags* at the top of the card) switches **every** automatic tag off in one go — the whole detection list, your own detection tags and all Photo metadata toggles. It saves right away and applies to **new photos only**: photos already in the library keep their tags (use **Re-tag library now** if you want them updated), and tags you added yourself and people's names are never touched. While everything is off the card says **“Automatic tags are off — new photos are added with no automatic tags.”** and offers **Restore previous** (brings back exactly the selection you had before Turn all off) and **Turn all on** (everything on). Face recognition (People) isn't an automatic tag and stays as set.
+- **Switch tags off** you don't want (for example `wedding`). Your own detection tags have a tick box too.
 - **Add a detection tag**: type a name ("lighthouse", "bike race", "my dog Rex") and, if you like, a short description such as *a photo of a lighthouse by the sea* – a good description improves accuracy. The first custom tag downloads a small text model (about 72 MB, once).
 - **Re-tag library now** explicitly applies the saved list to existing photos; changes are not applied just by closing Settings. This is quick, because the app remembers what each photo "looks like".
 - **Filter detection tags…** narrows the chips; **Reset detection list** puts the built-in list back, turns every Photo metadata chip on and removes your custom detection tags (it doesn't remove tags already on your photos).

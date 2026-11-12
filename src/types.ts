@@ -92,6 +92,12 @@ export interface Settings {
   askBeforeFirstImport: boolean
   /** order for "Add next …" in the Dropbox browser (1.0.30) */
   dropboxAddOrder: 'name' | 'oldest' | 'newest'
+  /** "How many to add" in the Dropbox browser (1.0.32); unset = use Photos per batch */
+  dropboxAddCount?: number
+  /** the count was typed as a custom number (keeps "Custom…" selected even for 25/50/…) */
+  dropboxAddCountCustom?: boolean
+  /** what the Detection list looked like before "Turn all off" (1.0.32), for "Restore previous" */
+  autoTagsBackup?: { disabledLabels: string[]; disabledMetaTags: string[] }
   /** when a save-folder is remembered and permission is still granted, write each newly tagged photo there */
   autoSaveFolder: boolean
 }

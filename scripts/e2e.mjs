@@ -1024,6 +1024,7 @@ await test('Dropbox: Refresh re-lists linked folders and skips already-seen file
   // now include subfolders: only trip.jpg is new
   await page.getByTestId('add-btn').click()
   await page.locator('[data-testid=dropbox-folder][data-name="Photos"]').click()
+  await page.getByTestId('dropbox-have-toggle').click()
   await page.locator('[data-testid=dropbox-file][data-name="from-dropbox.jpg"] [data-testid=dropbox-in-library]').waitFor()
   await page.getByTestId('dropbox-recursive').check()
   await addAll(page)
@@ -1106,6 +1107,13 @@ await test('Dropbox picker: lazy thumbnails, date/size, in-library rows show a d
   await page.locator('[data-testid=dropbox-folder][data-name="Picks"]').click()
   const row = (n) => page.locator(`[data-testid=dropbox-file][data-name="${n}"]`)
   await row('pick-4.jpg').waitFor()
+  // 1.0.32: two groups — pick-1/2 are in the library, pick-3/4 are not
+  eq(await page.getByTestId('dropbox-group-new').innerText().then((t) => t.trim()), 'Not in library yet (2)', 'not-yet group count')
+  ok(/Already in library \(2\)/.test(await page.getByTestId('dropbox-have-toggle').innerText()), 'already group count')
+  eq([await row('pick-1.jpg').count(), await row('pick-3.jpg').count()], [0, 1], 'added photos hidden until expanded')
+  await page.getByTestId('dropbox-have-toggle').click()
+  eq(await page.getByTestId('dropbox-file').evaluateAll((r) => r.map((e) => e.dataset.name)), ['pick-3.jpg', 'pick-4.jpg', 'pick-1.jpg', 'pick-2.jpg'], 'still to add first, then the added ones')
+  for (const n of ['pick-3.jpg', 'pick-4.jpg', 'pick-1.jpg', 'pick-2.jpg']) { await row(n).scrollIntoViewIfNeeded(); await page.waitForTimeout(150) } // previews load as rows scroll into view
   await page.waitForFunction(() => [...document.querySelectorAll('[data-testid=dropbox-thumb]')].every((t) => t.dataset.state !== 'waiting'), null, { timeout: 20_000 })
   eq(await page.locator('[data-testid=dropbox-thumb][data-state=loaded]').count(), 4, 'previews shown')
   const small = dbx.thumbLog.filter(([p, size]) => size === 'w256h256' && /^id:p\d$|^\/Picks\//.test(p))
@@ -1113,7 +1121,7 @@ await test('Dropbox picker: lazy thumbnails, date/size, in-library rows show a d
   ok(!dbx.downloads['id:p3'] && !dbx.downloads['id:p4'], 'picker never downloads files')
   ok(/2024/.test(await row('pick-3.jpg').getByTestId('dropbox-file-meta').innerText()) && /KB/.test(await row('pick-3.jpg').getByTestId('dropbox-file-meta').innerText()), 'date and size shown')
   const have = row('pick-1.jpg')
-  ok(await have.getByTestId('dropbox-in-library').isVisible() && (await have.getByTestId('dropbox-in-library').innerText()) === 'Already in library', 'Already in library label')
+  ok(await have.getByTestId('dropbox-in-library').isVisible() && (await have.getByTestId('dropbox-in-library').innerText()) === '✓ In library', '✓ In library badge')
   ok(await have.getByTestId('dropbox-in-library').evaluate((e) => e.scrollWidth <= e.clientWidth + 1 && e.getBoundingClientRect().right <= e.closest('[data-testid=dropbox-file]').getBoundingClientRect().right + 1), 'label not clipped')
   const cb = have.getByTestId('dropbox-file-check')
   ok(await cb.isDisabled() && await cb.isChecked(), 'disabled, checked box for in-library file')
@@ -1683,7 +1691,7 @@ await test('Remove from app (1.0.29): 200 of 210 removed through a paced, retryi
   }
 })
 
-await test('More ways to add (1.0.30) + sectioned panel (1.0.31): sections, confirmation, list follows Order, count picker, add by date, ticks + Add selected, windowed 2,000-photo folder', async () => {
+await test('More ways to add (1.0.30) + sectioned panel (1.0.31) + remembered count and grouped list (1.0.32): sections, confirmation, list follows Order, count picker, add by date, ticks + Add selected, windowed 2,000-photo folder', async () => {
   const N = 2000, DAY = 86_400_000, BASE = Date.UTC(2015, 0, 1)
   const big = []
   for (let i = 1; i <= N; i++) {
@@ -1802,25 +1810,90 @@ await test('More ways to add (1.0.30) + sectioned panel (1.0.31): sections, conf
     eq(bigDl().slice(0, 10).sort(), newest25.slice(0, 10).sort(), 'first batch = 10 newest')
     ok(newest25.every((id) => +id.slice(6) % 100 !== 0), 'time taken beats modified date (old shots with new modified dates skipped)')
 
-    // order persists across reopen and reload
+    // 1.0.32: "How many to add" is remembered after the batch run finished (the panel was closed and reopened)
+    const countUi = async () => { const v = await p11.getByTestId('add-count-select').inputValue(); return v === 'custom' ? 'custom:' + await p11.getByTestId('add-count-custom').inputValue() : v }
+    await openBig()
+    eq(await countUi(), '25', 'count remembered after a batch run + reopen (not reset to Photos per batch 10)')
+    ok(/Add next batch \(25\)/.test(await p11.getByTestId('dropbox-add-batch').textContent()), 'button uses the remembered count')
+    await p11.getByTestId('dropbox-browser-close').click()
+
+    // order and count persist across reload
     await p11.reload(); await waitCount(25)
     await openBig()
     eq(await p11.getByTestId('add-order').inputValue(), 'newest', 'order remembered after reload')
+    eq(await countUi(), '25', 'count remembered after reload')
     ok(/25 of 2,?000 in library/.test(await here().textContent()), 'progress after: ' + await here().textContent())
-    // screenshot of the new panel (stub data) for the release notes
+
+    // 1.0.32 groups: still-to-add first (newest first), then a collapsed "Already in library (25)"
+    const grpNew = p11.getByTestId('dropbox-group-new'), grpHave = p11.getByTestId('dropbox-have-toggle')
+    eq(await grpNew.innerText().then((t) => t.trim()), 'Not in library yet (1,975)', 'not-yet heading with count')
+    await p11.getByTestId('dropbox-list').evaluate((el) => { el.scrollTop = el.scrollHeight }) // the added group comes after all 1,975
+    ok(/Already in library \(25\)/.test(await grpHave.innerText()), 'already heading with count: ' + await grpHave.innerText())
+    eq(await grpHave.getAttribute('aria-expanded'), 'false', 'already group collapsed by default')
+    eq(await p11.locator('[data-testid=dropbox-file][aria-disabled=true]').count(), 0, 'no added rows shown while collapsed')
+    await p11.getByTestId('dropbox-list').evaluate((el) => { el.scrollTop = 0 })
+    await p11.waitForTimeout(100)
+    eq(await p11.getByTestId('dropbox-file').first().getAttribute('data-name'), big.find((f) => f.id === [...byDate].reverse()[25].id).name, 'first row = newest photo not yet in the library')
+    await p11.getByTestId('dropbox-select-all').click()
+    eq(await p11.getByTestId('dropbox-add-selected').innerText(), 'Add selected (1,976)', 'Select all = 1,975 not-yet photos + 1 folder (no added photos)')
+    await p11.getByTestId('dropbox-deselect-all').click()
+    // shift-range inside the not-yet group
+    const freshRows = p11.locator('[data-testid=dropbox-file]:not([aria-disabled=true])')
+    await freshRows.nth(0).click(); await freshRows.nth(4).click({ modifiers: ['Shift'] })
+    eq(await p11.locator('[data-testid=dropbox-file][data-picked="1"]').count(), 5, 'shift-range picks 5')
+    await p11.getByTestId('dropbox-deselect-all').click()
+    // expand: the added rows come after a divider, dimmed with a ✓ badge, newest first too; windowing still works
+    await p11.getByTestId('dropbox-list').evaluate((el) => { el.scrollTop = el.scrollHeight })
+    await grpHave.click()
+    eq(await grpHave.getAttribute('aria-expanded'), 'true', 'expanded')
+    await p11.getByTestId('dropbox-list').evaluate((el) => { el.scrollTop = el.scrollHeight })
+    const lastHave = p11.locator(`[data-testid=dropbox-file][data-name="${big.find((f) => f.id === newest25[24]).name}"]`)
+    for (let k = 0; k < 50 && !(await lastHave.count()); k++) { await p11.getByTestId('dropbox-list').evaluate((el) => { el.scrollTop = el.scrollHeight }); await p11.waitForTimeout(50) }
+    await lastHave.waitFor({ timeout: 10_000 })
+    ok(await lastHave.getAttribute('aria-disabled') === 'true' && (await lastHave.getByTestId('dropbox-in-library').innerText()) === '✓ In library', 'added row dimmed + ✓ In library')
+    ok(await p11.getByTestId('dropbox-file').count() < 200, 'still windowed with both groups')
+    const haveNames = await p11.locator('[data-testid=dropbox-file][aria-disabled=true]').evaluateAll((r) => r.map((e) => e.dataset.name))
+    const expHave = newest25.map((id) => big.find((f) => f.id === id).name)
+    eq(haveNames, expHave.slice(expHave.length - haveNames.length), 'added group keeps the Order sort')
+    // screenshot with both groups in view (stub data)
+    await p11.getByTestId('dropbox-list').evaluate((el) => {
+      const top = el.querySelector('[data-testid=dropbox-files-top]').offsetTop
+      el.scrollTop = top + 40 + 1975 * 68 - 3.2 * 68
+    })
+    await grpHave.waitFor()
     await p11.setViewportSize({ width: 1280, height: 1300 })
-    await p11.waitForFunction(() => [...document.querySelectorAll('[data-testid=dropbox-thumb]')].slice(0, 6).every((t) => t.dataset.state !== 'waiting'), null, { timeout: 20_000 }).catch(() => {})
-    await p11.locator('.dbx-card').screenshot({ path: process.env.PICKER_SHOT || '/workspace/pt-1.0.31-picker.png' })
+    await p11.waitForTimeout(300)
+    await p11.waitForFunction(() => [...document.querySelectorAll('[data-testid=dropbox-thumb]')].every((t) => t.dataset.state !== 'waiting'), null, { timeout: 20_000 }).catch(() => {})
+    await p11.locator('.dbx-card').screenshot({ path: process.env.PICKER_SHOT || '/workspace/pt-1.0.32-picker.png' })
     await p11.setViewportSize({ width: 1280, height: 900 })
+    await p11.getByTestId('dropbox-browser-close').click()
+    await openBig()
+    await p11.getByTestId('dropbox-list').evaluate((el) => { el.scrollTop = el.scrollHeight })
+    eq(await p11.getByTestId('dropbox-have-toggle').getAttribute('aria-expanded'), 'false', 'collapsed again when the panel reopens')
 
     // custom count + Oldest first → the 7 oldest (photos Dropbox knows a capture date for come first)
     await p11.getByTestId('add-order').selectOption('oldest')
+    await p11.getByTestId('add-count-select').selectOption('custom')
     await p11.getByTestId('add-count-custom').fill('7')
     ok(/Add next batch \(7\)/.test(await p11.getByTestId('dropbox-add-batch').textContent()), 'custom count shown')
     const before = bigDl().length
     await p11.getByTestId('dropbox-add-batch').getByTestId('folder-next-batch').click()
     await waitCount(32); await waitIdle()
     eq(bigDl().slice(before).sort(), byDate.slice(0, 7).map((f) => f.id).sort(), 'the 7 oldest were added')
+    // custom count survives the run, a folder change and a restart; Photos per batch stays the save-round size
+    await openBig()
+    eq(await countUi(), 'custom:7', 'custom count remembered after the run')
+    await p11.locator('[data-testid=dropbox-folder][data-name="Sub"]').click()
+    await p11.locator('[data-testid=dropbox-file][data-name="sub-1.png"]').waitFor()
+    eq(await countUi(), 'custom:7', 'custom count kept when changing folders')
+    ok(/Add next batch \(3\)/.test(await p11.getByTestId('dropbox-add-batch').textContent()), 'capped by what is left in Sub')
+    await p11.getByTestId('dropbox-browser-close').click()
+    await p11.reload(); await waitCount(32)
+    await openBig()
+    eq(await countUi(), 'custom:7', 'custom count remembered after restart')
+    const saved = await p11.evaluate(() => new Promise((res) => { const r = indexedDB.open('photo-tagger'); r.onsuccess = () => { const q = r.result.transaction('kv').objectStore('kv').get('settings'); q.onsuccess = () => res(q.result) } }))
+    eq([saved.dropboxAddCount, saved.dropboxAddCountCustom, saved.dropboxBatchSize], [7, true, 10], 'saved in local settings; Photos per batch unchanged')
+    await p11.getByTestId('dropbox-browser-close').click()
 
     // 2) Add by date: counts before adding (match / already in library / to add), then add only the new ones
     await openBig()
@@ -1855,8 +1928,10 @@ await test('More ways to add (1.0.30) + sectioned panel (1.0.31): sections, conf
     await p11.getByTestId('add-order').selectOption('name')
     const inLib = p11.locator('[data-testid=dropbox-file][aria-disabled=true]')
     const lib1 = byDate[0].name // an oldest one already in the library
-    await p11.getByTestId('dropbox-list').evaluate((el, i) => { el.scrollTop = i * 68 }, +lib1.slice(4, 8) - 1)
+    await p11.getByTestId('dropbox-list').evaluate((el) => { el.scrollTop = el.scrollHeight })
+    await p11.getByTestId('dropbox-have-toggle').click()
     const libRow = p11.locator(`[data-testid=dropbox-file][data-name="${lib1}"]`)
+    for (let i = 0; i < 200 && !(await libRow.count()); i++) { await p11.getByTestId('dropbox-list').evaluate((el) => { el.scrollTop += el.clientHeight * 0.8 }); await p11.waitForTimeout(30) }
     await libRow.waitFor({ timeout: 10_000 })
     ok(await libRow.getByTestId('dropbox-in-library').isVisible() && await libRow.getByTestId('dropbox-file-check').isDisabled(), 'in-library row is badged and its box disabled')
     ok(await inLib.count() >= 1, 'in-library rows rendered disabled')
@@ -1888,6 +1963,89 @@ await test('More ways to add (1.0.30) + sectioned panel (1.0.31): sections, conf
     await c11.close()
     delete DBX_TREE['/big']; delete DBX_TREE['/big/sub']; DBX_TREE[''].splice(DBX_TREE[''].findIndex((e) => e.name === 'Big'), 1)
   }
+})
+
+await test('Turn all automatic tags off / on (1.0.32): one switch for detection list + photo metadata; saves at once; new photos only; Restore previous', async () => {
+  const c12 = await browser.newContext({ viewport: { width: 1280, height: 900 } })
+  await routeModel(c12).catch(() => {})
+  const st = await stubDropbox(c12)
+  const p12 = await c12.newPage()
+  const errs12 = []; p12.on('pageerror', (e) => errs12.push(e.message))
+  const t12 = (n) => p12.locator(`[data-testid=photo-tile][data-name="${n}"]`)
+  const tags12 = async (n) => ((await t12(n).getAttribute('data-tags')) ?? '').split('|').filter(Boolean)
+  const ready12 = (n) => p12.waitForFunction((n) => document.querySelector(`[data-testid=photo-tile][data-name="${n}"]`)?.dataset.status === 'ready', n, { timeout: 300_000 })
+  const openTags = async () => { await p12.getByTestId('open-settings').click(); await p12.getByTestId('tab-vocab').click(); await p12.getByTestId('autotags-all').waitFor() }
+  const toggles = () => p12.locator('[data-testid=detection-card] input[type=checkbox][data-testid^="label-"], [data-testid=detection-card] input[type=checkbox][data-testid^="meta-"]')
+  const checkedCount = () => toggles().evaluateAll((els) => els.filter((e) => e.checked).length)
+  const savedSettings = () => p12.evaluate(() => new Promise((res) => { const r = indexedDB.open('photo-tagger'); r.onsuccess = () => { const q = r.result.transaction('kv').objectStore('kv').get('settings'); q.onsuccess = () => res(q.result) } }))
+  const addPick = async (name) => {
+    await p12.getByTestId('add-btn').click()
+    await p12.locator('[data-testid=dropbox-folder][data-name="Picks"]').click()
+    await p12.locator(`[data-testid=dropbox-file][data-name="${name}"]`).click()
+    await p12.getByTestId('dropbox-add-selected').click()
+  }
+  try {
+    await p12.goto(URL_BASE); await p12.getByTestId('empty').waitFor()
+    await connectDropbox(p12, 'autotags_key')
+    // a custom previous selection: one detection tag and Camera off
+    await openTags()
+    const firstLabel = p12.locator('[data-testid=detection-card] input[type=checkbox][data-testid^="label-"]').first()
+    const firstId = (await firstLabel.getAttribute('data-testid')).replace('label-', '')
+    await firstLabel.uncheck(); await p12.getByTestId('meta-camera').uncheck()
+    const total = await toggles().count()
+    eq(await checkedCount(), total - 2, 'previous selection: 2 off')
+    eq(await p12.getByTestId('autotags-off').innerText(), 'Turn all off', 'Turn all off shown while some are on')
+    eq(await p12.getByTestId('autotags-off-note').count(), 0, 'no note while some are on')
+    await p12.getByTestId('settings-close').click()
+    // a photo added with automatic tags on, plus a tag of your own
+    await addPick('pick-1.jpg')
+    await p12.getByTestId('preimport-check').waitFor(); await p12.getByTestId('preimport-proceed').click()
+    await ready12('pick-1.jpg')
+    await t12('pick-1.jpg').click()
+    await p12.getByTestId('detail-tag-input').fill('my_own_tag'); await p12.getByTestId('detail-tag-input').press('Enter')
+    await p12.locator('[data-testid=detail-tag][data-tag="my_own_tag"]').waitFor()
+    await p12.keyboard.press('Escape')
+    const before1 = await tags12('pick-1.jpg')
+    ok(before1.length >= 2, 'pick-1 has automatic tags + my_own_tag: ' + before1)
+
+    // Turn all off: everything unticked at once, saved immediately, note shown
+    await openTags()
+    await p12.getByTestId('autotags-off').click()
+    await p12.getByTestId('autotags-off-note').waitFor()
+    eq(await p12.getByTestId('autotags-off-note').innerText(), 'Automatic tags are off — new photos are added with no automatic tags.', 'note text')
+    eq(await checkedCount(), 0, 'every detection and metadata toggle is off')
+    eq([await p12.getByTestId('autotags-restore').innerText(), await p12.getByTestId('autotags-on').innerText()], ['Restore previous', 'Turn all on'], 'buttons while all off')
+    const s1 = await savedSettings()
+    eq([s1.disabledMetaTags.length, s1.disabledLabels.length >= total - 6, s1.autoTagsBackup.disabledLabels.includes(firstId), s1.autoTagsBackup.disabledMetaTags], [6, true, true, ['camera']], 'saved immediately, previous selection kept')
+    await p12.getByTestId('settings-close').click()
+    await p12.waitForTimeout(800)
+    eq(await tags12('pick-1.jpg'), before1, 'existing photo not re-tagged; its own tag kept')
+    ok(!(await p12.getByTestId('job-label').count()) || !/re-tag|tagging/i.test(await p12.getByTestId('job-label').innerText()) || /Done/.test(await p12.getByTestId('job-label').innerText()), 'no re-tag job started: ' + (await p12.getByTestId('job-label').count() ? await p12.getByTestId('job-label').innerText() : ''))
+
+    // a new photo now arrives with no automatic tags
+    await addPick('pick-2.jpg')
+    await ready12('pick-2.jpg')
+    eq(await tags12('pick-2.jpg'), [], 'new photo added with no automatic tags')
+    eq(await tags12('pick-1.jpg'), before1, 'pick-1 still unchanged')
+
+    // survives a restart; Restore previous brings back exactly the old selection
+    await p12.reload(); await p12.getByTestId('grid').waitFor()
+    await openTags()
+    await p12.getByTestId('autotags-off-note').waitFor()
+    await p12.getByTestId('autotags-restore').click()
+    await p12.getByTestId('autotags-off').waitFor()
+    eq(await checkedCount(), total - 2, 'previous selection restored')
+    ok(!(await p12.getByTestId(`label-${firstId}`).isChecked()) && !(await p12.getByTestId('meta-camera').isChecked()) && await p12.getByTestId('meta-year').isChecked(), 'the same two are off')
+    // Turn all off → Turn all on = everything on
+    await p12.getByTestId('autotags-off').click()
+    await p12.getByTestId('autotags-on').click()
+    await p12.getByTestId('autotags-off').waitFor()
+    eq(await checkedCount(), total, 'Turn all on switches everything on')
+    eq((await savedSettings()).autoTagsBackup, undefined, 'backup cleared')
+    await p12.getByTestId('settings-close').click()
+    eq(await tags12('pick-1.jpg'), before1, 'still no re-tagging of existing photos')
+    eq(errs12, [], 'no page errors')
+  } finally { await c12.close() }
 })
 
 await test('Dropbox: face recognition runs on Dropbox-backed photos (People clusters)', async () => {

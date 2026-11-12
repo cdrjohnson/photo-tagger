@@ -2,7 +2,8 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import * as DB from './storage'
 import { ml, type ModelProgress, type ModelState } from './ml/client'
 import { applyAutoTags, buildVocab, scoreTags, type VocabEntry } from './tagging'
-import { addTag, applyMetaTags, normTag, removeTag } from './tags'
+import { addTag, applyMetaTags, META_TAGS, normTag, removeTag } from './tags'
+import { DEFAULT_LABELS } from './labels'
 import { fingerprint, hashesFromBlob, isImageFile, pixelsFromBlob, prepare, type Prepared } from './ingest'
 import { nearestPhash } from './hashes'
 import { buildZip, canPickFolder, clearSavedFolder, downloadBlob, ensurePermission, getSavedFolder, pickFolder, saveOneToFolder, saveToFolder, type DirHandle } from './folderSave'
@@ -83,6 +84,8 @@ export interface Library {
   toggleLabel(id: string, on: boolean): Promise<void>
   toggleMetaTag(id: string, on: boolean): Promise<void>
   resetVocabulary(): Promise<void>
+  /** 1.0.32: switch every automatic tag at once ('off'), back to all on ('on') or to how it was before 'off' ('restore'). New photos only. */
+  setAllAutoTags(mode: 'off' | 'on' | 'restore'): Promise<void>
   exportData(kind: 'json' | 'csv', ids?: string[]): void
   importTags(file: File): Promise<void>
   clearEverything(): Promise<void>
@@ -1182,6 +1185,21 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
     await saveSettings({ disabledMetaTags: [...d] })
   }, [saveSettings])
 
+  const setAllAutoTags = useCallback(async (mode: 'off' | 'on' | 'restore') => {
+    const s = settingsRef.current
+    if (mode === 'off') {
+      await saveSettings({
+        autoTagsBackup: { disabledLabels: [...s.disabledLabels], disabledMetaTags: [...(s.disabledMetaTags ?? [])] },
+        disabledLabels: [...new Set([...s.disabledLabels, ...DEFAULT_LABELS.map((l) => l.id), ...customRef.current.map((c) => c.id)])],
+        disabledMetaTags: META_TAGS.map((m) => m.id),
+      })
+    } else if (mode === 'restore' && s.autoTagsBackup) {
+      await saveSettings({ disabledLabels: s.autoTagsBackup.disabledLabels, disabledMetaTags: s.autoTagsBackup.disabledMetaTags, autoTagsBackup: undefined })
+    } else {
+      await saveSettings({ disabledLabels: [], disabledMetaTags: [], autoTagsBackup: undefined })
+    }
+  }, [saveSettings])
+
   const resetVocabulary = useCallback(async () => {
     await saveCustom([])
     await saveSettings({ disabledLabels: [], disabledMetaTags: [] })
@@ -1251,14 +1269,14 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
     dropbox: { connected: !!dbxSession, account: dbxSession?.name || dbxSession?.email || '', folders: dbxFolders, connecting: dbxConnecting },
     connectDropbox, disconnectDropbox, listDropbox, dropboxThumb, processDropboxFolder, processDropboxFiles, preImportAsk, answerPreImport, refreshDropbox, dropboxFolderProgress, addNextDropboxBatch, addAllRemainingDropbox, dropboxFolderFiles, addDropboxSelection, forgetDropboxFolder,
     addFiles, cancelDropboxDownload, updatePhotos, addTags, removeTags, deletePhotos, retagAll, retagPhoto, pullDropboxTags, retryPending,
-    saveSettings, addCustomLabel, removeCustomLabel, toggleLabel, toggleMetaTag, resetVocabulary, exportData, importTags,
+    saveSettings, addCustomLabel, removeCustomLabel, toggleLabel, toggleMetaTag, resetVocabulary, setAllAutoTags, exportData, importTags,
     clearEverything, toast, preloadModel, setAfterIngest,
     nearDupes, resolveNearDupe, resolveAllNearDupes, findDuplicates, dismissDupePair,
     folderSupported: canPickFolder, folderName, chooseSaveFolder, clearSaveFolder: clearSaveFolderFn,
     libraryPath, isDesktop: DB.isDesktop(), chooseLibraryFolder, changeLibraryFolder, portable, useLibraryBesideApp,
     savePhotosToDisk, downloadPhotosZip,
   }), [ready, photos, settings, custom, job, model, toasts, dropboxKey, dbxSession, dbxFolders, dbxConnecting, connectDropbox, disconnectDropbox, listDropbox, dropboxThumb, processDropboxFolder, processDropboxFiles, preImportAsk, answerPreImport, refreshDropbox, dropboxFolderProgress, addNextDropboxBatch, addAllRemainingDropbox, dropboxFolderFiles, addDropboxSelection, forgetDropboxFolder, addFiles, cancelDropboxDownload, updatePhotos, addTags, removeTags,
-    deletePhotos, retagAll, retagPhoto, pullDropboxTags, retryPending, saveSettings, addCustomLabel, removeCustomLabel, toggleLabel, toggleMetaTag, resetVocabulary, exportData,
+    deletePhotos, retagAll, retagPhoto, pullDropboxTags, retryPending, saveSettings, addCustomLabel, removeCustomLabel, toggleLabel, toggleMetaTag, resetVocabulary, setAllAutoTags, exportData,
     importTags, clearEverything, toast, preloadModel, setAfterIngest, nearDupes, resolveNearDupe, resolveAllNearDupes, findDuplicates,
     dismissDupePair, folderName, chooseSaveFolder, clearSaveFolderFn, savePhotosToDisk, downloadPhotosZip, libraryPath, chooseLibraryFolder, changeLibraryFolder, portable, useLibraryBesideApp])
 
