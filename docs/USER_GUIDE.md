@@ -42,6 +42,10 @@ Photos are added **from Dropbox** only (since 1.0.17 there's no Choose photos / 
 
 ### Check your detection list first (first import)
 
+> **New in 1.0.33: automatic tags start OFF on a new setup.** A brand-new install (or a browser with no saved Photo Tagger settings, an empty library and no Dropbox connection) starts with **every automatic tag off** — the whole detection list, your own detection tags and Photo metadata (Year, Camera, Geotagged, Blurry, Dark, Bright). Settings → Tags shows **“Automatic tags are off — new photos are added with no automatic tags.”** with **Turn all on** (there's no *Restore previous* yet, because there's no earlier selection to go back to). Turn on just the tags you want, or Turn all on. **If you already used Photo Tagger, nothing changes** — your saved settings (and the all-on default, if you never changed anything) are kept exactly. Face recognition isn't an automatic tag and stays on.
+>
+> While everything is off, the first-import question is titled **“Automatic tags are off”** instead: it says the imported photos get no automatic tags (only tags you add yourself), **Review detection list** is still focused, and the start button reads **Import without automatic tags**.
+
 When your library is **empty** and you start an import from Dropbox (**Add next batch**, **Add all remaining**, **Add selected (N)**, **Add by date**, the resume banner or **↻ Refresh**), Photo Tagger first asks **“Check your detection list first”** — before anything is downloaded or analysed. It explains that every imported photo automatically gets tags from your **Detection list** and **Photo metadata** settings (and that they're saved to Dropbox), with a short summary: how many built-in detection tags are on, your custom detection tags, which metadata tags (Year, Camera, Geotagged, Blurry, Dark, Bright) are on or off, and whether face recognition is on.
 
 - **Review detection list** (focused by default, so Enter never starts an import) opens **Settings → Tags** scrolled to the **Detection list** card. The import does not start; start it again when you're happy.
@@ -135,6 +139,7 @@ Tap a photo to open it. From here you can:
 - Move between photos with ‹ › (or the ← → keys). **Esc** closes.
 - **Zoom** to inspect detail: **＋ / −** buttons, the slider, mouse wheel, or pinch on a touch screen. Drag to pan when zoomed in. The percentage is the real size (100% = actual pixels), so large photos open well below 100% and you can zoom out further than that to shrink a photo. **0** or the percentage button fits the whole photo in the frame again (the default). Every photo, however large, tall, or wide, opens fitted so nothing is clipped.
 - **Re-run tagging** (re-analyzes the photo and updates detected tags — not faces; for Dropbox photos it also picks up tag changes made in Dropbox and saves tags back; not needed after editing a tag chip, which already updates Dropbox), **Download** (the original if kept, otherwise the stored copy) or **Remove from app** (this only removes it from Photo Tagger; the photo itself, in Dropbox or elsewhere, isn't deleted). The **Re-run tagging** explanation sits directly under that button.
+- **Danger zone → Delete from Dropbox…** (Dropbox photos only, 1.0.33) deletes the file itself from your Dropbox — see [Deleting photos from Dropbox](#deleting-photos-from-dropbox-1033).
 
 ## 5. Work on many photos at once
 
@@ -142,7 +147,7 @@ Tap **Select** (or press and hold a photo on a phone, or tick the circle that ap
 
 ![Bulk tagging](images/desktop-bulk.png)
 
-The bar at the bottom lets you **Select all** photos matching the current filter, edit **Tags…** (add tags to all selected photos, or remove a tag from all of them), **Export** just those photos' tags, or **Remove from app** (removes them from Photo Tagger only; the photos themselves aren't deleted). Remove from app always asks first in a small dialog — **Cancel** is the default, so nothing is removed until you click **Remove from app** there.
+The bar at the bottom lets you **Select all** photos matching the current filter, edit **Tags…** (add tags to all selected photos, or remove a tag from all of them), **Export** just those photos' tags, or **Remove from app** (removes them from Photo Tagger only; the photos themselves aren't deleted). Remove from app always asks first in a small dialog — **Cancel** is the default, so nothing is removed until you click **Remove from app** there. When the library has Dropbox photos the bar also has a red **Delete from Dropbox… (N)** button (N = selected Dropbox photos) — that one deletes the files themselves; see below.
 
 ## 6. People (face naming)
 
@@ -205,6 +210,19 @@ Tag edits show in Photo Tagger immediately and are written to Dropbox in the bac
 - **Removed stays removed:** a tag edit that was still waiting to be saved, a late tagging/face result, or a queued repair can't bring a removed photo back. Photo Tagger also keeps a small list of removed photo ids in Dropbox (`/.photo-tagger/removed.json`; finished entries are pruned after 90 days), so another device or a reinstall doesn't load them either. If an old tag file of a removed photo turns up, it's skipped and deleted.
 - **Adding it again on purpose works:** pick the file in the Dropbox browser (or Tag the folder / Refresh a linked folder) and it comes back as a new photo. Note that **Refresh** re-adds every file in a linked folder that isn't in the library, including ones you removed. To keep removed photos out for good, don't link that folder (pick photos instead), or click **forget** next to the folder in the Dropbox browser’s linked-folders list.
 - **Photos that came back after earlier versions:** before 1.0.29, removing many photos at once could silently leave their tag files in Dropbox (rate limits, or closing the app too early), so those photos reappeared on the next start. Photo Tagger can't tell which of them you meant to remove, so it doesn't delete anything on its own. Select them and **Remove from app** again — with 1.0.29 it sticks.
+
+### Deleting photos from Dropbox (1.0.33)
+
+**Delete from Dropbox** deletes the photo **file itself** from your Dropbox — not just from Photo Tagger. Use the **Danger zone → Delete from Dropbox…** button in a photo's detail view, or select photos and click **Delete from Dropbox… (N)** in the selection bar.
+
+![Delete from Dropbox confirmation](images/delete-dropbox.png)
+
+- **It always asks first**, listing the files (thumbnail, name, Dropbox path; “…and N more” after six). The dialog explains that Dropbox moves the files to its **deleted files**, where you can **restore them on dropbox.com for a limited time (30 days on most plans)**, after which they're gone for good; that their Photo Tagger tags and face names are removed too; and that shared links (and copies elsewhere that point to them) stop working. **Cancel has the focus**, so **Enter** cancels, and **Esc** / ✕ cancel too. Only the red **Delete from Dropbox** button deletes.
+- **What happens:** the photos leave the library right away. In the background, two at a time, Photo Tagger asks Dropbox to delete each file by its Dropbox file id (so a moved/renamed file is still the right one), then deletes its tag file in `/.photo-tagger/meta/` (which also holds its face entries, so the face names go with it). A bar shows **“Deleting from Dropbox: 3 of 10”**. A file that's already gone from Dropbox counts as deleted.
+- **Retries:** rate limits (honouring Dropbox's Retry-After), “too many write operations”, server errors, network drops and an expired sign-in are retried/refreshed automatically. **Closing the app mid-way is safe** — the unfinished deletes are kept on this device and continue next time.
+- **Failures** stay on the **⚠ … not deleted from Dropbox** list with the reason and **Retry** (or **Retry now**). If your Dropbox connection isn't allowed to delete files (missing `files.content.write`, e.g. an app key set up before that scope was ticked), the bar says **Photo Tagger isn't allowed to delete files in your Dropbox — sign in to Dropbox again** (Settings → Dropbox → Disconnect, then Connect Dropbox; tick `files.content.write` on your Dropbox app first if needed), then Retry. Until a delete finishes the photo stays out of the library and its file stays in Dropbox.
+- **Deleted stays deleted:** each deleted photo is recorded (on this device and in `/.photo-tagger/removed.json`, so other devices know too). **↻ Refresh**, **Add next batch**, **Add all remaining** and **Add by date** never bring a deleted (or still-being-deleted) file back, even if Dropbox still lists it. If you restore a file on dropbox.com and want it back, tick it under **Pick specific photos** and **Add selected** — it's added as a new photo (old tags are not restored).
+- Photos that aren't from Dropbox are left alone (the dialog says how many). Nothing else in Dropbox is ever deleted, and nothing is re-tagged.
 
 ### Files moved, renamed or deleted in Dropbox
 

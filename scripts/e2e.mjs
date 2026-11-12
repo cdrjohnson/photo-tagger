@@ -137,6 +137,15 @@ async function stubDropbox(ctx) {
     }
     if (url.pathname === '/2/files/delete_v2') {
       const p = JSON.parse(req.postData() || '{}').path || ''
+      // 1.0.33 Delete from Dropbox: a photo file, by its id only (moved to Dropbox's deleted files); unknown id = not_found
+      if (p.startsWith('id:') && !p.startsWith('id:meta-')) {
+        ;(st.fileDeleteCalls ??= []).push(p)
+        for (const list of Object.values(DBX_TREE)) {
+          const i = list.findIndex((x) => x.id === p && x['.tag'] === 'file')
+          if (i >= 0) { const [e] = list.splice(i, 1); (st.fileDeletes ??= []).push(p); (st.deletedEntries ??= new Map()).set(p, e); return json({ metadata: e }) }
+        }
+        return json({ error: { '.tag': 'path_lookup', path_lookup: { '.tag': 'not_found' } }, error_summary: 'path_lookup/not_found/' }, 409)
+      }
       if (!p.toLowerCase().startsWith('/.photo-tagger/')) { st.writes++; return json({ error_summary: 'forbidden' }, 400) }
       if (st.deleteDelay) await new Promise((res) => setTimeout(res, st.deleteDelay))
       if (!st.meta.has(p.toLowerCase())) return json({ error_summary: 'path_lookup/not_found/' }, 409)
@@ -2046,6 +2055,290 @@ await test('Turn all automatic tags off / on (1.0.32): one switch for detection 
     eq(await tags12('pick-1.jpg'), before1, 'still no re-tagging of existing photos')
     eq(errs12, [], 'no page errors')
   } finally { await c12.close() }
+})
+
+await test('Delete from Dropbox (1.0.33): confirm (Cancel focused, Esc/Enter cancel), single + multi delete, 429 retry, not_found, permission → sign in again + Retry, tombstone vs folder add/Refresh, reload', async () => {
+  const names = Array.from({ length: 8 }, (_, i) => `t${i + 1}.jpg`)
+  const pics = ['beach.jpg', 'cat.jpg', 'city.jpg', 'pizza.jpg', 'mountain.jpg', 'dog.jpg', 'document.jpg', 'person.jpg']
+  const fid = (n) => 'id:trash-' + n.replace('.jpg', '')
+  const grp = (n) => (['t2.jpg', 't3.jpg', 't4.jpg'].includes(n) ? 'grp_multi' : 'grp_' + n.replace('.jpg', ''))
+  DBX_TREE['/trash'] = names.map((n, i) => { SAMPLE_BY_ID[fid(n)] = pics[i]; return dbxFile(fid(n), n, '/Trash') })
+  DBX_TREE[''].push(dbxDir('Trash', ''))
+  const c13 = await browser.newContext({ viewport: { width: 1280, height: 860 } })
+  await routeModel(c13).catch(() => {})
+  const st = await stubDropbox(c13)
+  const metaKey = (n) => `/.photo-tagger/meta/${fid(n).slice(3)}.json`
+  names.forEach((n, i) => {
+    const photo = { id: 'p-' + n, fp: 'fp-' + n, name: n, size: 1000, type: 'image/jpeg', addedAt: Date.now() - i * 1000, dateSource: 'added', width: 400, height: 300,
+      quality: { sharpness: 100, brightness: 120, blurry: false, dark: false, bright: false }, tags: [{ name: grp(n), source: 'manual' }], rejected: [], source: 'dropbox',
+      dropbox: { id: fid(n), path: `/Trash/${n}`, rev: 'r' + i }, dropboxTags: [grp(n)], hasOriginal: false, status: 'ready', facesScanned: true, faceCount: 0 }
+    st.meta.set(metaKey(n), JSON.stringify({ app: 'photo-tagger', version: 1, file: photo.dropbox, photo, faces: [] }))
+    st.fileTags.set(fid(n), new Set([grp(n)]))
+  })
+  const p13 = await c13.newPage()
+  const errs13 = []; p13.on('pageerror', (e) => errs13.push(e.message))
+  const count = async () => (await p13.getByTestId('count').innerText()).trim()
+  const waitCount = (n) => p13.waitForFunction((n) => new RegExp('^' + n + ' photos').test(document.querySelector('[data-testid=count]')?.textContent || ''), n, { timeout: 60_000 })
+  const inTree = (n) => (DBX_TREE['/trash'] ?? []).some((e) => e.id === fid(n))
+  const deleted = (n) => (st.fileDeletes ?? []).includes(fid(n))
+  const until = async (fn, what, ms = 60_000) => { const t0 = Date.now(); while (!fn()) { if (Date.now() - t0 > ms) throw new Error('timed out: ' + what); await p13.waitForTimeout(100) } }
+  const openDetail = async (n) => { await p13.locator(`[data-testid=photo-tile][data-name="${n}"]`).click(); await p13.getByTestId('danger-zone').waitFor() }
+  const selectGroup = async (g) => {
+    await p13.getByTestId('search').fill(g)
+    await p13.waitForFunction(() => /\d+ of \d+/.test(document.querySelector('[data-testid=count]')?.textContent || ''))
+    await p13.getByTestId('select-mode').click(); await p13.getByTestId('sel-all').click()
+  }
+  try {
+    await p13.goto(URL_BASE); await p13.getByTestId('empty').waitFor()
+    await connectDropbox(p13, 'trash_key')
+    await waitCount(8)
+    await p13.waitForFunction(() => !document.querySelector('[data-testid=save-progress]'), null, { timeout: 60_000 })
+
+    // --- cancel: Cancel has focus; Enter (default) and Esc both cancel; nothing is deleted
+    await openDetail('t1.jpg')
+    eq(await p13.getByTestId('delete-dropbox').innerText(), 'Delete from Dropbox…', 'danger zone button')
+    await p13.getByTestId('delete-dropbox').click()
+    const dlg = p13.getByTestId('deldbx-confirm'); await dlg.waitFor()
+    eq(await p13.evaluate(() => document.activeElement?.getAttribute('data-testid')), 'deldbx-cancel', 'Cancel has focus')
+    const txt = await dlg.innerText()
+    for (const s of ['Delete this photo from Dropbox?', 't1.jpg', '/Trash/t1.jpg', 'deleted files', 'dropbox.com', '30 days on most plans', 'tags and face names are removed', 'shared links']) ok(txt.includes(s), `dialog says "${s}": ${txt}`)
+    await p13.keyboard.press('Enter')
+    await dlg.waitFor({ state: 'detached' })
+    await p13.getByTestId('danger-zone').waitFor() // detail view still open
+    await p13.getByTestId('delete-dropbox').click(); await dlg.waitFor()
+    await p13.keyboard.press('Escape')
+    await dlg.waitFor({ state: 'detached' })
+    ok(await p13.getByTestId('danger-zone').isVisible(), 'Esc closed only the dialog')
+    await p13.getByTestId('delete-dropbox').click(); await dlg.waitFor()
+    await p13.getByTestId('deldbx-cancel').click(); await dlg.waitFor({ state: 'detached' })
+    await p13.waitForTimeout(500)
+    eq([await count(), (st.fileDeleteCalls ?? []).length, inTree('t1.jpg')], ['8 photos', 0, true], 'cancel deletes nothing')
+
+    // --- single delete from the detail view
+    await p13.getByTestId('delete-dropbox').click(); await dlg.waitFor()
+    await p13.getByTestId('deldbx-ok').click()
+    await waitCount(7)
+    await until(() => deleted('t1.jpg') && !st.meta.has(metaKey('t1.jpg')), 't1 file + sidecar deleted')
+    ok(!inTree('t1.jpg'), 't1 gone from Dropbox')
+    await p13.keyboard.press('Escape')
+    await p13.getByTestId('danger-zone').waitFor({ state: 'detached' })
+
+    // --- multi delete from the toolbar, with Dropbox rate limiting (429 + Retry-After) on one file
+    st.inject.push({ ep: '/2/files/delete_v2', status: 429, retryAfter: 1, times: 2, body: /trash-t3/ })
+    const inj0 = st.injected
+    await selectGroup('grp_multi')
+    eq(await p13.getByTestId('sel-delete-dropbox').innerText(), 'Delete from Dropbox… (3)', 'toolbar button shows the count')
+    await p13.getByTestId('sel-delete-dropbox').click(); await dlg.waitFor()
+    eq(await p13.evaluate(() => document.activeElement?.getAttribute('data-testid')), 'deldbx-cancel', 'Cancel has focus (multi)')
+    ok((await dlg.innerText()).includes('Delete 3 photos from Dropbox?'), 'multi title')
+    eq(await p13.locator('[data-testid=deldbx-files] li').count(), 3, 'file list')
+    await p13.waitForFunction(() => document.querySelectorAll('[data-testid=deldbx-files] img').length === 3, null, { timeout: 30_000 }).catch(() => {})
+    await p13.waitForFunction(() => !document.querySelector('.toast'), null, { timeout: 10_000 }).catch(() => {})
+    await p13.screenshot({ path: '/workspace/pt-1.0.33-delete.png' })
+    st.deleteDelay = 300
+    await p13.getByTestId('deldbx-ok').click()
+    await p13.getByTestId('deldbx-progress').waitFor({ timeout: 10_000 })
+    ok(/^Deleting from Dropbox: \d of 3/.test((await p13.getByTestId('deldbx-progress').innerText()).trim()), 'progress: ' + await p13.getByTestId('deldbx-progress').innerText())
+    await p13.getByTestId('search').fill('')
+    await waitCount(4)
+    await until(() => ['t2.jpg', 't3.jpg', 't4.jpg'].every(deleted), 'multi deleted')
+    await p13.waitForFunction(() => !document.querySelector('[data-testid=deldbx-progress]'), null, { timeout: 60_000 })
+    ok(st.injected - inj0 >= 2, '429s were hit and retried')
+    for (const n of ['t2.jpg', 't3.jpg', 't4.jpg']) ok(!st.meta.has(metaKey(n)), 'sidecar deleted ' + n)
+    st.deleteDelay = 0
+
+    // --- not_found: the file was already deleted elsewhere → treated as deleted
+    const i5 = DBX_TREE['/trash'].findIndex((e) => e.id === fid('t5.jpg')); DBX_TREE['/trash'].splice(i5, 1)
+    await openDetail('t5.jpg')
+    await p13.getByTestId('delete-dropbox').click(); await dlg.waitFor(); await p13.getByTestId('deldbx-ok').click()
+    await waitCount(3)
+    await until(() => (st.fileDeleteCalls ?? []).includes(fid('t5.jpg')) && !st.meta.has(metaKey('t5.jpg')), 't5 handled')
+    await p13.keyboard.press('Escape')
+    await p13.getByTestId('danger-zone').waitFor({ state: 'detached' })
+    await p13.waitForTimeout(500)
+    eq(await p13.getByTestId('save-failed-count').count(), 0, 'not_found is not a failure')
+
+    // --- missing permission: clear "sign in to Dropbox again" + Retry
+    st.inject.push({ ep: '/2/files/delete_v2', status: 401, summary: 'missing_scope/files.content.write', times: 2, body: /trash-t6/ })
+    await openDetail('t6.jpg')
+    await p13.getByTestId('delete-dropbox').click(); await dlg.waitFor(); await p13.getByTestId('deldbx-ok').click()
+    await waitCount(2)
+    await p13.keyboard.press('Escape')
+    await p13.getByTestId('danger-zone').waitFor({ state: 'detached' })
+    await p13.getByTestId('deldbx-signin').waitFor({ timeout: 60_000 })
+    ok(/sign in to Dropbox again/i.test(await p13.getByTestId('deldbx-signin').innerText()), 'sign-in message')
+    ok(/not deleted from Dropbox/.test(await p13.getByTestId('save-failed-count').innerText()), 'failure count: ' + await p13.getByTestId('save-failed-count').innerText())
+    await p13.getByTestId('save-failures-open').click()
+    const fl = p13.locator('[data-testid=save-failure][data-op=trash]'); await fl.waitFor()
+    ok(/isn't allowed to delete files/.test(await fl.innerText()), 'failure reason: ' + await fl.innerText())
+    ok(inTree('t6.jpg') && st.meta.has(metaKey('t6.jpg')), 't6 still in Dropbox while failed')
+    // tombstone: while the delete is unfinished, adding the folder again must not bring it back
+    await p13.getByRole('button', { name: 'Close list' }).click()
+    SAMPLE_BY_ID['id:trash-t9'] = 'cat.jpg'; DBX_TREE['/trash'].push(dbxFile('id:trash-t9', 't9.jpg', '/Trash')) // one genuinely new file
+    await p13.getByTestId('add-btn').click()
+    await p13.locator('[data-testid=dropbox-folder][data-name="Trash"]').click()
+    await p13.getByTestId('dropbox-add-batch').waitFor()
+    await addAll(p13)
+    await waitTile('t9.jpg', p13)
+    await waitCount(3)
+    await p13.waitForTimeout(1500)
+    eq(await p13.locator('[data-testid=photo-tile][data-name="t6.jpg"]').count(), 0, 'folder add skips the file being deleted')
+    // retry once permission is fixed (the injected 401s are used up)
+    await p13.getByTestId('save-retry-now').click()
+    await until(() => deleted('t6.jpg') && !st.meta.has(metaKey('t6.jpg')), 't6 deleted after Retry')
+    await p13.waitForFunction(() => !document.querySelector('[data-testid=save-failed-count]'), null, { timeout: 30_000 })
+
+    // --- tombstone vs Refresh: a stale listing / another device still lists t1 → not re-added
+    DBX_TREE['/trash'].push(st.deletedEntries.get(fid('t1.jpg')))
+    await p13.getByTestId('add-btn').click()
+    await p13.getByTestId('dropbox-refresh').click()
+    await p13.waitForTimeout(2500)
+    eq(await count(), '3 photos', 'Refresh did not re-add a deleted file')
+    eq(await p13.locator('[data-testid=photo-tile][data-name="t1.jpg"]').count(), 0, 't1 not back')
+    const removedJson = JSON.parse(st.meta.get('/.photo-tagger/removed.json'))
+    ok(['p-t1.jpg', 'p-t2.jpg', 'p-t6.jpg'].every((id) => removedJson.removed.some((e) => e.id === id && e.trashed)), 'tombstones recorded in removed.json: ' + JSON.stringify(removedJson).slice(0, 300))
+
+    // --- restart: nothing pending, deleted photos stay out
+    await p13.reload()
+    await waitCount(3)
+    await p13.waitForTimeout(1500)
+    eq(await count(), '3 photos', 'after reload')
+    eq(await p13.evaluate(() => localStorage.getItem('pt.dropboxRemovals.v1')), null, 'queue empty')
+    eq(st.writes, 0, 'nothing written or deleted outside the confirmed files')
+    eq([...(st.fileDeletes ?? [])].sort(), ['t1', 't2', 't3', 't4', 't6'].map((x) => 'id:trash-' + x).sort(), 'exactly the confirmed files were deleted')
+    ok(inTree('t7.jpg') && inTree('t8.jpg') && st.meta.has(metaKey('t7.jpg')), 'other files untouched')
+    eq(errs13, [], 'no page errors')
+  } finally {
+    await c13.close()
+    delete DBX_TREE['/trash']; DBX_TREE[''].splice(DBX_TREE[''].findIndex((e) => e.name === 'Trash'), 1)
+  }
+})
+
+await test('Delete from Dropbox (1.0.33): queue survives a restart mid-run (persisted), then finishes', async () => {
+  const names = Array.from({ length: 6 }, (_, i) => `q${i + 1}.jpg`)
+  const fid = (n) => 'id:trq-' + n.replace('.jpg', '')
+  DBX_TREE['/trashq'] = names.map((n) => { SAMPLE_BY_ID[fid(n)] = 'beach.jpg'; return dbxFile(fid(n), n, '/TrashQ') })
+  DBX_TREE[''].push(dbxDir('TrashQ', ''))
+  const c = await browser.newContext({ viewport: { width: 1280, height: 860 } })
+  await routeModel(c).catch(() => {})
+  const st = await stubDropbox(c)
+  const metaKey = (n) => `/.photo-tagger/meta/${fid(n).slice(3)}.json`
+  names.forEach((n, i) => {
+    const photo = { id: 'p-' + n, fp: 'fp-' + n, name: n, size: 1000, type: 'image/jpeg', addedAt: Date.now() - i * 1000, dateSource: 'added', width: 400, height: 300,
+      quality: { sharpness: 100, brightness: 120, blurry: false, dark: false, bright: false }, tags: [], rejected: [], source: 'dropbox',
+      dropbox: { id: fid(n), path: `/TrashQ/${n}`, rev: 'r' + i }, dropboxTags: [], hasOriginal: false, status: 'ready', facesScanned: true, faceCount: 0 }
+    st.meta.set(metaKey(n), JSON.stringify({ app: 'photo-tagger', version: 1, file: photo.dropbox, photo, faces: [] }))
+  })
+  const pg = await c.newPage()
+  try {
+    await pg.goto(URL_BASE); await pg.getByTestId('empty').waitFor()
+    await connectDropbox(pg, 'trashq_key')
+    await pg.waitForFunction(() => /^6 photos/.test(document.querySelector('[data-testid=count]')?.textContent || ''), null, { timeout: 60_000 })
+    st.inject.push({ ep: '/2/files/delete_v2', status: 503, summary: 'internal_error', times: 1000, body: /trq-/ })
+    await pg.getByTestId('select-mode').click(); await pg.getByTestId('sel-all').click()
+    await pg.getByTestId('sel-delete-dropbox').click(); await pg.getByTestId('deldbx-ok').click()
+    await pg.getByTestId('deldbx-progress').waitFor()
+    { const q = JSON.parse(await pg.evaluate(() => localStorage.getItem('pt.dropboxRemovals.v1'))); ok(q.items.length === 6 && q.items.every((x) => x.trash), 'queue persisted: ' + JSON.stringify(q).slice(0, 200)) }
+    await pg.reload()
+    await pg.waitForFunction(() => /photos|empty/.test(document.body.textContent || ''), null, { timeout: 60_000 })
+    await pg.waitForTimeout(1000)
+    eq(await pg.locator('[data-testid=photo-tile]').count(), 0, 'deleted photos not loaded again while pending')
+    await pg.getByTestId('deldbx-progress').waitFor()
+    st.inject.length = 0
+    await pg.waitForFunction(() => !document.querySelector('[data-testid=deldbx-progress]'), null, { timeout: 120_000 })
+    eq((st.fileDeletes ?? []).length, 6, 'all deleted after restart')
+    eq(names.filter((n) => st.meta.has(metaKey(n))), [], 'sidecars deleted')
+    eq(await pg.evaluate(() => localStorage.getItem('pt.dropboxRemovals.v1')), null, 'queue empty')
+  } finally {
+    await c.close()
+    delete DBX_TREE['/trashq']; DBX_TREE[''].splice(DBX_TREE[''].findIndex((e) => e.name === 'TrashQ'), 1)
+  }
+})
+
+await test('Automatic tags OFF by default for new setups (1.0.33); first-import prompt says so; Turn all on works', async () => {
+  const c = await browser.newContext({ viewport: { width: 1280, height: 900 } })
+  await c.addInitScript(() => localStorage.setItem('pt.e2eFresh', '1'))
+  await routeModel(c).catch(() => {})
+  await stubDropbox(c)
+  const pg = await c.newPage()
+  const errs = []; pg.on('pageerror', (e) => errs.push(e.message))
+  const openTags = async () => { await pg.getByTestId('open-settings').click(); await pg.getByTestId('tab-vocab').click(); await pg.getByTestId('autotags-all').waitFor() }
+  const toggles = () => pg.locator('[data-testid=detection-card] input[type=checkbox][data-testid^="label-"], [data-testid=detection-card] input[type=checkbox][data-testid^="meta-"]')
+  const checkedCount = () => toggles().evaluateAll((els) => els.filter((e) => e.checked).length)
+  const savedSettings = () => pg.evaluate(() => new Promise((res) => { const r = indexedDB.open('photo-tagger'); r.onsuccess = () => { const q = r.result.transaction('kv').objectStore('kv').get('settings'); q.onsuccess = () => res(q.result) } }))
+  const t = (n) => pg.locator(`[data-testid=photo-tile][data-name="${n}"]`)
+  try {
+    await pg.goto(URL_BASE); await pg.getByTestId('empty').waitFor()
+    await openTags()
+    await pg.getByTestId('autotags-off-note').waitFor()
+    eq(await checkedCount(), 0, 'every automatic tag off on a fresh setup')
+    eq([await pg.getByTestId('autotags-restore').count(), await pg.getByTestId('autotags-on').count()], [0, 1], 'only Turn all on (no previous state to restore)')
+    const s = await savedSettings()
+    eq([s.disabledMetaTags.length, s.disabledLabels.length > 20, s.autoTagsBackup], [6, true, undefined], 'fresh default saved')
+    await pg.getByTestId('settings-close').click()
+    await pg.reload(); await pg.getByTestId('empty').waitFor()
+    await openTags(); await pg.getByTestId('autotags-off-note').waitFor(); eq(await checkedCount(), 0, 'still off after reload')
+    await pg.getByTestId('settings-close').click()
+    // first import: the prompt explains tags are off and offers Review
+    await connectDropbox(pg, 'fresh_key')
+    const addPick = async (name) => {
+      await pg.getByTestId('add-btn').click()
+      await pg.locator('[data-testid=dropbox-folder][data-name="Picks"]').click()
+      await pg.locator(`[data-testid=dropbox-file][data-name="${name}"]`).click()
+      await pg.getByTestId('dropbox-add-selected').click()
+    }
+    await addPick('pick-1.jpg')
+    await pg.getByTestId('preimport-check').waitFor()
+    eq(await pg.locator('#preimport-title').innerText(), 'Automatic tags are off', 'prompt title')
+    await pg.getByTestId('preimport-all-off').waitFor()
+    eq(await pg.getByTestId('preimport-proceed').innerText(), 'Import without automatic tags', 'proceed label')
+    eq(await pg.evaluate(() => document.activeElement?.getAttribute('data-testid')), 'preimport-review', 'Review has focus')
+    await pg.getByTestId('preimport-review').click()
+    await pg.getByTestId('autotags-all').waitFor()
+    await pg.getByTestId('settings-close').click()
+    await addPick('pick-1.jpg')
+    await pg.getByTestId('preimport-check').waitFor(); await pg.getByTestId('preimport-proceed').click()
+    await pg.waitForFunction(() => document.querySelector('[data-testid=photo-tile][data-name="pick-1.jpg"]')?.dataset.status === 'ready', null, { timeout: 300_000 })
+    eq(((await t('pick-1.jpg').getAttribute('data-tags')) ?? '').split('|').filter(Boolean), [], 'imported with no automatic tags')
+    // Turn all on still works
+    await openTags()
+    await pg.getByTestId('autotags-on').click(); await pg.getByTestId('autotags-off').waitFor()
+    eq(await checkedCount(), await toggles().count(), 'Turn all on')
+    await pg.getByTestId('settings-close').click()
+    eq(errs, [], 'no page errors')
+  } finally { await c.close() }
+})
+
+await test('Existing settings are kept exactly (1.0.33 default-off applies to new setups only)', async () => {
+  const c = await browser.newContext({ viewport: { width: 1280, height: 900 } })
+  await routeModel(c).catch(() => {})
+  await stubDropbox(c)
+  const pg = await c.newPage()
+  const openTags = async () => { await pg.getByTestId('open-settings').click(); await pg.getByTestId('tab-vocab').click(); await pg.getByTestId('autotags-all').waitFor() }
+  const toggles = () => pg.locator('[data-testid=detection-card] input[type=checkbox][data-testid^="label-"], [data-testid=detection-card] input[type=checkbox][data-testid^="meta-"]')
+  const checkedCount = () => toggles().evaluateAll((els) => els.filter((e) => e.checked).length)
+  try {
+    // an existing install (all-on default) with one change saved
+    await pg.goto(URL_BASE); await pg.getByTestId('empty').waitFor()
+    await connectDropbox(pg, 'existing_key')
+    await openTags()
+    const total = await toggles().count()
+    await pg.getByTestId('meta-camera').uncheck()
+    await pg.getByTestId('settings-close').click()
+    // upgrade to the new-setup default: saved settings stay exactly as they were
+    await pg.evaluate(() => localStorage.setItem('pt.e2eFresh', '1'))
+    await pg.reload(); await pg.getByTestId('open-settings').waitFor()
+    await openTags()
+    eq(await checkedCount(), total - 1, 'existing selection kept')
+    ok(!(await pg.getByTestId('meta-camera').isChecked()) && await pg.getByTestId('meta-year').isChecked(), 'Camera off, Year on — as saved')
+    eq(await pg.getByTestId('autotags-off-note').count(), 0, 'no all-off note')
+    await pg.getByTestId('settings-close').click()
+    // an existing user who never saved settings (but is connected to Dropbox) keeps the all-on default too
+    await pg.evaluate(() => new Promise((res) => { const r = indexedDB.open('photo-tagger'); r.onsuccess = () => { const tx = r.result.transaction('kv', 'readwrite'); tx.objectStore('kv').delete('settings'); tx.oncomplete = () => { r.result.close(); res() } } }))
+    await pg.reload(); await pg.getByTestId('open-settings').waitFor()
+    await openTags()
+    eq(await checkedCount(), total, 'existing (connected) user without saved settings: all on, unchanged')
+  } finally { await c.close() }
 })
 
 await test('Dropbox: face recognition runs on Dropbox-backed photos (People clusters)', async () => {

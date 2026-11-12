@@ -6,6 +6,7 @@ import { fetchDropboxOriginal, isDropboxVideo } from '../dropbox'
 import type { Photo } from '../types'
 import { TagInput } from './TagInput'
 import { RemoveConfirm } from './RemoveConfirm'
+import { DeleteDropboxConfirm } from './DeleteDropbox'
 import { usePeople } from '../people'
 
 const fmtSize = (n: number) => (n > 1e6 ? `${(n / 1e6).toFixed(1)} MB` : `${Math.round(n / 1e3)} KB`)
@@ -23,6 +24,7 @@ export function Detail({ list, index, onIndex, onClose, allTags }: {
 }) {
   const lib = useLibrary()
   const [removeAsk, setRemoveAsk] = useState(false)
+  const [delAsk, setDelAsk] = useState(false)
   const ppl = usePeople()
   const p = list[index]
   const url = useViewUrl(p?.id)
@@ -299,7 +301,20 @@ export function Detail({ list, index, onIndex, onClose, allTags }: {
             : <button className="btn" onClick={download} data-testid="download">{p.hasOriginal || p.dropbox ? 'Download original' : 'Download copy'}</button>}
           <button className="btn danger" data-testid="delete-photo" onClick={() => setRemoveAsk(true)} title={p.dropbox ? 'Removes it from Photo Tagger (and its tags file in /.photo-tagger). The photo stays in your Dropbox.' : 'Removes it from Photo Tagger. Originals elsewhere are not touched.'}>Remove from app</button>
         </div>
+        {p.dropbox && (
+          <section className="danger-zone" data-testid="danger-zone" aria-labelledby="dz-title">
+            <h4 id="dz-title">Danger zone</h4>
+            <p className="muted small">Deletes the file itself from your Dropbox, not just from Photo Tagger. Dropbox keeps deleted files for a limited time (30 days on most plans) so you can restore them on dropbox.com.</p>
+            <button className="btn danger-solid" data-testid="delete-dropbox" onClick={() => setDelAsk(true)}>Delete from Dropbox…</button>
+          </section>
+        )}
       </aside>
+      {delAsk && <DeleteDropboxConfirm photos={[p]} onCancel={() => setDelAsk(false)} onConfirm={async () => {
+        setDelAsk(false)
+        const next = list[index + 1] ?? list[index - 1]
+        await lib.trashDropboxPhotos([p.id])
+        if (next) onIndex(Math.min(index, list.length - 2)); else onClose()
+      }} />}
       {removeAsk && <RemoveConfirm count={1} onCancel={() => setRemoveAsk(false)} onConfirm={async () => {
         setRemoveAsk(false)
             const next = list[index + 1] ?? list[index - 1]

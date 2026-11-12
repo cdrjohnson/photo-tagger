@@ -20,6 +20,23 @@ import { DEFAULT_SETTINGS, type CustomLabel, type DropboxRef, type Photo, type S
 export interface FolderProgress { path: string; recursive: boolean; total: number; inLibrary: number; skipped: number; remaining: number }
 const SKIP_KEY = 'pt.dropboxSkipped.v1', RUN_KEY = 'pt.dropboxRun.v1'
 /** Dropbox file ids that can't be imported (duplicate content, video without a preview) so "All in library" isn't blocked forever */
+/**
+ * 1.0.33: a brand-new setup (no saved settings, empty library, no Dropbox connection, no custom tags) starts with every
+ * automatic tag OFF. Anyone with saved settings or an existing library keeps exactly what they had.
+ * (The e2e suite keeps the old all-on default unless a test asks for a fresh setup.)
+ */
+async function initialSettings(saved: Partial<Settings> | undefined | null, photoCount: number, customCount: number): Promise<Settings> {
+  if (saved) return { ...DEFAULT_SETTINGS, ...saved }
+  const w = window as any
+  const fresh = !photoCount && !customCount
+    && !(await DB.kvGet<DropboxSession>('dropboxSession').catch(() => null))
+    && !(await DB.kvGet<LinkedFolder[]>('dropboxFolders').catch(() => null))?.length
+    && !(w.__PT_E2E__ && localStorage.getItem('pt.e2eFresh') !== '1')
+  if (!fresh) return { ...DEFAULT_SETTINGS }
+  const off: Settings = { ...DEFAULT_SETTINGS, disabledLabels: DEFAULT_LABELS.map((l) => l.id), disabledMetaTags: META_TAGS.map((m) => m.id) }
+  await DB.kvSet('settings', off).catch(() => {})
+  return off
+}
 export function skippedFiles(): Record<string, string> { try { return JSON.parse(localStorage.getItem(SKIP_KEY) || '{}') } catch { return {} } }
 function markSkipped(id: string, reason: string) { try { const m = skippedFiles(); m[id] = reason; localStorage.setItem(SKIP_KEY, JSON.stringify(m)) } catch { /* ignore */ } }
 export type RunRecord = { path: string; recursive: boolean; at: number }
@@ -73,6 +90,8 @@ export interface Library {
   addTags(ids: string[], names: string[]): Promise<void>
   removeTags(ids: string[], names: string[]): Promise<void>
   deletePhotos(ids: string[]): Promise<void>
+  /** 1.0.33: delete these Dropbox photos' files from Dropbox (queued, paced, retried) and remove them from the library */
+  trashDropboxPhotos(ids: string[]): Promise<void>
   retagAll(): Promise<void>
   retagPhoto(id: string): Promise<void>
   /** read this Dropbox photo's tags from Dropbox now (detail view open) */
@@ -221,7 +240,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
         DB.kvGet<Record<string, number[]>>('customEmb'),
       ])
       if (!desktop) getSavedFolder().then((h) => { folderRef.current = h; setFolderName(h?.name ?? null) }).catch(() => {})
-      const merged = { ...DEFAULT_SETTINGS, ...(s ?? {}) }
+      const merged = await initialSettings(s, ps.length, c?.length ?? 0)
       if (desktop) merged.keepOriginals = true
       settingsRef.current = merged; setSettings(merged)
       customRef.current = c ?? []; setCustom(c ?? [])
@@ -629,7 +648,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
         DB.kvGet<CustomLabel[]>('custom'),
         DB.kvGet<Record<string, number[]>>('customEmb'),
       ])
-      const merged = { ...DEFAULT_SETTINGS, ...(st ?? {}), keepOriginals: true }
+      const merged = { ...(await initialSettings(st, ps.length, c?.length ?? 0)), keepOriginals: true }
       settingsRef.current = merged; setSettings(merged)
       customRef.current = c ?? []; setCustom(c ?? [])
       const embMap = new Map<string, Float32Array>()
@@ -658,7 +677,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
         DB.kvGet<CustomLabel[]>('custom'),
         DB.kvGet<Record<string, number[]>>('customEmb'),
       ])
-      const merged = { ...DEFAULT_SETTINGS, ...(st ?? {}), keepOriginals: true }
+      const merged = { ...(await initialSettings(st, ps.length, c?.length ?? 0)), keepOriginals: true }
       settingsRef.current = merged; setSettings(merged)
       customRef.current = c ?? []; setCustom(c ?? [])
       const embMap = new Map<string, Float32Array>()
@@ -795,7 +814,8 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
     const c = dbxClientRef.current
     if (!c) throw new Error('Dropbox is not connected')
     const all = await c.listFolder(path, { recursive })
-    return (all.filter((e) => e.kind === 'file' && isDropboxMedia(e.name) && !e.pathLower.startsWith('/.photo-tagger')) as DropboxFile[])
+    // 1.0.33: files deleted with Delete from Dropbox (or still being deleted) are never offered by folder adds again
+    return (all.filter((e) => e.kind === 'file' && isDropboxMedia(e.name) && !e.pathLower.startsWith('/.photo-tagger') && !Remote.isTrashedFile(e.id)) as DropboxFile[])
       .sort((a, b) => (a.pathLower < b.pathLower ? -1 : a.pathLower > b.pathLower ? 1 : 0))
   }, [])
   const dropboxFolderProgress = useCallback(async (path: string, recursive: boolean): Promise<FolderProgress> => {
@@ -841,6 +861,8 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
           if (e.kind !== 'file' || !isDropboxMedia(e.name) || e.pathLower.startsWith('/.photo-tagger')) continue
           if (seen.has(e.id)) { already++; alreadyIds.push(e.id); continue }
           if (known[e.id]) continue
+          // 1.0.33: deleted with Delete from Dropbox — Refresh / folder adds never bring it back; picking it on purpose does
+          if (Remote.isTrashedFile(e.id)) { if (!picked) continue; Remote.liftTrashedFile(e.id) }
           seen.add(e.id); files.push(e)
         }
       }
@@ -1011,6 +1033,11 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
   )
   const deletePhotos = useCallback(async (ids: string[]) => {
     await DB.deletePhotos(ids)
+    const set = new Set(ids)
+    setPhotosBoth((all) => all.filter((p) => !set.has(p.id)))
+  }, [setPhotosBoth])
+  const trashDropboxPhotos = useCallback(async (ids: string[]) => {
+    await DB.trashDropboxPhotos(ids)
     const set = new Set(ids)
     setPhotosBoth((all) => all.filter((p) => !set.has(p.id)))
   }, [setPhotosBoth])
@@ -1255,9 +1282,9 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
     Remote.clearPersistedQueue()
     customEmb.current = new Map()
     photosRef.current = []; setPhotos([])
-    settingsRef.current = DEFAULT_SETTINGS; setSettings(DEFAULT_SETTINGS)
     customRef.current = []; setCustom([])
     applyDropboxSession(null, '')
+    { const fresh = await initialSettings(null, 0, 0); settingsRef.current = fresh; setSettings(fresh) }
     dbxFoldersRef.current = []; setDbxFolders([])
     toast('All local data deleted', 'ok')
   }, [toast])
@@ -1268,7 +1295,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
     dropboxKey,
     dropbox: { connected: !!dbxSession, account: dbxSession?.name || dbxSession?.email || '', folders: dbxFolders, connecting: dbxConnecting },
     connectDropbox, disconnectDropbox, listDropbox, dropboxThumb, processDropboxFolder, processDropboxFiles, preImportAsk, answerPreImport, refreshDropbox, dropboxFolderProgress, addNextDropboxBatch, addAllRemainingDropbox, dropboxFolderFiles, addDropboxSelection, forgetDropboxFolder,
-    addFiles, cancelDropboxDownload, updatePhotos, addTags, removeTags, deletePhotos, retagAll, retagPhoto, pullDropboxTags, retryPending,
+    addFiles, cancelDropboxDownload, updatePhotos, addTags, removeTags, deletePhotos, trashDropboxPhotos, retagAll, retagPhoto, pullDropboxTags, retryPending,
     saveSettings, addCustomLabel, removeCustomLabel, toggleLabel, toggleMetaTag, resetVocabulary, setAllAutoTags, exportData, importTags,
     clearEverything, toast, preloadModel, setAfterIngest,
     nearDupes, resolveNearDupe, resolveAllNearDupes, findDuplicates, dismissDupePair,
@@ -1276,7 +1303,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
     libraryPath, isDesktop: DB.isDesktop(), chooseLibraryFolder, changeLibraryFolder, portable, useLibraryBesideApp,
     savePhotosToDisk, downloadPhotosZip,
   }), [ready, photos, settings, custom, job, model, toasts, dropboxKey, dbxSession, dbxFolders, dbxConnecting, connectDropbox, disconnectDropbox, listDropbox, dropboxThumb, processDropboxFolder, processDropboxFiles, preImportAsk, answerPreImport, refreshDropbox, dropboxFolderProgress, addNextDropboxBatch, addAllRemainingDropbox, dropboxFolderFiles, addDropboxSelection, forgetDropboxFolder, addFiles, cancelDropboxDownload, updatePhotos, addTags, removeTags,
-    deletePhotos, retagAll, retagPhoto, pullDropboxTags, retryPending, saveSettings, addCustomLabel, removeCustomLabel, toggleLabel, toggleMetaTag, resetVocabulary, setAllAutoTags, exportData,
+    deletePhotos, trashDropboxPhotos, retagAll, retagPhoto, pullDropboxTags, retryPending, saveSettings, addCustomLabel, removeCustomLabel, toggleLabel, toggleMetaTag, resetVocabulary, setAllAutoTags, exportData,
     importTags, clearEverything, toast, preloadModel, setAfterIngest, nearDupes, resolveNearDupe, resolveAllNearDupes, findDuplicates,
     dismissDupePair, folderName, chooseSaveFolder, clearSaveFolderFn, savePhotosToDisk, downloadPhotosZip, libraryPath, chooseLibraryFolder, changeLibraryFolder, portable, useLibraryBesideApp])
 

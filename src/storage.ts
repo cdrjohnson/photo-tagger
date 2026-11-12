@@ -53,6 +53,11 @@ export async function deletePhotos(ids: string[]) {
   if (r.length) await remote.deletePhotos(r)
   if (l.length) await local().deletePhotos(l)
 }
+/** 1.0.33: delete these Dropbox photos' files from Dropbox (queued) and from the app */
+export async function trashDropboxPhotos(ids: string[]) {
+  const r = ids.filter((id) => remote.hasRemote(id))
+  if (r.length) await remote.trashPhotos(r)
+}
 export async function clearAll() {
   remote.clearMemory() // the Dropbox metadata itself is left alone
   return local().clearAll()

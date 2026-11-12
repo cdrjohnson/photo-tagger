@@ -403,3 +403,20 @@ details.dbx-sec[open] > summary { margin-bottom: 4px; }
 .autotags-all p { margin: 0; }
 .chip.static.off { opacity: .55; text-decoration: line-through; }
 .chip.static input { margin: 0 4px 0 0; }
+/* 1.0.33 Delete from Dropbox */
+.btn.danger-solid { background: var(--danger); color: #fff; border-color: var(--danger); font-weight: 600; }
+.btn.danger-solid:disabled { opacity: .5; }
+.danger-zone { margin-top: 16px; padding: 12px; border: 1px solid color-mix(in srgb, var(--danger) 55%, transparent); border-radius: 10px; background: color-mix(in srgb, var(--danger) 6%, transparent); display: grid; gap: 8px; justify-items: start; }
+.danger-zone h4 { margin: 0; color: var(--danger); font-size: .8rem; text-transform: uppercase; letter-spacing: .05em; }
+.danger-zone p { margin: 0; }
+.selbar-sep { width: 1px; align-self: stretch; background: var(--border); margin: 0 4px; }
+.deldbx-card { width: min(520px, 100%); }
+.deldbx-card h2 { color: var(--danger); }
+.deldbx-files { list-style: none; margin: 0; padding: 6px; display: grid; gap: 6px; border: 1px solid var(--border); border-radius: 10px; max-height: 220px; overflow: auto; }
+.deldbx-files li { display: flex; gap: 10px; align-items: center; min-width: 0; }
+.deldbx-files img, .deldbx-ph { width: 44px; height: 44px; border-radius: 6px; object-fit: cover; flex: none; display: grid; place-items: center; background: var(--panel2); }
+.deldbx-files li > span { display: grid; min-width: 0; }
+.deldbx-files small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.deldbx-body p { margin: 0 0 8px; }
+.deldbx-btns { justify-content: flex-end; gap: 8px; }
+.deldbx-bar i { background: var(--danger) !important; }

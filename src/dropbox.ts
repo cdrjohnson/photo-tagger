@@ -338,6 +338,15 @@ export class DropboxClient {
     try { await this.rpc('files/delete_v2', { path }) } catch (e: any) { if (!isNotFoundError(e)) throw e }
   }
 
+  /**
+   * 1.0.33 Delete from Dropbox: delete ONE photo/video file the user confirmed, by its Dropbox id ("id:…").
+   * Dropbox keeps it in deleted files (restorable on dropbox.com for a limited time). Already gone (not_found) = done.
+   */
+  async deleteFile(fileId: string) {
+    if (!/^id:./.test(fileId)) throw new Error('refusing to delete a Dropbox file without its id')
+    try { await this.rpc('files/delete_v2', { path: fileId }) } catch (e: any) { if (!isNotFoundError(e)) throw e }
+  }
+
   /** List a folder; [] when it does not exist yet. */
   async listIfExists(path: string): Promise<DropboxEntry[]> {
     try { return await this.listFolder(path) } catch (e: any) { if (e?.status === 409) return []; throw e }

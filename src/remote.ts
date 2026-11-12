@@ -120,7 +120,7 @@ const queueBackoff = (n: number) => { const top = Math.min(E2E ? 400 : 5 * 60_00
 const CONCURRENCY = 2
 
 export type SaveFailureKind = 'cap' | 'permission' | 'not_found' | 'auth' | 'gave_up' | 'missing' | 'other'
-export interface SaveFailure { id: string; name: string; kind: SaveFailureKind; reason: string; at: number }
+export interface SaveFailure { id: string; name: string; kind: SaveFailureKind; reason: string; at: number; /** 1.0.33: a Delete from Dropbox that hasn't finished */ op?: 'trash' }
 export interface SaveStatus {
   /** photos in the current save run */ total: number
   done: number
@@ -133,6 +133,9 @@ export interface SaveStatus {
   /** Remove from app (1.0.29): photos in the current removal run, and how many are finished */
   removeTotal: number
   removeDone: number
+  /** Delete from Dropbox (1.0.33): files in the current delete run, and how many are deleted */
+  trashTotal: number
+  trashDone: number
 }
 const retry = new Map<string, { n: number; first: number; next: number; reason: string }>()
 const failures = new Map<string, SaveFailure>()
@@ -155,7 +158,8 @@ export const pendingWrites = () => new Set([...dirty, ...inflight]).size + (peop
 let statusRaf = 0
 function emitStatus() {
   if (!dirty.size && !inflight.size) batch.clear()
-  if (![...removals.keys()].some((id) => !failures.has(id))) rmBatch.clear()
+  if (![...removals.values()].some((r) => !r.trash && !failures.has(r.id))) rmBatch.clear()
+  if (![...removals.values()].some((r) => r.trash && !failures.has(r.id))) trBatch.clear()
   if (statusRaf) return
   statusRaf = 1
   queueMicrotask(() => { statusRaf = 0; const st = saveStatus(); statusListeners.forEach((f) => f(st)) })
@@ -188,12 +192,13 @@ export function clearPersistedQueue() { try { localStorage.removeItem(QUEUE_KEY)
  * One photo being removed from the app: take back the native tags Photo Tagger added, then delete its sidecar.
  * While pending it is a tombstone — nothing may write its sidecar again and loading skips it.
  */
-interface Removal { id: string; file: string; name: string; meta: string; path?: string; tags: string[]; n?: number; first?: number; next?: number }
+interface Removal { id: string; file: string; name: string; meta: string; path?: string; tags: string[]; n?: number; first?: number; next?: number; /** 1.0.33: delete the Dropbox file itself first */ trash?: boolean; /** the Dropbox file is already deleted; only the tag file is left */ gone?: boolean }
 const removals = new Map<string, Removal>()
 const rmBatch = new Set<string>()
+const trBatch = new Set<string>()
 const REMOVE_KEY = 'pt.dropboxRemovals.v1'
 /** removed photo ids, also kept in Dropbox (/.photo-tagger/removed.json) so other devices / reinstalls don't bring them back */
-type RemovedEntry = { id: string; file: string; at: number; done?: number }
+type RemovedEntry = { id: string; file: string; at: number; done?: number; /** the Dropbox file itself was deleted (1.0.33) — Refresh must not add it back */ trashed?: boolean }
 let removedLog: RemovedEntry[] = []
 const removedIds = new Set<string>()
 let removedLogDirty = false
@@ -203,11 +208,21 @@ export const isRemoved = (id: string) => removedIds.has(id) || removals.has(id)
 function removeProgress() {
   const total = rmBatch.size
   const left = [...rmBatch].filter((id) => removals.has(id) && !failures.has(id)).length
-  return { removeTotal: left ? total : 0, removeDone: left ? total - left : 0 }
+  const tTotal = trBatch.size
+  const tLeft = [...trBatch].filter((id) => removals.has(id) && !failures.has(id)).length
+  return { removeTotal: left ? total : 0, removeDone: left ? total - left : 0, trashTotal: tLeft ? tTotal : 0, trashDone: tLeft ? tTotal - tLeft : 0 }
+}
+/** 1.0.33: a Dropbox file deleted (or being deleted) with Delete from Dropbox — folder adds / Refresh skip it */
+export const isTrashedFile = (fileId: string) => removedLog.some((e) => e.trashed && e.file === fileId) || [...removals.values()].some((r) => r.trash && r.file === fileId)
+/** Adding a trashed file again on purpose (picked in the browser) lifts its tombstone. */
+export function liftTrashedFile(fileId: string) {
+  let changed = false
+  for (const e of removedLog) if (e.trashed && e.file === fileId) { e.trashed = false; changed = true }
+  if (changed) { removedLogDirty = true; schedule(300) }
 }
 function persistRemovals() {
   try {
-    const items = [...removals.values()].map(({ id, file, name, meta, path, tags }) => ({ id, file, name, meta, path, tags }))
+    const items = [...removals.values()].map(({ id, file, name, meta, path, tags, trash, gone }) => ({ id, file, name, meta, path, tags, trash, gone }))
     if (items.length) localStorage.setItem(REMOVE_KEY, JSON.stringify({ v: 1, items }))
     else localStorage.removeItem(REMOVE_KEY)
   } catch { /* storage unavailable: the in-memory queue still runs */ }
@@ -215,11 +230,13 @@ function persistRemovals() {
 function restoreRemovals() {
   try {
     const j = JSON.parse(localStorage.getItem(REMOVE_KEY) || 'null')
-    for (const r of (j?.v === 1 ? j.items : []) as Removal[]) if (r?.id && r.meta && !removals.has(r.id)) { removals.set(r.id, { ...r, tags: r.tags ?? [] }); rmBatch.add(r.id); removedIds.add(r.id) }
+    for (const r of (j?.v === 1 ? j.items : []) as Removal[]) if (r?.id && r.meta && !removals.has(r.id)) { removals.set(r.id, { ...r, tags: r.tags ?? [] }); (r.trash ? trBatch : rmBatch).add(r.id); removedIds.add(r.id) }
   } catch { /* ignore */ }
 }
-function addRemovedLog(id: string, file: string) {
-  if (!removedLog.some((e) => e.id === id)) removedLog.push({ id, file, at: Date.now() })
+function addRemovedLog(id: string, file: string, trashed?: boolean) {
+  const cur = removedLog.find((e) => e.id === id)
+  if (!cur) removedLog.push({ id, file, at: Date.now(), ...(trashed ? { trashed: true } : {}) })
+  else if (trashed) cur.trashed = true
   removedIds.add(id)
   removedLogDirty = true
 }
@@ -237,11 +254,18 @@ async function writeRemovedLog(c: DropboxClient) {
 }
 /** Queue a removal (from a live photo, or a leftover sidecar of an already-removed id found while loading). */
 function queueRemoval(r: Removal) {
-  removals.set(r.id, r); rmBatch.add(r.id); addRemovedLog(r.id, r.file)
+  removals.set(r.id, r); (r.trash ? trBatch : rmBatch).add(r.id); addRemovedLog(r.id, r.file, r.trash)
 }
 async function processRemoval(c: DropboxClient, r: Removal, liveFiles: Set<string>) {
   // re-added on purpose since then: the new photo owns this file and its sidecar now — nothing to undo
   if (liveFiles.has(r.file)) { removals.delete(r.id); owned.delete(r.id); return }
+  if (r.trash && !r.gone) {
+    // 1.0.33 Delete from Dropbox: the file itself goes to Dropbox's deleted files (by its id; not_found = already deleted).
+    // Its native tags go with it, so only Photo Tagger's tag file is left to delete below.
+    await c.deleteFile(r.file)
+    r.tags = []; r.path = undefined; r.gone = true; owned.delete(r.id)
+    persistRemovals()
+  }
   const tags = [...new Set([...r.tags, ...(owned.get(r.id) ?? [])])]
   if (tags.length && r.path) {
     for (let i = 0; i < tags.length; i++) {
@@ -268,6 +292,14 @@ function failRemoval(r: Removal, e: any) {
   r.n = (r.n ?? 0) + 1; r.first ??= now
   if (k.transient && now - r.first <= retryWindowMs()) { r.next = now + queueBackoff(r.n); retry.set('rm:' + r.id, { n: r.n, first: r.first, next: r.next, reason: k.reason }); return }
   retry.delete('rm:' + r.id); r.next = Infinity
+  if (r.trash) {
+    const reason = r.gone ? `Deleted from Dropbox, but Photo Tagger's tag file is still there: ${k.reason}`
+      : k.kind === 'permission' ? "Photo Tagger isn't allowed to delete files in your Dropbox. Sign in to Dropbox again (Settings → Dropbox → Disconnect, then Connect Dropbox) and allow it to edit your files, then Retry."
+      : k.kind === 'auth' ? 'Dropbox sign-in expired — sign in to Dropbox again (Settings → Dropbox), then Retry. The file is still in your Dropbox.'
+      : `Not deleted from Dropbox yet — the file is still there: ${k.reason}`
+    failures.set(r.id, { id: r.id, name: r.name, kind: k.transient ? 'gave_up' : k.kind, at: now, op: 'trash', reason })
+    return
+  }
   failures.set(r.id, { id: r.id, name: r.name, kind: k.transient ? 'gave_up' : k.kind, at: now, reason: `Could not finish removing it from Dropbox (Photo Tagger's tags/tag file are still there; the photo itself is never touched): ${k.reason}` })
 }
 
@@ -402,7 +434,7 @@ export function retryFailed(ids?: string[]) {
   for (const f of [...failures.values()]) if (!ids || ids.includes(f.id)) {
     failures.delete(f.id); syncedKey.delete(f.id); retry.delete(f.id)
     const r = removals.get(f.id)
-    if (r) { r.n = 0; r.first = undefined; r.next = 0; rmBatch.add(r.id) }
+    if (r) { r.n = 0; r.first = undefined; r.next = 0; (r.trash ? trBatch : rmBatch).add(r.id) }
     else if (photos.has(f.id)) { dirty.add(f.id); batch.add(f.id) }
   }
   emitStatus(); persistQueue(); schedule(0)
@@ -641,6 +673,22 @@ export async function deletePhotos(ids: string[]) {
   persistRemovals(); persistQueue(); emitStatus(); schedule(0)
 }
 
+/**
+ * 1.0.33 Delete from Dropbox: the photo leaves the app at once (tombstoned), then the paced, retrying, persisted queue
+ * deletes the Dropbox file itself (moved to Dropbox's deleted files), then Photo Tagger's tag file
+ * ("Deleting from Dropbox: n of N"). Failures stay listed with Retry; the file is never re-added by Refresh meanwhile.
+ */
+export async function trashPhotos(ids: string[]) {
+  for (const id of ids) {
+    const p = photos.get(id); if (!p?.dropbox) continue
+    queueRemoval({ id, file: p.dropbox.id, name: p.name, meta: metaPath(p), path: p.dropbox.path, tags: [], trash: true })
+    photos.delete(id); thumbs.delete(id); views.delete(id); embeddings.delete(id)
+    dirty.delete(id); retry.delete(id); failures.delete(id); missing.delete(id); syncedKey.delete(id); repaired.delete(id); relinked.delete(id); owned.delete(id)
+    for (const f of [...faces.values()]) if (f.photoId === id) faces.delete(f.id)
+  }
+  persistRemovals(); persistQueue(); emitStatus(); schedule(0)
+}
+
 export async function getBlob(store: 'thumbs' | 'views' | 'originals', id: string): Promise<Blob | undefined> {
   const p = photos.get(id); if (!p) return undefined
   if (store === 'originals') return undefined
@@ -677,7 +725,7 @@ async function thumbSlot<T>(fn: () => Promise<T>): Promise<T> {
 
 /** Forget everything held in memory (on disconnect / app wipe). Dropbox is untouched. */
 export function clearMemory() {
-  photos.clear(); thumbs.clear(); views.clear(); embeddings.clear(); faces.clear(); people = []; dirty.clear(); peopleDirty = false; syncedKey.clear(); owned.clear(); missing.clear(); relinked.clear(); repaired.clear(); removals.clear(); rmBatch.clear(); removedLog = []; removedIds.clear(); removedLogDirty = false; retry.clear(); failures.clear(); inflight.clear(); batch.clear(); emitStatus()
+  photos.clear(); thumbs.clear(); views.clear(); embeddings.clear(); faces.clear(); people = []; dirty.clear(); peopleDirty = false; syncedKey.clear(); owned.clear(); missing.clear(); relinked.clear(); repaired.clear(); removals.clear(); rmBatch.clear(); trBatch.clear(); removedLog = []; removedIds.clear(); removedLogDirty = false; retry.clear(); failures.clear(); inflight.clear(); batch.clear(); emitStatus()
 }
 
 /** Read every sidecar from Dropbox into memory. */

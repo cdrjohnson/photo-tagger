@@ -6,6 +6,7 @@ import { PeopleView } from './components/PeopleView'
 import { DupeReview } from './components/DupeReview'
 import { DropboxBrowser } from './components/DropboxBrowser'
 import { RemoveConfirm } from './components/RemoveConfirm'
+import { DeleteDropboxConfirm } from './components/DeleteDropbox'
 import { VerifyDropboxTags } from './components/VerifyDropboxTags'
 import { SaveStatus } from './components/SaveStatus'
 import { ImportResume } from './components/ImportResume'
@@ -39,6 +40,7 @@ export default function App() {
   const [cancelDropboxConfirm, setCancelDropboxConfirm] = useState(false)
   const [dbxBrowser, setDbxBrowser] = useState(false)
   const [removeAsk, setRemoveAsk] = useState(false)
+  const [delAsk, setDelAsk] = useState(false)
   useEffect(() => {
     if (cancelDropboxConfirm && !lib.job?.cancellable) setCancelDropboxConfirm(false)
   }, [cancelDropboxConfirm, lib.job?.cancellable])
@@ -92,6 +94,9 @@ export default function App() {
 
   const exitSelect = () => { setSel(new Set()); setSelectMode(false) }
   const selIds = [...sel]
+  // 1.0.33 Delete from Dropbox: only Dropbox photos in the selection
+  const hasDropbox = useMemo(() => lib.photos.some((p) => p.dropbox), [lib.photos])
+  const selDbx = useMemo(() => (sel.size ? lib.photos.filter((p) => p.dropbox && sel.has(p.id)) : []), [lib.photos, sel])
   const selPhotos = lib.photos.filter((p) => sel.has(p.id))
   const selTags = useMemo(() => {
     const m = new Map<string, number>()
@@ -272,6 +277,10 @@ export default function App() {
           <button className="btn" disabled={!sel.size} data-testid="sel-export" onClick={() => lib.exportData('json', selIds)}>Export tags</button>
           <button className="btn" disabled={!sel.size} data-testid="sel-save" onClick={() => void (lib.folderSupported ? lib.savePhotosToDisk(selIds) : lib.downloadPhotosZip(selIds))}>{lib.folderSupported ? 'Save to folder…' : 'Download zip…'}</button>
           <button className="btn danger" disabled={!sel.size} data-testid="sel-delete" onClick={() => setRemoveAsk(true)} title="Removes the selected photos from Photo Tagger. Originals elsewhere (including Dropbox) are not touched.">Remove from app</button>
+          {hasDropbox && <>
+            <span className="selbar-sep" aria-hidden="true" />
+            <button className="btn danger-solid" disabled={!selDbx.length} data-testid="sel-delete-dropbox" onClick={() => setDelAsk(true)} title="Deletes the selected files from your Dropbox (restorable from dropbox.com for a limited time)">Delete from Dropbox… ({selDbx.length})</button>
+          </>}
         </div>
       )}
 
@@ -318,6 +327,8 @@ export default function App() {
         </div>
       )}
 
+      {delAsk && selDbx.length > 0 && <DeleteDropboxConfirm photos={selDbx} skipped={sel.size - selDbx.length} onCancel={() => setDelAsk(false)}
+        onConfirm={async () => { setDelAsk(false); await lib.trashDropboxPhotos(selDbx.map((p) => p.id)); exitSelect() }} />}
       {removeAsk && sel.size > 0 && (
         <RemoveConfirm count={sel.size} onCancel={() => setRemoveAsk(false)}
           onConfirm={async () => { setRemoveAsk(false); await lib.deletePhotos([...sel]); exitSelect() }} />

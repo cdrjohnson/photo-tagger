@@ -31,15 +31,19 @@ export function PreImportCheck({ onReview }: { onReview: () => void }) {
   const offMeta = new Set(s.disabledMetaTags ?? [])
   const metaOn = META_TAGS.filter((m) => !offMeta.has(m.id))
   const metaOff = META_TAGS.filter((m) => offMeta.has(m.id))
+  // 1.0.33: new setups start with every automatic tag off — say so plainly instead of "check your list"
+  const allOff = builtinOn === 0 && customOn.length === 0 && metaOn.length === 0
   return (
     <div className="modal sheet" role="dialog" aria-modal="true" aria-labelledby="preimport-title" aria-describedby="preimport-desc" data-testid="preimport-check"
       onClick={(e) => e.stopPropagation()}>
       <div className="sheet-card preimport">
         <div className="settings-head">
-          <h2 id="preimport-title">Check your detection list first</h2>
+          <h2 id="preimport-title">{allOff ? 'Automatic tags are off' : 'Check your detection list first'}</h2>
           <button className="btn icon" aria-label="Cancel" data-testid="preimport-dismiss" onClick={() => lib.answerPreImport('cancel', dont)}>✕</button>
         </div>
-        <p id="preimport-desc">Photo Tagger will automatically add tags to every photo you import, using your <b>Detection list</b> and <b>Photo metadata</b> settings, and save them to Dropbox. It's easiest to adjust these before the first import.</p>
+        {allOff
+          ? <p id="preimport-desc" data-testid="preimport-all-off">Automatic tags are off, so the photos you import get <b>no automatic tags</b> — only the tags you add yourself{s.faceEnabled ? ' (faces are still found so you can name people)' : ''}. Review the detection list to turn on the tags you want (or <b>Turn all on</b>), or import without automatic tags.</p>
+          : <p id="preimport-desc">Photo Tagger will automatically add tags to every photo you import, using your <b>Detection list</b> and <b>Photo metadata</b> settings, and save them to Dropbox. It's easiest to adjust these before the first import.</p>}
         <ul className="preimport-summary" data-testid="preimport-summary">
           <li data-testid="preimport-detect"><b>{builtinOn}</b> of {DEFAULT_LABELS.length} built-in detection tags on{customOn.length ? <> · <b>{customOn.length}</b> custom tag{customOn.length === 1 ? '' : 's'} ({customOn.slice(0, 4).map((c) => c.label).join(', ')}{customOn.length > 4 ? '…' : ''})</> : ' · no custom tags'}</li>
           <li data-testid="preimport-meta">Photo metadata: {metaOn.length ? <>on — {metaOn.map((m) => m.label).join(', ')}</> : 'all off'}{metaOff.length > 0 && metaOn.length > 0 && <span className="muted"> · off — {metaOff.map((m) => m.label).join(', ')}</span>}</li>
@@ -52,7 +56,7 @@ export function PreImportCheck({ onReview }: { onReview: () => void }) {
         <div className="row wrap" style={{ justifyContent: 'flex-end', gap: 8 }}>
           <button type="button" className="btn" data-testid="preimport-cancel" onClick={() => lib.answerPreImport('cancel', dont)}>Cancel</button>
           <button type="button" ref={reviewRef} className="btn" data-testid="preimport-review" onClick={() => { lib.answerPreImport('review', dont); onReview() }}>Review detection list</button>
-          <button type="button" className="btn primary" data-testid="preimport-proceed" onClick={() => lib.answerPreImport('proceed', dont)}>Tag with these settings</button>
+          <button type="button" className="btn primary" data-testid="preimport-proceed" onClick={() => lib.answerPreImport('proceed', dont)}>{allOff ? 'Import without automatic tags' : 'Tag with these settings'}</button>
         </div>
       </div>
     </div>

@@ -29,7 +29,7 @@ On the app's **Permissions** tab tick these, then click **Submit**:
 | `files.metadata.read` | list folders and files |
 | `files.content.read` | download an image into memory to tag it, show Dropbox thumbnails, read the tag files back |
 | `files.metadata.write` | add/remove Dropbox tags on your photos (tags only — file contents are never changed) |
-| `files.content.write` | save tag/face files in `/.photo-tagger/` (the app refuses to write anywhere else) |
+| `files.content.write` | save tag/face files in `/.photo-tagger/` (the app refuses to write anywhere else), and — only when you confirm **Delete from Dropbox** (1.0.33) — delete the photos you picked (Dropbox keeps them in its deleted files) |
 | `account_info.read` | show which account is connected |
 
 No sharing scopes are needed.
