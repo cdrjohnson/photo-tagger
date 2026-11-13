@@ -299,7 +299,7 @@ export function Detail({ list, index, onIndex, onClose, allTags }: {
           {p.dropbox && isDropboxVideo(p.name)
             ? <button className="btn" disabled data-testid="download" title="Videos are tagged from Dropbox's preview frame only; open the video in Dropbox to download it.">Download original (open in Dropbox)</button>
             : <button className="btn" onClick={download} data-testid="download">{p.hasOriginal || p.dropbox ? 'Download original' : 'Download copy'}</button>}
-          <button className="btn danger" data-testid="delete-photo" onClick={() => setRemoveAsk(true)} title={p.dropbox ? 'Removes it from Photo Tagger (and its tags file in /.photo-tagger). The photo stays in your Dropbox.' : 'Removes it from Photo Tagger. Originals elsewhere are not touched.'}>Remove from app</button>
+          <button className="btn danger" data-testid="delete-photo" onClick={() => setRemoveAsk(true)} title={p.dropbox ? 'Removes it from Photo Tagger only. The photo and its tags stay in your Dropbox (tick it under Removed from app to add it back).' : 'Removes it from Photo Tagger. Originals elsewhere are not touched.'}>Remove from app</button>
         </div>
         {p.dropbox && (
           <section className="danger-zone" data-testid="danger-zone" aria-labelledby="dz-title">

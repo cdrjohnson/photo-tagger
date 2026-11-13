@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { META_TAGS, addTag, looseTagKey, matchTags, normTag, removeTag, resolveTagName } from '../tags'
+import { META_TAGS, addTag, looseTagKey, matchTags, normTag, resolveTagName } from '../tags'
+import { userRemoveTags } from '../remote'
 import { DEFAULT_LABELS } from '../labels'
 import { DESKTOP_REDIRECT_URI, DROPBOX_SCOPES, ENV_DROPBOX_KEY, WEB_REDIRECT_URI, redirectUri } from '../dropbox'
 import { useLibrary } from '../store'
@@ -365,11 +366,13 @@ function LibraryTags({ onDirty }: { onDirty: () => void }) {
   }, [lib.photos, lib.custom])
   const all = useMemo(() => [...counts.keys()].sort((a, b) => a.localeCompare(b)), [counts])
   const shown = q.trim() ? matchTags(q, all, all.length) : all
+  const offL = new Set(lib.settings.disabledLabels), offM = new Set(lib.settings.disabledMetaTags ?? [])
+  const autoOff = DEFAULT_LABELS.every((l) => offL.has(l.id)) && lib.custom.every((c) => offL.has(c.id)) && META_TAGS.every((m) => offM.has(m.id))
   const personOnly = (name: string) => lib.photos.every((p) => !p.tags.some((t) => t.name === name && t.source !== 'person'))
   const doRename = async (from: string, to: string, ids: string[]) => {
     await lib.updatePhotos(ids, (p) => {
       const old = p.tags.find((t) => t.name === from && t.source !== 'person'); if (!old) return p
-      return addTag(removeTag(p, from), to, 'manual')
+      return addTag(userRemoveTags(p, [from]), to, 'manual')
     })
     lib.toast(`Renamed “${from}” to “${to}” on ${ids.length} photo(s)`, 'ok')
   }
@@ -417,7 +420,9 @@ function LibraryTags({ onDirty }: { onDirty: () => void }) {
             </>)}
           </li>
         ))}
-        {!shown.length && <li className="muted">No tags match.</li>}
+        {!shown.length && (q.trim()
+          ? <li className="muted" data-testid="library-tags-empty">No tags match.</li>
+          : <li className="muted" data-testid="library-tags-empty">No tags on your photos yet.{autoOff && <> <span data-testid="library-tags-autooff">Automatic tags are turned off (see <b>All automatic tags</b> below), so new photos get only the tags you add — or the tags they already have in Dropbox.</span></>}</li>)}
       </ul>
       <form className="row wrap" onSubmit={async (e) => {
         e.preventDefault()

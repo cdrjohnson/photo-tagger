@@ -51,6 +51,8 @@ export interface Photo {
   dropboxTags?: string[]
   /** Dropbox tags removed on the Dropbox side; never written back until the tag is added again */
   dropboxRemoved?: string[]
+  /** 1.0.34: Dropbox tags you deleted/renamed in Photo Tagger that are still on the file — removed from Dropbox on the next save (only your own edits ever remove a Dropbox tag that was there before) */
+  dropboxDelete?: string[]
   hasOriginal: boolean
   /** desktop: relative path of the original inside the library folder */
   relPath?: string

@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import * as DB from './storage'
 import { ml, type ModelProgress, type ModelState } from './ml/client'
 import { applyAutoTags, buildVocab, scoreTags, type VocabEntry } from './tagging'
-import { addTag, applyMetaTags, META_TAGS, normTag, removeTag } from './tags'
+import { addTag, applyMetaTags, META_TAGS, normTag } from './tags'
 import { DEFAULT_LABELS } from './labels'
 import { fingerprint, hashesFromBlob, isImageFile, pixelsFromBlob, prepare, type Prepared } from './ingest'
 import { nearestPhash } from './hashes'
@@ -17,7 +17,7 @@ import { DEFAULT_SETTINGS, type CustomLabel, type DropboxRef, type Photo, type S
 
 // ---------- per-folder import progress (1.0.27) ----------
 /** Progress is derived from the library (Dropbox file ids in the sidecars); only two tiny local records exist. */
-export interface FolderProgress { path: string; recursive: boolean; total: number; inLibrary: number; skipped: number; remaining: number }
+export interface FolderProgress { path: string; recursive: boolean; total: number; inLibrary: number; skipped: number; remaining: number; /** 1.0.34: removed from the app — not counted as remaining */ removed: number }
 const SKIP_KEY = 'pt.dropboxSkipped.v1', RUN_KEY = 'pt.dropboxRun.v1'
 /** Dropbox file ids that can't be imported (duplicate content, video without a preview) so "All in library" isn't blocked forever */
 /**
@@ -810,22 +810,26 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
   }, [finishPhoto])
 
   /** files Photo Tagger can import from a folder, in a stable order (by path) — metadata only */
-  const dropboxFolderFiles = useCallback(async (path: string, recursive: boolean) => {
+  const folderMedia = async (path: string, recursive: boolean) => {
     const c = dbxClientRef.current
     if (!c) throw new Error('Dropbox is not connected')
     const all = await c.listFolder(path, { recursive })
-    // 1.0.33: files deleted with Delete from Dropbox (or still being deleted) are never offered by folder adds again
-    return (all.filter((e) => e.kind === 'file' && isDropboxMedia(e.name) && !e.pathLower.startsWith('/.photo-tagger') && !Remote.isTrashedFile(e.id)) as DropboxFile[])
+    return (all.filter((e) => e.kind === 'file' && isDropboxMedia(e.name) && !e.pathLower.startsWith('/.photo-tagger')) as DropboxFile[])
       .sort((a, b) => (a.pathLower < b.pathLower ? -1 : a.pathLower > b.pathLower ? 1 : 0))
+  }
+  const dropboxFolderFiles = useCallback(async (path: string, recursive: boolean) => {
+    // 1.0.33/1.0.34: files removed from the app or deleted from Dropbox are never offered by folder adds again
+    // (Add next batch, Add all remaining, Add by date, ticked folders); tick the file itself to add it back
+    return (await folderMedia(path, recursive)).filter((f) => !Remote.isRemovedFile(f.id))
   }, [])
   const dropboxFolderProgress = useCallback(async (path: string, recursive: boolean): Promise<FolderProgress> => {
-    const files = await dropboxFolderFiles(path, recursive)
+    const files = await folderMedia(path, recursive)
     const lib = new Set(photosRef.current.map((p) => p.dropbox?.id).filter(Boolean) as string[])
     const sk = skippedFiles()
-    let inLibrary = 0, skipped = 0
-    for (const f of files) { if (lib.has(f.id)) inLibrary++; else if (sk[f.id]) skipped++ }
-    return { path, recursive, total: files.length, inLibrary, skipped, remaining: files.length - inLibrary - skipped }
-  }, [dropboxFolderFiles])
+    let inLibrary = 0, skipped = 0, removed = 0
+    for (const f of files) { if (lib.has(f.id)) inLibrary++; else if (Remote.isRemovedFile(f.id)) removed++; else if (sk[f.id]) skipped++ }
+    return { path, recursive, total: files.length, inLibrary, skipped, removed, remaining: files.length - inLibrary - skipped - removed }
+  }, [])
 
   const processDropbox = useCallback(async (targets: LinkedFolder[], picked?: DropboxFile[], opts: { skipKnown?: boolean; run?: { path: string; recursive: boolean }; confirmed?: boolean; order?: DropboxAddOrder } = {}) => {
     const c = dbxClientRef.current
@@ -852,6 +856,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
       const known = opts.skipKnown ? skippedFiles() : {}
       for (const n of nearRef.current) if (n.prep?.photo.dropbox?.id) seen.add(n.prep.photo.dropbox.id)
       const files: DropboxFile[] = []
+      const revive = new Set<string>()
       const alreadyIds: string[] = []
       let already = 0
       const sources: (() => Promise<DropboxEntry[]>)[] = picked ? [async () => picked] : targets.map((t) => () => c.listFolder(t.path, { recursive: t.recursive, signal: ac.signal }))
@@ -861,8 +866,9 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
           if (e.kind !== 'file' || !isDropboxMedia(e.name) || e.pathLower.startsWith('/.photo-tagger')) continue
           if (seen.has(e.id)) { already++; alreadyIds.push(e.id); continue }
           if (known[e.id]) continue
-          // 1.0.33: deleted with Delete from Dropbox — Refresh / folder adds never bring it back; picking it on purpose does
-          if (Remote.isTrashedFile(e.id)) { if (!picked) continue; Remote.liftTrashedFile(e.id) }
+          // 1.0.33/1.0.34: removed from the app / deleted from Dropbox — Refresh and folder adds never bring it back;
+          // ticking it on purpose does (its saved tags come back from its tag file)
+          if (Remote.isRemovedFile(e.id)) { if (!picked) continue; revive.add(e.id) }
           seen.add(e.id); files.push(e)
         }
       }
@@ -905,6 +911,19 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
             const f = batch[i]
             bumpJob({ label: tagLabel(f.name), done, failed })
             try {
+              // 1.0.34: a removed photo added back on purpose: restore it from its tag file (tags, faces, names), then merge
+              // the file's current Dropbox tags — no download, no re-tagging
+              if (revive.has(f.id)) {
+                const np = await Remote.reviveRemovedFile(f)
+                if (np) {
+                  setPhotosBoth((all) => (all.some((x) => x.id === np.id) ? all : [np, ...all]))
+                  Remote.notifyRemote()
+                  syncFromRemote(await Remote.importNativeTags([np.id]))
+                  imported++; done++; batchDone++
+                  bumpJob({ label: tagLabel(f.name), done, failed })
+                  continue
+                }
+              }
               // Photos: original bytes live only in memory for this step, then are dropped.
               // Videos: only Dropbox's preview frame is used — the movie is never downloaded.
               let file: File
@@ -1028,7 +1047,8 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
     [updatePhotos],
   )
   const removeTags = useCallback(
-    (ids: string[], names: string[]) => updatePhotos(ids, (p) => names.reduce((a, n) => removeTag(a, normTag(n)), p)),
+    // 1.0.34: your own delete — the only thing that removes a tag that was already on the Dropbox file
+    (ids: string[], names: string[]) => updatePhotos(ids, (p) => Remote.userRemoveTags(p, names.map(normTag))),
     [updatePhotos],
   )
   const deletePhotos = useCallback(async (ids: string[]) => {

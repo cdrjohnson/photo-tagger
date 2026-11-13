@@ -814,7 +814,7 @@ await test('Dropbox: tag a folder — saved with Dropbox id, thumbnail + preview
   ok(!fileTags.has(norm(victim)), 'removed tag gone from Dropbox')
   ok(fileTags.has('family_trip'), 'imported Dropbox tag kept while the user keeps it')
   
-  ok(sidecarFor(dbx, 'dbx-a').photo.dropboxTags.includes('family_trip'), 'imported tag now managed by Photo Tagger')
+  ok(!sidecarFor(dbx, 'dbx-a').photo.dropboxTags.includes('family_trip'), '1.0.34: a tag that was already in Dropbox is never claimed as Photo Tagger’s (only your own delete removes it)')
   ok(sidecarFor(dbx, 'dbx-a').photo.tags.some((t) => t.name === 'family_trip' && t.source === 'dropbox'), 'imported with source dropbox')
   // remove the imported Dropbox tag in the UI → removed in Dropbox too
   await tile('from-dropbox.jpg').click()
@@ -1167,9 +1167,10 @@ await test('Dropbox picker: lazy thumbnails, date/size, in-library rows show a d
   await page.keyboard.press('Escape')
 })
 
-await test('Dropbox: Remove from app deletes only the Photo Tagger sidecar, never the Dropbox photo', async () => {
+await test('Dropbox: Remove from app (1.0.34) only leaves the app — Dropbox photo, its tags and its tag file are kept', async () => {
   await page.evaluate(() => window.__ptFlushDropbox())
   ok(sidecarFor(dbx, 'slow-a'), 'sidecar exists before remove')
+  const tagsBefore = [...(dbx.fileTags.get('id:slow-a') ?? [])].sort()
   await tile('cancel-stop-a.jpg').click()
   await page.getByTestId('delete-photo').click()
   await page.getByTestId('remove-confirm').waitFor()
@@ -1182,9 +1183,10 @@ await test('Dropbox: Remove from app deletes only the Photo Tagger sidecar, neve
   await page.getByTestId('delete-photo').click()
   await page.getByTestId('remove-confirm-btn').click()
   await tile('cancel-stop-a.jpg').waitFor({ state: 'detached' })
-  for (let i = 0; i < 30 && sidecarFor(dbx, 'slow-a'); i++) await page.waitForTimeout(100)
-  ok(!sidecarFor(dbx, 'slow-a'), 'sidecar removed')
-  eq([...(dbx.fileTags.get('id:slow-a') ?? [])], [], 'Photo Tagger tags taken back from the photo')
+  await page.evaluate(() => window.__ptFlushDropbox())
+  await page.waitForTimeout(800)
+  ok(sidecarFor(dbx, 'slow-a'), 'tag file kept')
+  eq([...(dbx.fileTags.get('id:slow-a') ?? [])].sort(), tagsBefore, 'Dropbox tags kept on the photo')
   eq(dbx.writes, 0, 'photo file in Dropbox untouched (no delete/write outside /.photo-tagger)')
   await page.keyboard.press('Escape').catch(() => {})
 })
@@ -1346,6 +1348,14 @@ await test('Large Dropbox imports (1.0.27): "Check your detection list first" on
     await p8.waitForFunction(() => !document.querySelector('[data-testid=photo-tile]'), null, { timeout: 30_000 })
     if (await p8.getByTestId('sel-cancel').count()) await p8.getByTestId('sel-cancel').click()
   }
+  // 1.0.34: Remove from app keeps tag files and remembers removed files, so "start over with an empty library" =
+  // remove everything, then wipe Photo Tagger's folder in the (stub) Dropbox, then reload
+  const forgetAll = async () => {
+    await removeAll()
+    await p8.evaluate(() => window.__ptFlushDropbox()); await p8.waitForTimeout(500)
+    for (const k of [...st.meta.keys()]) if (k.startsWith('/.photo-tagger/')) st.meta.delete(k)
+    await p8.reload(); await p8.getByTestId('empty').waitFor()
+  }
   const allReady = (n) => p8.waitForFunction((n) => { const t = [...document.querySelectorAll('[data-testid=photo-tile]')]; return t.length >= n && t.every((e) => e.dataset.status !== 'pending') }, n, { timeout: 400_000 })
   const waitIdle = () => p8.waitForFunction(() => !document.querySelector('[data-testid=job-label]') || /Done|Cancelled/.test(document.querySelector('[data-testid=job-label]').textContent), null, { timeout: 400_000 })
   try {
@@ -1425,8 +1435,7 @@ await test('Large Dropbox imports (1.0.27): "Check your detection list first" on
     await p8.getByTestId('dropbox-browser-close').click()
 
     // 4) Don't-show-again persists across reload: empty library again, Add all remaining starts straight away; reload mid-run → resume banner
-    await removeAll()
-    await p8.reload(); await p8.getByTestId('empty').waitFor()
+    await forgetAll()
     await settings('dropbox')
     ok(!(await p8.getByTestId('set-ask-first-import').isChecked()), 'setting off after reload')
     await p8.getByTestId('settings-close').click()
@@ -1452,7 +1461,7 @@ await test('Large Dropbox imports (1.0.27): "Check your detection list first" on
     await p8.getByTestId('add-dropbox-refresh').click()
     await p8.locator('.toast', { hasText: /No new photos/ }).waitFor({ timeout: 30_000 })
     eq(await dlg.count(), 0, 'not shown when the library has photos')
-    await removeAll()
+    await forgetAll()
     const dl1 = archDl().length
     await p8.getByTestId('add-dropbox-refresh').click()
     await dlg.waitFor()
@@ -1586,8 +1595,8 @@ await test('Dropbox files moved or deleted (1.0.28): startup reads tags for the 
     await notice.waitFor({ state: 'detached' })
     await t9('old-17.jpg').waitFor({ state: 'detached' })
     eq(await p9.getByTestId('photo-tile').count(), 24, '24 photos left')
-    for (let i = 0; i < 100 && st.meta.has('/.photo-tagger/meta/old17.json'); i++) await p9.waitForTimeout(100) // removal queue (1.0.29) runs in the background
-    ok(!st.meta.has('/.photo-tagger/meta/old17.json'), "the app's own tag file for it is removed")
+    await p9.waitForTimeout(800)
+    ok(st.meta.has('/.photo-tagger/meta/old17.json'), "1.0.34: the app's tag file is kept (Remove from app only leaves the app)")
     eq(st.writes, 0, 'nothing outside /.photo-tagger was written or deleted')
     ok(!toasts.some((t) => /Could not save|Will retry|Could not read/i.test(t)), 'still no error toast: ' + toasts.join(' | '))
     eq(errs9, [], 'no page errors')
@@ -1597,7 +1606,7 @@ await test('Dropbox files moved or deleted (1.0.28): startup reads tags for the 
   }
 })
 
-await test('Remove from app (1.0.29): 200 of 210 removed through a paced, retrying, persisted queue; nothing comes back after reload; re-add on purpose works', async () => {
+await test('Remove from app (1.0.34): 200 of 210 leave the app at once; Dropbox tags, tag files and a just-made edit are kept; nothing comes back after reload; re-add on purpose restores tags', async () => {
   const pics = ['beach.jpg', 'cat.jpg', 'city.jpg', 'pizza.jpg', 'mountain.jpg']
   const names = [...Array.from({ length: 200 }, (_, i) => `r${String(i + 1).padStart(3, '0')}.jpg`), ...Array.from({ length: 10 }, (_, i) => `k${String(i + 1).padStart(2, '0')}.jpg`)]
   const fid = (n) => 'id:many-' + n.replace('.jpg', '')
@@ -1624,79 +1633,231 @@ await test('Remove from app (1.0.29): 200 of 210 removed through a paced, retryi
     await connectDropbox(p10, 'remove_key')
     await p10.waitForFunction(() => /^210 photos/.test(document.querySelector('[data-testid=count]')?.textContent || ''), null, { timeout: 60_000 })
     await p10.waitForFunction(() => !document.querySelector('[data-testid=save-progress]'), null, { timeout: 60_000 })
-    // a tag edit still waiting to be saved for a photo that is then removed must not recreate its sidecar
+    // a tag edit made right before removing (still queued, Dropbox slow) must still be saved
     await p10.getByTestId('search').fill('remove_me')
     await p10.waitForFunction(() => /^200 of 210/.test(document.querySelector('[data-testid=count]')?.textContent || ''))
     const late = await p10.getByTestId('photo-tile').first().getAttribute('data-name')
+    st.inject.push({ ep: '/2/files/tags/add', status: 429, retryAfter: 1, times: 2 })
     await p10.getByTestId('photo-tile').first().click()
     await p10.getByTestId('detail-tag-input').fill('late_edit'); await p10.getByTestId('detail-tag-input').press('Enter')
     await p10.locator('[data-testid=detail-tag][data-tag="late_edit"]').waitFor()
     await p10.keyboard.press('Escape')
-    // Dropbox pushes back while removing: rate limits, write contention, outages
-    st.inject.push(
-      { ep: '/2/files/tags/remove', status: 429, retryAfter: 1, times: 3 },
-      { ep: '/2/files/delete_v2', status: 409, summary: 'too_many_write_operations/', times: 6 },
-      { ep: '/2/files/delete_v2', status: 503, summary: 'internal_error', times: 6 },
-      { ep: '/2/files/delete_v2', network: true, times: 3 },
-    )
-    st.deleteDelay = 40
     await p10.getByTestId('select-mode').click(); await p10.getByTestId('sel-all').click()
     await p10.getByTestId('sel-delete').click()
+    ok(/tags stay on the Dropbox files/.test(await p10.getByTestId('remove-confirm').innerText()), 'dialog says tags stay')
     await p10.getByTestId('remove-confirm-btn').click()
     await p10.waitForFunction(() => /^0 of 10/.test(document.querySelector('[data-testid=count]')?.textContent || ''), null, { timeout: 10_000 })
-    const prog = p10.getByTestId('remove-progress')
-    await prog.waitFor({ timeout: 10_000 })
-    ok(/^Removing from app: \d+ of 200/.test((await prog.innerText()).trim()), 'progress text: ' + await prog.innerText())
-    await p10.waitForFunction(() => { const m = /Removing from app: (\d+) of 200/.exec(document.querySelector('[data-testid=remove-progress]')?.textContent || ''); return m && +m[1] >= 15 }, null, { timeout: 120_000 })
-    // close the app mid-removal
-    const leftAtReload = sidecars().filter((k) => /many-r/.test(k)).length
-    ok(leftAtReload > 0, 'reloaded while removal was still running: ' + leftAtReload)
-    await p10.reload()
-    await p10.waitForFunction(() => /^10 photos/.test(document.querySelector('[data-testid=count]')?.textContent || ''), null, { timeout: 60_000 })
-    eq(await count(), '10 photos', 'removed photos not loaded again while their sidecars are still being deleted')
-    await p10.waitForFunction(() => !document.querySelector('[data-testid=remove-progress]'), null, { timeout: 300_000 })
-    eq(sidecars().filter((k) => /many-r/.test(k)), [], 'every removed sidecar deleted in the end')
-    eq(sidecars().filter((k) => /many-k/.test(k)).length, 10, 'kept photos untouched')
-    ok(st.injected >= 10, 'injected failures were hit: ' + st.injected)
-    eq(await p10.getByTestId('save-failed-count').count(), 0, 'no removal ended on the failure list')
-    for (const n of names.slice(0, 200)) ok(!st.fileTags.get(fid(n)).has('remove_me') && !st.fileTags.get(fid(n)).has('shared'), `Photo Tagger's tags taken back from ${n}`)
-    for (const n of names.slice(200)) ok(st.fileTags.get(fid(n)).has('keep_me') && st.fileTags.get(fid(n)).has('shared'), `kept photo ${n} keeps its tags`)
-    ok(!st.fileTags.get(fid(late)).has('late_edit'), 'pending edit was not written after removal')
+    // the queued edit still lands in Dropbox (tag + tag file)
+    for (let i = 0; i < 150 && !st.fileTags.get(fid(late)).has('late_edit'); i++) await p10.waitForTimeout(200)
+    ok(st.fileTags.get(fid(late)).has('late_edit'), 'edit made just before removing was saved to Dropbox')
+    await p10.evaluate(() => window.__ptFlushDropbox())
+    for (let i = 0; i < 50 && !/late_edit/.test(st.meta.get(metaKey(late)) || ''); i++) await p10.waitForTimeout(200)
+    ok(/late_edit/.test(st.meta.get(metaKey(late))), 'and in its tag file')
+    eq(sidecars().filter((k) => /many-/.test(k)).length, 210, 'every tag file kept')
+    for (const n of names) ok(st.fileTags.get(fid(n)).has(n.startsWith('k') ? 'keep_me' : 'remove_me') && st.fileTags.get(fid(n)).has('shared') && st.fileTags.get(fid(n)).has('theirs'), `Dropbox tags kept on ${n}`)
+    ok((st.tagRemoves ?? []).length === 0, 'no Dropbox tag removed: ' + JSON.stringify((st.tagRemoves ?? []).slice(0, 3)))
+    await p10.waitForFunction(() => !document.querySelector('[data-testid=save-progress]'), null, { timeout: 60_000 })
+    for (let i = 0; i < 50 && !st.meta.has('/.photo-tagger/removed.json'); i++) await p10.waitForTimeout(200)
     const removedJson = JSON.parse(st.meta.get('/.photo-tagger/removed.json'))
-    eq(removedJson.removed.length, 200, 'removed ids kept in Dropbox: ' + st.meta.get('/.photo-tagger/removed.json').slice(0, 300))
-    eq(await p10.evaluate(() => localStorage.getItem('pt.dropboxRemovals.v1')), null, 'nothing left pending on this device')
+    eq(removedJson.removed.length, 200, 'removed ids (with file ids) kept in Dropbox')
+    ok(removedJson.removed.every((e) => /^id:many-r/.test(e.file)), 'file ids recorded')
     eq(st.writes, 0, 'no photo was written or deleted in Dropbox')
     // a fresh start: still 10
     await p10.reload()
     await p10.waitForFunction(() => /photos/.test(document.querySelector('[data-testid=count]')?.textContent || ''), null, { timeout: 60_000 })
     await p10.waitForTimeout(1500)
     eq(await count(), '10 photos', 'library after reload has 10')
-    // a leftover sidecar of a removed id (e.g. another device wrote it late) is skipped and cleaned up
-    const ghost = names[5]; const ghostSide = JSON.parse(JSON.stringify({ app: 'photo-tagger', version: 1, file: { id: fid(ghost) }, photo: { id: 'p-' + ghost, name: ghost, tags: [], rejected: [], dropbox: { id: fid(ghost), path: `/Many/${ghost}` }, dropboxTags: [], quality: {}, status: 'ready' }, faces: [] }))
-    st.meta.set(metaKey(ghost), JSON.stringify(ghostSide))
-    await p10.reload()
-    await p10.waitForFunction(() => /photos/.test(document.querySelector('[data-testid=count]')?.textContent || ''), null, { timeout: 60_000 })
-    await p10.waitForFunction((k) => true, null)
-    for (let i = 0; i < 100 && st.meta.has(metaKey(ghost)); i++) await p10.waitForTimeout(200)
-    eq([await count(), st.meta.has(metaKey(ghost))], ['10 photos', false], 'tombstoned leftover sidecar skipped and deleted')
-    // deliberately add a removed file again from Dropbox: it comes back and stays
+    // folder progress: removed ones are counted apart, not as remaining; Add all remaining isn't offered
     await p10.getByTestId('add-btn').click()
     await p10.locator('[data-testid=dropbox-folder][data-name="Many"]').click()
+    await p10.waitForFunction(() => document.querySelector('[data-testid=folder-progress][data-removed]')?.getAttribute('data-removed') === '200', null, { timeout: 30_000 })
+    ok(/200 removed from app/.test(await p10.locator('[data-testid=folder-progress][data-removed="200"]').first().innerText()), 'progress mentions removed')
+    eq(await p10.getByTestId('dropbox-add-batch').getByTestId('folder-add-remaining').count(), 0, 'nothing remaining to add')
+    // pick list: removed photos sit in their own collapsed group; tick one to add it back
+    await p10.getByTestId('dropbox-removed-toggle').waitFor()
+    eq(await p10.getByTestId('dropbox-removed-toggle').getAttribute('data-count'), '200', 'Removed from app (200)')
+    eq(await p10.getByTestId('dropbox-group-new').getAttribute('data-count'), '0', 'nothing in Not in library yet')
+    await p10.getByTestId('dropbox-removed-toggle').click()
     const row = p10.locator(`[data-testid=dropbox-file][data-name="${late}"]`)
     await row.waitFor({ timeout: 30_000 })
+    await row.scrollIntoViewIfNeeded()
+    eq(await row.getAttribute('data-removed'), '1', 'marked removed')
     await row.click()
     await p10.getByTestId('dropbox-add-selected').click()
-    await p10.locator(`[data-testid=photo-tile][data-name="${late}"]`).waitFor({ timeout: 300_000 })
+    await p10.locator(`[data-testid=photo-tile][data-name="${late}"]`).waitFor({ timeout: 120_000 })
     await p10.waitForFunction(() => /^11 photos/.test(document.querySelector('[data-testid=count]')?.textContent || ''), null, { timeout: 60_000 })
-    await p10.waitForFunction((n) => document.querySelector(`[data-testid=photo-tile][data-name="${n}"]`)?.dataset.status !== 'pending', late, { timeout: 300_000 })
+    const back = ((await p10.locator(`[data-testid=photo-tile][data-name="${late}"]`).getAttribute('data-tags')) ?? '').split('|')
+    ok(['remove_me', 'shared', 'late_edit', 'theirs'].every((t) => back.includes(t)), 're-added photo has its saved tags + Dropbox tags back: ' + back)
+    eq(await p10.locator(`[data-testid=photo-tile][data-name="${late}"]`).getAttribute('data-status'), 'ready', 'restored, not re-tagged')
     await p10.evaluate(() => window.__ptFlushDropbox())
-    ok(st.meta.has(metaKey(late)), 're-added photo has its sidecar again')
+    ok(st.meta.has(metaKey(late)), 're-added photo has its sidecar')
     await p10.reload()
     await p10.waitForFunction(() => /^11 photos/.test(document.querySelector('[data-testid=count]')?.textContent || ''), null, { timeout: 60_000 })
     eq(errs10, [], 'no page errors')
   } finally {
     await c10.close()
     delete DBX_TREE['/many']; DBX_TREE[''].splice(DBX_TREE[''].findIndex((e) => e.name === 'Many'), 1)
+  }
+})
+
+await test('Dropbox tags are kept (1.0.34): tags already on files are imported and never removed unless you delete them; re-tag, Remove from app and automatic tags off keep them', async () => {
+  const files = [['o1.jpg', 'beach.jpg', ['family_trip', 'summer_2019']], ['o2.jpg', 'dog.jpg', ['dog', 'rex']], ['o3.jpg', 'cat.jpg', []], ['o4.jpg', 'city.jpg', ['old_city']]]
+  const fid = (n) => 'id:orig-' + n.replace('.jpg', '')
+  DBX_TREE['/orig'] = files.map(([n, smp]) => { SAMPLE_BY_ID[fid(n)] = smp; return dbxFile(fid(n), n, '/Orig') })
+  DBX_TREE[''].push(dbxDir('Orig', ''))
+  const c = await browser.newContext({ viewport: { width: 1280, height: 900 } })
+  await routeModel(c).catch(() => {})
+  const st = await stubDropbox(c)
+  for (const [n, , tags] of files) st.fileTags.set(fid(n), new Set(tags))
+  const pg = await c.newPage()
+  const errs = []; pg.on('pageerror', (e) => errs.push(e.message))
+  const tile = (n) => pg.locator(`[data-testid=photo-tile][data-name="${n}"]`)
+  const tagsOf = async (n) => ((await tile(n).getAttribute('data-tags')) ?? '').split('|').filter(Boolean)
+  const onFile = (n) => [...(st.fileTags.get(fid(n)) ?? [])]
+  const ready = (n) => pg.waitForFunction((n) => document.querySelector(`[data-testid=photo-tile][data-name="${n}"]`)?.dataset.status === 'ready', n, { timeout: 300_000 })
+  const flush = async () => { await pg.evaluate(() => window.__ptFlushDropbox()); await pg.waitForFunction(() => !document.querySelector('[data-testid=save-progress]'), null, { timeout: 60_000 }) }
+  const pick = async (names, removed = false) => {
+    await pg.getByTestId('add-btn').click()
+    await pg.locator('[data-testid=dropbox-folder][data-name="Orig"]').click()
+    if (removed) { await pg.getByTestId('dropbox-removed-toggle').click() }
+    for (const n of names) await pg.locator(`[data-testid=dropbox-file][data-name="${n}"]`).click({ modifiers: ['Control'] })
+    await pg.getByTestId('dropbox-add-selected').click()
+  }
+  const removedOnce = (n, t) => (st.tagRemoves ?? []).filter((r) => r.tag_text === t && r.path.toLowerCase() === `/orig/${n}`).length
+  try {
+    await pg.goto(URL_BASE); await pg.getByTestId('empty').waitFor()
+    // Settings → Tags with an empty library
+    await pg.getByTestId('open-settings').click(); await pg.getByTestId('tab-vocab').click()
+    eq(await pg.getByTestId('library-tags-empty').innerText(), 'No tags on your photos yet.', 'empty state without search')
+    await pg.getByTestId('library-tags-search').fill('zzz')
+    eq(await pg.getByTestId('library-tags-empty').innerText(), 'No tags match.', 'empty state with a search')
+    await pg.getByTestId('settings-close').click()
+    await connectDropbox(pg, 'orig_key')
+    await pick(['o1.jpg', 'o2.jpg', 'o3.jpg'])
+    await pg.getByTestId('preimport-check').waitFor(); await pg.getByTestId('preimport-proceed').click()
+    for (const n of ['o1.jpg', 'o2.jpg', 'o3.jpg']) { await waitTile(n, pg); await ready(n) }
+    await flush()
+    for (const [n, , tags] of files.slice(0, 3)) {
+      for (const t of tags) ok(onFile(n).includes(t), `${n}: Dropbox tag ${t} kept on the file`)
+      await pg.waitForFunction(([n, tags]) => { const v = (document.querySelector(`[data-testid=photo-tile][data-name="${n}"]`)?.dataset.tags || '').split('|'); return tags.every((t) => v.includes(t)) }, [n, tags], { timeout: 30_000 })
+    }
+    ok((await tagsOf('o3.jpg')).length > 0 && onFile('o3.jpg').length > 0, 'automatic tags still added and saved (on)')
+    // your own edits: add → written; delete a Dropbox tag → removed from Dropbox (only that one)
+    await tile('o1.jpg').click()
+    await pg.getByTestId('detail-tag-input').fill('my_tag'); await pg.getByTestId('detail-tag-input').press('Enter')
+    await pg.locator('[data-testid=detail-tag][data-tag="my_tag"]').waitFor()
+    await pg.locator('[data-testid=detail-tag][data-tag="summer_2019"] [data-testid=remove-tag]').click()
+    await pg.locator('[data-testid=detail-tag][data-tag="summer_2019"]').waitFor({ state: 'detached' })
+    await flush()
+    ok(onFile('o1.jpg').includes('my_tag') && onFile('o1.jpg').includes('family_trip') && !onFile('o1.jpg').includes('summer_2019'), 'added written, deleted removed, other kept: ' + onFile('o1.jpg'))
+    eq(removedOnce('o1.jpg', 'summer_2019'), 1, 'the deleted tag was removed once')
+    // stays deleted after reading tags again
+    await pg.keyboard.press('Escape')
+    // Re-run tagging on o2 never removes its Dropbox tags
+    await tile('o2.jpg').click()
+    await pg.getByRole('button', { name: 'Re-run tagging' }).click()
+    await pg.waitForTimeout(1500); await ready('o2.jpg'); await flush()
+    ok(onFile('o2.jpg').includes('dog') && onFile('o2.jpg').includes('rex'), 'Dropbox tags kept after re-tagging: ' + onFile('o2.jpg'))
+    await pg.keyboard.press('Escape')
+    // Remove from app keeps everything in Dropbox
+    await tile('o1.jpg').click()
+    await pg.getByTestId('delete-photo').click(); await pg.getByTestId('remove-confirm-btn').click()
+    await tile('o1.jpg').waitFor({ state: 'detached' })
+    await pg.keyboard.press('Escape').catch(() => {})
+    await flush(); await pg.waitForTimeout(500)
+    ok(['family_trip', 'my_tag'].every((t) => onFile('o1.jpg').includes(t)), 'Remove from app kept Dropbox tags: ' + onFile('o1.jpg'))
+    ok(st.meta.has('/.photo-tagger/meta/orig-o1.json'), 'tag file kept')
+    // automatic tags off: a new photo keeps (and shows) only its Dropbox tags
+    await pg.getByTestId('open-settings').click(); await pg.getByTestId('tab-vocab').click()
+    await pg.getByTestId('autotags-off').click(); await pg.getByTestId('autotags-off-note').waitFor()
+    await pg.getByTestId('settings-close').click()
+    await pick(['o4.jpg'])
+    await waitTile('o4.jpg', pg); await ready('o4.jpg'); await flush()
+    await pg.waitForFunction(() => (document.querySelector('[data-testid=photo-tile][data-name="o4.jpg"]')?.dataset.tags || '') === 'old_city', null, { timeout: 30_000 })
+    eq(onFile('o4.jpg'), ['old_city'], 'file untouched')
+    // never removed: tags that were already there
+    for (const [n, t] of [['o1.jpg', 'family_trip'], ['o2.jpg', 'dog'], ['o2.jpg', 'rex'], ['o4.jpg', 'old_city']]) eq(removedOnce(n, t), 0, `${t} on ${n} never removed`)
+    // reload, then add o1 back on purpose: tags restored from its tag file + Dropbox
+    await pg.reload(); await waitTile('o4.jpg', pg)
+    eq(await tile('o1.jpg').count(), 0, 'removed stays removed after reload')
+    await pick(['o1.jpg'], true)
+    await waitTile('o1.jpg', pg)
+    await pg.waitForFunction(() => { const v = (document.querySelector('[data-testid=photo-tile][data-name="o1.jpg"]')?.dataset.tags || '').split('|'); return v.includes('family_trip') && v.includes('my_tag') }, null, { timeout: 30_000 })
+    ok(!(await tagsOf('o1.jpg')).includes('summer_2019'), 'deleted tag stays deleted')
+    eq(errs, [], 'no page errors')
+  } finally {
+    await c.close()
+    delete DBX_TREE['/orig']; DBX_TREE[''].splice(DBX_TREE[''].findIndex((e) => e.name === 'Orig'), 1)
+  }
+})
+
+await test('Batches after Remove from app (1.0.34): tag batch 1, remove it at once (saves still queued), Add next batch loads batch 2 — not batch 1; counts exclude removed', async () => {
+  const names = Array.from({ length: 6 }, (_, i) => `b${i + 1}.png`)
+  const fid = (n) => 'id:bat-' + n.replace('.png', '')
+  DBX_TREE['/batch'] = names.map((n, i) => { SAMPLE_BY_ID[fid(n)] = noisePng(9100 + i); return dbxFile(fid(n), n, '/Batch') })
+  DBX_TREE[''].push(dbxDir('Batch', ''))
+  const c = await browser.newContext({ viewport: { width: 1280, height: 900 } })
+  await routeModel(c).catch(() => {})
+  const st = await stubDropbox(c)
+  const pg = await c.newPage()
+  const errs = []; pg.on('pageerror', (e) => errs.push(e.message))
+  const tile = (n) => pg.locator(`[data-testid=photo-tile][data-name="${n}"]`)
+  const openBatch = async () => {
+    await pg.getByTestId('add-btn').click()
+    await pg.locator('[data-testid=dropbox-folder][data-name="Batch"]').click()
+    await pg.getByTestId('dropbox-here-progress').getByTestId('folder-progress').waitFor()
+  }
+  try {
+    await pg.goto(URL_BASE); await pg.getByTestId('empty').waitFor()
+    await connectDropbox(pg, 'batch_key')
+    await openBatch()
+    await pg.getByTestId('add-count-select').selectOption('custom')
+    await pg.getByTestId('add-count-custom').fill('3')
+    await pg.getByTestId('dropbox-add-batch').getByTestId('folder-next-batch').click()
+    if (await pg.getByTestId('preimport-check').count() || await pg.getByTestId('preimport-check').waitFor({ timeout: 3000 }).then(() => true).catch(() => false)) await pg.getByTestId('preimport-proceed').click()
+    for (const n of names.slice(0, 3)) await waitTile(n, pg)
+    await pg.waitForFunction(() => [...document.querySelectorAll('[data-testid=photo-tile]')].every((t) => t.dataset.status === 'ready'), null, { timeout: 300_000 })
+    await pg.waitForFunction(() => !document.querySelector('[data-testid=job-label]') || /Done/.test(document.querySelector('[data-testid=job-label]')?.textContent || ''), null, { timeout: 300_000 }).catch(() => {})
+    // your tag on all of batch 1, and Dropbox is slow right now — remove them immediately
+    st.inject.push({ ep: '/2/files/tags/add', status: 429, retryAfter: 1, times: 3 })
+    await pg.getByTestId('select-mode').click(); await pg.getByTestId('sel-all').click()
+    await pg.getByTestId('bulk-tag').click()
+    await pg.getByTestId('bulk-input').fill('batch_one'); await pg.getByTestId('bulk-input').press('Enter')
+    await pg.waitForFunction(() => [...document.querySelectorAll('[data-testid=photo-tile]')].every((t) => (t.dataset.tags || '').split('|').includes('batch_one')), null, { timeout: 10_000 })
+    await pg.getByTestId('bulk-close').click()
+    if (!(await pg.getByTestId('sel-delete').count())) { await pg.getByTestId('select-mode').click(); await pg.getByTestId('sel-all').click() }
+    await pg.getByTestId('sel-delete').click(); await pg.getByTestId('remove-confirm-btn').click()
+    await pg.waitForFunction(() => !document.querySelector('[data-testid=photo-tile]'), null, { timeout: 10_000 })
+    // the queued tag saves still land
+    for (let i = 0; i < 150 && !names.slice(0, 3).every((n) => st.fileTags.get(fid(n))?.has('batch_one')); i++) await pg.waitForTimeout(200)
+    for (const n of names.slice(0, 3)) ok(st.fileTags.get(fid(n))?.has('batch_one'), `${n}: tag added before removing reached Dropbox`)
+    // Add next batch → batch 2
+    await openBatch()
+    await pg.waitForFunction(() => document.querySelector('[data-testid=dropbox-here-progress] [data-testid=folder-progress]')?.getAttribute('data-removed') === '3', null, { timeout: 30_000 })
+    ok(/0 of 6 in library · 3 removed from app/.test(await pg.getByTestId('dropbox-here-progress').getByTestId('folder-progress').innerText()), 'progress: ' + await pg.getByTestId('dropbox-here-progress').getByTestId('folder-progress').innerText())
+    ok(/Add next batch \(3\)/.test(await pg.getByTestId('dropbox-add-batch').innerText()), 'next batch is 3')
+    ok(/Add all remaining \(3\)/.test(await pg.getByTestId('dropbox-add-batch').innerText()), 'remaining excludes removed')
+    const dl0 = (st.dlOrder ?? []).length
+    await pg.getByTestId('dropbox-add-batch').getByTestId('folder-next-batch').click()
+    // the library is empty again, so the first-import check may ask once more
+    if (await pg.getByTestId('preimport-check').waitFor({ timeout: 3000 }).then(() => true).catch(() => false)) await pg.getByTestId('preimport-proceed').click()
+    for (const n of names.slice(3)) await waitTile(n, pg)
+    await pg.waitForTimeout(1500)
+    for (const n of names.slice(0, 3)) eq(await tile(n).count(), 0, `${n} (batch 1) not reloaded`)
+    eq([...new Set((st.dlOrder ?? []).slice(dl0))].sort(), names.slice(3).map(fid).sort(), 'only batch 2 downloaded')
+    await openBatch()
+    await pg.waitForFunction(() => /3 of 6 in library · 3 removed from app|All added · 3 removed from app/.test(document.querySelector('[data-testid=dropbox-here-progress] [data-testid=folder-progress]')?.textContent || ''), null, { timeout: 30_000 })
+    await pg.getByTestId('add-batch-none').waitFor()
+    // Refresh (linked folder) doesn't bring batch 1 back either
+    if (await pg.getByTestId('dropbox-refresh').count()) {
+      await pg.getByTestId('dropbox-refresh').click()
+      await pg.waitForTimeout(2500)
+      for (const n of names.slice(0, 3)) eq(await tile(n).count(), 0, `${n} not re-added by Refresh`)
+    } else await pg.getByTestId('dropbox-browser-close').click()
+    eq(errs, [], 'no page errors')
+  } finally {
+    await c.close()
+    delete DBX_TREE['/batch']; DBX_TREE[''].splice(DBX_TREE[''].findIndex((e) => e.name === 'Batch'), 1)
   }
 })
 
@@ -2272,6 +2433,8 @@ await test('Automatic tags OFF by default for new setups (1.0.33); first-import 
     await openTags()
     await pg.getByTestId('autotags-off-note').waitFor()
     eq(await checkedCount(), 0, 'every automatic tag off on a fresh setup')
+    eq(await pg.getByTestId('library-tags-empty').innerText().then((t) => t.startsWith('No tags on your photos yet.')), true, 'empty state')
+    await pg.getByTestId('library-tags-autooff').waitFor()
     eq([await pg.getByTestId('autotags-restore').count(), await pg.getByTestId('autotags-on').count()], [0, 1], 'only Turn all on (no previous state to restore)')
     const s = await savedSettings()
     eq([s.disabledMetaTags.length, s.disabledLabels.length > 20, s.autoTagsBackup], [6, true, undefined], 'fresh default saved')

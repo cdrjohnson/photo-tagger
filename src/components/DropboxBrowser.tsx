@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { dropboxFileDate, isDropboxVideo, orderDropboxFiles, type DropboxAddOrder, type DropboxEntry, type DropboxFile } from '../dropbox'
 import { skippedFiles, useLibrary, type FolderProgress } from '../store'
+import * as Remote from '../remote'
 
 /** rows taller lists switch to windowed rendering (only what's on screen is in the DOM) */
 const VIRTUAL_AFTER = 300
@@ -24,6 +25,7 @@ export function DropboxBrowser({ onClose }: { onClose: () => void }) {
   const setAddCount = (n: number, custom: boolean) => { void lib.saveSettings({ dropboxAddCount: n, dropboxAddCountCustom: custom }) }
   /** "Already in library" group in Pick specific photos — collapsed by default */
   const [showHave, setShowHave] = useState(false)
+  const [showRemoved, setShowRemoved] = useState(false)
   const anchor = useRef<number | null>(null)
   const selectAllRef = useRef<() => void>(() => {})
   const listRef = useRef<HTMLDivElement>(null)
@@ -40,7 +42,7 @@ export function DropboxBrowser({ onClose }: { onClose: () => void }) {
 
   useEffect(() => {
     let off = false
-    setEntries(null); setError(''); setPicked(new Set()); setShowHave(false); anchor.current = null
+    setEntries(null); setError(''); setPicked(new Set()); setShowHave(false); setShowRemoved(false); anchor.current = null
     if (listRef.current) listRef.current.scrollTop = 0
     lib.listDropbox(path).then((e) => { if (!off) setEntries(e) }).catch((e: any) => { if (!off) setError(e?.message || 'Could not list this folder') })
     return () => { off = true }
@@ -62,9 +64,14 @@ export function DropboxBrowser({ onClose }: { onClose: () => void }) {
   // the list follows the Order setting, so what you see is what Add next batch takes (folders stay on top)
   const images = useMemo(() => orderDropboxFiles((entries?.filter((e) => e.kind === 'file') ?? []) as DropboxFile[], order), [entries, order])
   const here = useFolderProgress(path, recursive, !!path)
-  const freshFiles = useMemo(() => images.filter((e) => !inLibrary.has(e.id)), [images, inLibrary])
+  // 1.0.34: removed from the app — kept out of "Not in library yet" (and out of every batch add); tick one to add it back
+  const removedFiles = useMemo(() => images.filter((e) => !inLibrary.has(e.id) && Remote.isRemovedFile(e.id)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [images, inLibrary, lib.photos])
+  const removedSet = useMemo(() => new Set(removedFiles.map((f) => f.id)), [removedFiles])
+  const freshFiles = useMemo(() => images.filter((e) => !inLibrary.has(e.id) && !removedSet.has(e.id)), [images, inLibrary, removedSet])
   const fresh = freshFiles.length
-  const chosen = freshFiles.filter((f) => picked.has(f.id))
+  const chosen = [...freshFiles, ...removedFiles].filter((f) => picked.has(f.id))
   const chosenDirs = folders.filter((f) => picked.has('dir:' + f.path)).map((f) => f.path)
   const nPicked = chosen.length + chosenDirs.length
   const selectAll = () => setPicked(new Set([...freshFiles.map((f) => f.id), ...folders.map((f) => 'dir:' + f.path)]))
@@ -104,15 +111,16 @@ export function DropboxBrowser({ onClose }: { onClose: () => void }) {
 
   // 1.0.32: two groups — photos still to add first, then a collapsed "Already in library" group; each keeps the Order sort
   const haveFiles = useMemo(() => images.filter((e) => inLibrary.has(e.id)), [images, inLibrary])
-  type Item = { k: 'head-new' } | { k: 'head-have' } | { k: 'file'; f: DropboxFile; i: number }
+  type Item = { k: 'head-new' } | { k: 'head-have' } | { k: 'head-removed' } | { k: 'file'; f: DropboxFile; i: number }
   const items = useMemo(() => {
     const a: Item[] = []
     if (!images.length) return a
     a.push({ k: 'head-new' })
     freshFiles.forEach((f, i) => a.push({ k: 'file', f, i }))
+    if (removedFiles.length) { a.push({ k: 'head-removed' }); if (showRemoved) removedFiles.forEach((f) => a.push({ k: 'file', f, i: -2 })) }
     if (haveFiles.length) { a.push({ k: 'head-have' }); if (showHave) haveFiles.forEach((f) => a.push({ k: 'file', f, i: -1 })) }
     return a
-  }, [images.length, freshFiles, haveFiles, showHave])
+  }, [images.length, freshFiles, removedFiles, showRemoved, haveFiles, showHave])
   const offs = useMemo(() => { const o = [0]; for (const it of items) o.push(o[o.length - 1] + (it.k === 'file' ? ROW_H : HEAD_H)); return o }, [items])
   // windowed list for big folders (2,000+ items stay smooth)
   const virtual = items.length > VIRTUAL_AFTER
@@ -137,6 +145,12 @@ export function DropboxBrowser({ onClose }: { onClose: () => void }) {
         {!freshFiles.length && <small className="muted">— everything here is already added</small>}
       </div>
     )
+    if (it.k === 'head-removed') return (
+      <button key="head-removed" type="button" className="dbx-group-h have" data-testid="dropbox-removed-toggle" data-count={removedFiles.length} aria-expanded={showRemoved} onClick={() => setShowRemoved((v) => !v)}>
+        <span aria-hidden="true">{showRemoved ? '▾' : '▸'}</span><span>Removed from app ({fmtN(removedFiles.length)})</span>
+        <small className="muted">{showRemoved ? 'hide' : 'show — tick one to add it back'}</small>
+      </button>
+    )
     if (it.k === 'head-have') return (
       <button key="head-have" type="button" className="dbx-group-h have" data-testid="dropbox-have-toggle" data-count={haveFiles.length} aria-expanded={showHave} onClick={() => setShowHave((v) => !v)}>
         <span aria-hidden="true">{showHave ? '▾' : '▸'}</span><span>Already in library ({fmtN(haveFiles.length)})</span>
@@ -155,9 +169,17 @@ export function DropboxBrowser({ onClose }: { onClose: () => void }) {
         <span className="dbx-file-name" title={file.name}>{isDropboxVideo(file.name) ? '🎬 ' : ''}{file.name}</span>
         <small className="muted dbx-file-meta" data-testid="dropbox-file-meta">{[fmtDate(file), fmtBytes(file.size)].filter(Boolean).join(' · ')}</small>
         {have && <small className="dbx-have" data-testid="dropbox-in-library">✓ In library</small>}
-        {!have && skipped[file.id] && <small className="muted" data-testid="dropbox-skipped">Skipped before ({skipped[file.id]})</small>}
+        {!have && i === -2 && <small className="muted" data-testid="dropbox-removed">Removed from app — tick to add it back with its saved tags</small>}
+        {!have && i !== -2 && skipped[file.id] && <small className="muted" data-testid="dropbox-skipped">Skipped before ({skipped[file.id]})</small>}
       </span>
     </>)
+    if (!have && i === -2) return (
+      <div key={file.id} className={`dbx-row file pickable removed ${on ? 'on' : ''}`} data-testid="dropbox-file" data-name={file.name} data-picked={on ? '1' : '0'} data-removed="1"
+        role="option" aria-selected={on} tabIndex={0}
+        onPointerDown={(e) => { if (e.button !== 0) return; e.preventDefault(); (e.currentTarget as HTMLElement).focus(); setPicked((s) => { const n = new Set(s); if (n.has(file.id)) n.delete(file.id); else n.add(file.id); return n }) }}
+        onKeyDown={(e) => { if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); setPicked((s) => { const n = new Set(s); if (n.has(file.id)) n.delete(file.id); else n.add(file.id); return n }) } }}>
+        {body}</div>
+    )
     return have ? (
       <div key={file.id} className="dbx-row file have" data-testid="dropbox-file" data-name={file.name} aria-disabled="true">{body}</div>
     ) : (
@@ -407,8 +429,8 @@ async function slot<T>(fn: () => Promise<T>): Promise<T> {
 export function progressText(p: FolderProgress) {
   const scope = p.recursive ? 'incl. subfolders' : 'this folder only'
   if (!p.total) return `No photos or videos (${scope})`
-  const skip = p.skipped ? ` · ${fmtN(p.skipped)} skipped` : ''
-  return p.remaining <= 0 ? `All in library${skip} (${scope})` : `${fmtN(p.inLibrary)} of ${fmtN(p.total)} in library${skip} (${scope})`
+  const skip = (p.skipped ? ` · ${fmtN(p.skipped)} skipped` : '') + (p.removed ? ` · ${fmtN(p.removed)} removed from app` : '')
+  return p.remaining <= 0 ? `${p.removed ? 'All added' : 'All in library'}${skip} (${scope})` : `${fmtN(p.inLibrary)} of ${fmtN(p.total)} in library${skip} (${scope})`
 }
 const clampBatch = (n?: number) => Math.max(10, Math.min(500, Math.round(n || 100)))
 type Prog = { p: FolderProgress | null; err: string }
@@ -432,7 +454,7 @@ function useFolderProgress(path: string, recursive: boolean, enabled = true): Pr
 function ProgressLine({ p, err }: Prog) {
   if (err) return <small className="muted dbx-progress" data-testid="folder-progress">Couldn't count: {err}</small>
   if (!p) return <small className="muted dbx-progress" data-testid="folder-progress" data-loading="1">Counting…</small>
-  return <small className={`dbx-progress ${p.remaining <= 0 && p.total ? 'all' : ''}`} data-testid="folder-progress" data-in={p.inLibrary} data-total={p.total} data-skipped={p.skipped}>{progressText(p)}</small>
+  return <small className={`dbx-progress ${p.remaining <= 0 && p.total ? 'all' : ''}`} data-testid="folder-progress" data-in={p.inLibrary} data-total={p.total} data-skipped={p.skipped} data-removed={p.removed}>{progressText(p)}</small>
 }
 type Guard = (n: number, run: () => void) => void
 /** Add next batch (N) / Add all remaining (N) for one folder. `big` = the Add a batch section (primary + secondary). */
@@ -442,7 +464,7 @@ function AddButtons({ path, recursive, prog, busy, count, guard, onStart, big }:
   const orderName = { name: 'name order', oldest: 'oldest first', newest: 'newest first' }[lib.settings.dropboxAddOrder ?? 'name']
   const p = prog.p
   if (!p) return big ? <small className="muted">{prog.err ? `Couldn't count: ${prog.err}` : 'Counting…'}</small> : null
-  if (p.remaining <= 0) return big ? <small className="muted" data-testid="add-batch-none">{p.total ? 'Everything here is already in your library.' : 'No photos or videos here.'}</small> : null
+  if (p.remaining <= 0) return big ? <small className="muted" data-testid="add-batch-none">{p.total ? (p.removed ? 'Everything here is in your library or was removed from the app — tick a removed photo under Pick specific photos to add it back.' : 'Everything here is already in your library.') : 'No photos or videos here.'}</small> : null
   const next = Math.min(Math.max(1, count), p.remaining)
   return (
     <span className={big ? 'row wrap dbx-batch-btns' : 'dbx-row-btns'}>
