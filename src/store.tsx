@@ -10,6 +10,7 @@ import { buildZip, canPickFolder, clearSavedFolder, downloadBlob, ensurePermissi
 import { qualityFlags } from './imageUtils'
 import { completeWebRedirect, DropboxClient, ENV_DROPBOX_KEY, isDropboxMedia, orderDropboxFiles, type DropboxAddOrder, isDropboxVideo, setActiveDropbox, startDropboxAuth, type DropboxEntry, type DropboxFile, type DropboxSession } from './dropbox'
 import * as Remote from './remote'
+import { cleanTagMemory, emptyTagMemory, forgetTags as forgetInMemory, mergeTagMemory, rememberTags as rememberInMemory, rememberedTags, renameRememberedTag as renameInMemory, sameTagMemory, type TagMemory } from './tagMemory'
 import { fetchDropboxOriginal } from './dropbox'
 import { parseImport, toCSV, toJSON, download } from './exportImport'
 import { DEFAULT_SETTINGS, type CustomLabel, type DropboxRef, type Photo, type Settings, type Tag } from './types'
@@ -106,6 +107,14 @@ export interface Library {
   /** 1.0.32: switch every automatic tag at once ('off'), back to all on ('on') or to how it was before 'off' ('restore'). New photos only. */
   setAllAutoTags(mode: 'off' | 'on' | 'restore'): Promise<void>
   exportData(kind: 'json' | 'csv', ids?: string[]): void
+  /** 1.0.35: every tag ever used (also on photos removed from the app, People, your list), A–Z — what the Add a tag boxes offer */
+  knownTags: string[]
+  /** remember these tags; `explicit` (you added it yourself) also brings back a tag you removed from the list */
+  rememberTags(names: string[], explicit?: boolean): void
+  /** take tags off the remembered list (suggestions only — photos keep them) */
+  forgetTags(names: string[]): void
+  /** rename/merge a tag on the remembered list (photos are renamed separately) */
+  renameRememberedTag(from: string, to: string): void
   importTags(file: File): Promise<void>
   clearEverything(): Promise<void>
   toast(text: string, kind?: Toast['kind']): void
@@ -166,6 +175,8 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
   const [photos, setPhotos] = useState<Photo[]>([])
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS)
   const [custom, setCustom] = useState<CustomLabel[]>([])
+  const [tagMemory, setTagMemoryState] = useState<TagMemory>(emptyTagMemory)
+  const tagMemoryRef = useRef<TagMemory>(tagMemory)
   const [job, setJob] = useState<Job | null>(null)
   const [model, setModel] = useState<ModelInfo>({ state: 'idle', phase: 'vision', loaded: 0, total: 0, error: '' })
   const [toasts, setToasts] = useState<Toast[]>([])
@@ -233,12 +244,14 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
           return
         }
       }
-      const [ps, s, c, ce] = await Promise.all([
+      const [ps, s, c, ce, tm] = await Promise.all([
         DB.allPhotos(),
         DB.kvGet<Partial<Settings>>('settings'),
         DB.kvGet<CustomLabel[]>('custom'),
         DB.kvGet<Record<string, number[]>>('customEmb'),
+        DB.kvGet<TagMemory>('tagMemory').catch(() => undefined),
       ])
+      { const m = mergeTagMemory(cleanTagMemory(tm), tagMemoryRef.current); tagMemoryRef.current = m; setTagMemoryState(m) }
       if (!desktop) getSavedFolder().then((h) => { folderRef.current = h; setFolderName(h?.name ?? null) }).catch(() => {})
       const merged = await initialSettings(s, ps.length, c?.length ?? 0)
       if (desktop) merged.keepOriginals = true
@@ -271,6 +284,36 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
     if (!photosRef.current.find((x) => x.id === id)?.dropbox) return
     syncFromRemoteRef.current(await Remote.importNativeTags([id]))
   }, [])
+  // ---------- remembered tags (1.0.35) ----------
+  /** keep the list here, in local storage, and (Dropbox connected) in /.photo-tagger/tags.json */
+  const saveTagMemory = useCallback((m: TagMemory, toDropbox = true) => {
+    if (m === tagMemoryRef.current) return
+    tagMemoryRef.current = m; setTagMemoryState(m)
+    void DB.kvSet('tagMemory', m).catch(() => {})
+    if (toDropbox && dbxClientRef.current) Remote.setTagMemory(m)
+  }, [])
+  /** after loading Dropbox: take in other devices' list and send ours (only when Dropbox lacks something) */
+  const mergeRemoteTagMemory = () => {
+    const r = Remote.remoteTagMemory()
+    const m = mergeTagMemory(tagMemoryRef.current, r)
+    saveTagMemory(m, false)
+    if (!sameTagMemory(m, r)) Remote.setTagMemory(m)
+  }
+  const mergeRemoteTagMemoryRef = useRef(mergeRemoteTagMemory); mergeRemoteTagMemoryRef.current = mergeRemoteTagMemory
+  useEffect(() => Remote.onRemoteTagMemory((r) => saveTagMemory(mergeTagMemory(tagMemoryRef.current, r), false)), [saveTagMemory])
+  const rememberTags = useCallback((names: string[], explicit = false) => saveTagMemory(rememberInMemory(tagMemoryRef.current, names, explicit)), [saveTagMemory])
+  const forgetTags = useCallback((names: string[]) => saveTagMemory(forgetInMemory(tagMemoryRef.current, names)), [saveTagMemory])
+  const renameRememberedTag = useCallback((from: string, to: string) => saveTagMemory(renameInMemory(tagMemoryRef.current, from, to)), [saveTagMemory])
+  // every tag that shows up on a loaded photo (yours, detected, Dropbox, people, photo info) or in your detection list is remembered
+  useEffect(() => {
+    if (!ready) return
+    const names = new Set<string>()
+    for (const p of photos) for (const t of p.tags) names.add(t.name)
+    for (const c of custom) names.add(c.label)
+    rememberTags([...names])
+  }, [ready, photos, custom, rememberTags])
+  const knownTags = useMemo(() => rememberedTags(tagMemory), [tagMemory])
+
   const reloadPhotos = async () => {
     const ps = await DB.allPhotos()
     photosRef.current = ps; setPhotos(ps)
@@ -281,7 +324,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
       dbxClientRef.current = c
       setActiveDropbox(c)
       // Dropbox photos + their tags/faces are read from Dropbox (sidecars), never from local storage
-      void Remote.loadFromDropbox(c).then(reloadPhotos).then(Remote.notifyRemote).then(() => Remote.importNativeTags()).then(syncFromRemote).catch((e: any) => toast(`Could not load tags from Dropbox: ${e?.message || e}`, 'error'))
+      void Remote.loadFromDropbox(c).then(() => mergeRemoteTagMemoryRef.current()).then(reloadPhotos).then(Remote.notifyRemote).then(() => Remote.importNativeTags()).then(syncFromRemote).catch((e: any) => toast(`Could not load tags from Dropbox: ${e?.message || e}`, 'error'))
     } else {
       dbxClientRef.current = null
       setActiveDropbox(null)
@@ -642,12 +685,15 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
     try {
       const path = await DB.pickLibraryFolder()
       setLibraryPath(path)
-      const [ps, st, c, ce] = await Promise.all([
+      const [ps, st, c, ce, tm] = await Promise.all([
         DB.allPhotos(),
         DB.kvGet<Partial<Settings>>('settings'),
         DB.kvGet<CustomLabel[]>('custom'),
         DB.kvGet<Record<string, number[]>>('customEmb'),
+        DB.kvGet<TagMemory>('tagMemory').catch(() => undefined),
       ])
+      // 1.0.35: this library folder's remembered tags (merged with this session's; saved back on the next change)
+      { const m = mergeTagMemory(cleanTagMemory(tm), tagMemoryRef.current); tagMemoryRef.current = m; setTagMemoryState(m); void DB.kvSet('tagMemory', m).catch(() => {}) }
       const merged = { ...(await initialSettings(st, ps.length, c?.length ?? 0)), keepOriginals: true }
       settingsRef.current = merged; setSettings(merged)
       customRef.current = c ?? []; setCustom(c ?? [])
@@ -671,12 +717,15 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
     try {
       const path = await DB.useLibraryBesideApp()
       setLibraryPath(path)
-      const [ps, st, c, ce] = await Promise.all([
+      const [ps, st, c, ce, tm] = await Promise.all([
         DB.allPhotos(),
         DB.kvGet<Partial<Settings>>('settings'),
         DB.kvGet<CustomLabel[]>('custom'),
         DB.kvGet<Record<string, number[]>>('customEmb'),
+        DB.kvGet<TagMemory>('tagMemory').catch(() => undefined),
       ])
+      // 1.0.35: this library folder's remembered tags (merged with this session's; saved back on the next change)
+      { const m = mergeTagMemory(cleanTagMemory(tm), tagMemoryRef.current); tagMemoryRef.current = m; setTagMemoryState(m); void DB.kvSet('tagMemory', m).catch(() => {}) }
       const merged = { ...(await initialSettings(st, ps.length, c?.length ?? 0)), keepOriginals: true }
       settingsRef.current = merged; setSettings(merged)
       customRef.current = c ?? []; setCustom(c ?? [])
@@ -1038,29 +1087,36 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
   }, [setPhotosBoth])
 
   const addTags = useCallback(
-    (ids: string[], names: string[]) => updatePhotos(ids, (p) => {
+    (ids: string[], names: string[]) => { rememberTags(names, true); return updatePhotos(ids, (p) => {
       const n2 = names.reduce((a, n) => addTag(a, n, 'manual'), p)
       // adding a tag again in Photo Tagger lifts a Dropbox-side deletion
       const back = new Set(names.map(Remote.toDropboxTag))
       return n2.dropboxRemoved?.some((t) => back.has(t)) ? { ...n2, dropboxRemoved: n2.dropboxRemoved.filter((t) => !back.has(t)) } : n2
-    }),
-    [updatePhotos],
+    }) },
+    [updatePhotos, rememberTags],
   )
   const removeTags = useCallback(
     // 1.0.34: your own delete — the only thing that removes a tag that was already on the Dropbox file
     (ids: string[], names: string[]) => updatePhotos(ids, (p) => Remote.userRemoveTags(p, names.map(normTag))),
     [updatePhotos],
   )
+  /** 1.0.35: a photo leaving the app never takes its tags off the remembered list */
+  const rememberTagsOf = useCallback((ids: string[]) => {
+    const set = new Set(ids)
+    rememberTags(photosRef.current.filter((p) => set.has(p.id)).flatMap((p) => p.tags.map((t) => t.name)))
+  }, [rememberTags])
   const deletePhotos = useCallback(async (ids: string[]) => {
+    rememberTagsOf(ids)
     await DB.deletePhotos(ids)
     const set = new Set(ids)
     setPhotosBoth((all) => all.filter((p) => !set.has(p.id)))
-  }, [setPhotosBoth])
+  }, [setPhotosBoth, rememberTagsOf])
   const trashDropboxPhotos = useCallback(async (ids: string[]) => {
+    rememberTagsOf(ids)
     await DB.trashDropboxPhotos(ids)
     const set = new Set(ids)
     setPhotosBoth((all) => all.filter((p) => !set.has(p.id)))
-  }, [setPhotosBoth])
+  }, [setPhotosBoth, rememberTagsOf])
 
   // ---------- (re)tagging ----------
   const runJob = async (label: string, total: number, fn: (step: (name: string) => void) => Promise<void>) => {
@@ -1303,6 +1359,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
     customEmb.current = new Map()
     photosRef.current = []; setPhotos([])
     customRef.current = []; setCustom([])
+    tagMemoryRef.current = emptyTagMemory(); setTagMemoryState(tagMemoryRef.current)
     applyDropboxSession(null, '')
     { const fresh = await initialSettings(null, 0, 0); settingsRef.current = fresh; setSettings(fresh) }
     dbxFoldersRef.current = []; setDbxFolders([])
@@ -1317,6 +1374,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
     connectDropbox, disconnectDropbox, listDropbox, dropboxThumb, processDropboxFolder, processDropboxFiles, preImportAsk, answerPreImport, refreshDropbox, dropboxFolderProgress, addNextDropboxBatch, addAllRemainingDropbox, dropboxFolderFiles, addDropboxSelection, forgetDropboxFolder,
     addFiles, cancelDropboxDownload, updatePhotos, addTags, removeTags, deletePhotos, trashDropboxPhotos, retagAll, retagPhoto, pullDropboxTags, retryPending,
     saveSettings, addCustomLabel, removeCustomLabel, toggleLabel, toggleMetaTag, resetVocabulary, setAllAutoTags, exportData, importTags,
+    knownTags, rememberTags, forgetTags, renameRememberedTag,
     clearEverything, toast, preloadModel, setAfterIngest,
     nearDupes, resolveNearDupe, resolveAllNearDupes, findDuplicates, dismissDupePair,
     folderSupported: canPickFolder, folderName, chooseSaveFolder, clearSaveFolder: clearSaveFolderFn,
@@ -1324,7 +1382,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
     savePhotosToDisk, downloadPhotosZip,
   }), [ready, photos, settings, custom, job, model, toasts, dropboxKey, dbxSession, dbxFolders, dbxConnecting, connectDropbox, disconnectDropbox, listDropbox, dropboxThumb, processDropboxFolder, processDropboxFiles, preImportAsk, answerPreImport, refreshDropbox, dropboxFolderProgress, addNextDropboxBatch, addAllRemainingDropbox, dropboxFolderFiles, addDropboxSelection, forgetDropboxFolder, addFiles, cancelDropboxDownload, updatePhotos, addTags, removeTags,
     deletePhotos, trashDropboxPhotos, retagAll, retagPhoto, pullDropboxTags, retryPending, saveSettings, addCustomLabel, removeCustomLabel, toggleLabel, toggleMetaTag, resetVocabulary, setAllAutoTags, exportData,
-    importTags, clearEverything, toast, preloadModel, setAfterIngest, nearDupes, resolveNearDupe, resolveAllNearDupes, findDuplicates,
+    importTags, knownTags, rememberTags, forgetTags, renameRememberedTag, clearEverything, toast, preloadModel, setAfterIngest, nearDupes, resolveNearDupe, resolveAllNearDupes, findDuplicates,
     dismissDupePair, folderName, chooseSaveFolder, clearSaveFolderFn, savePhotosToDisk, downloadPhotosZip, libraryPath, chooseLibraryFolder, changeLibraryFolder, portable, useLibraryBesideApp])
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>

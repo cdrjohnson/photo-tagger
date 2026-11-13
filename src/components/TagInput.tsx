@@ -19,7 +19,8 @@ export function TagInput({ suggestions, onAdd, placeholder = 'Add a tag…', tes
   const listRef = useRef<HTMLUListElement>(null)
   // only the part after the last comma is being typed
   const current = v.slice(v.lastIndexOf(',') + 1)
-  const matches = useMemo(() => matchTags(current, suggestions, 300), [current, suggestions])
+  // 1.0.35: no cap — every remembered tag can be scrolled to (the list scrolls; typing narrows it)
+  const matches = useMemo(() => matchTags(current, suggestions, suggestions.length), [current, suggestions])
   const commitNames = (names: string[], exact = false) => {
     const out = names.map((s) => s.trim()).filter(Boolean).map((s) => (exact ? s : resolveTagName(s, suggestions))).filter(Boolean)
     if (out.length) onAdd([...new Set(out)])

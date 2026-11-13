@@ -19,7 +19,7 @@ import { usePeople } from './people'
 import { filterPhotos, tagStats, photoTime } from './filter'
 import { useInView, useTheme, useThumb } from './hooks'
 import { useLibrary } from './store'
-import { normTag } from './tags'
+import { normTag, qualityWarnings } from './tags'
 import { isDropboxVideo } from './dropbox'
 import { EMPTY_FILTERS, type Filters, type Photo, type QualityFilter, type SortKey } from './types'
 
@@ -59,8 +59,13 @@ export default function App() {
 
   const filtered = useMemo(() => filterPhotos(lib.photos, filters), [lib.photos, filters])
   const stats = useMemo(() => tagStats(lib.photos, filters), [lib.photos, filters])
-  // every tag already on a photo + your own Settings → Tags entries (not the whole built-in list)
-  const everyTag = useMemo(() => [...new Set([...lib.photos.flatMap((p) => p.tags.map((t) => t.name)), ...lib.custom.map((c) => normTag(c.label)).filter(Boolean)])].sort(), [lib.photos, lib.custom])
+  // 1.0.35: every tag you've used — on loaded photos, on photos removed from the app, named People and your Settings → Tags
+  // entries (not the whole built-in list); tags you removed from that list aren't offered
+  const everyTag = lib.knownTags
+  const offMetaKey = (lib.settings.disabledMetaTags ?? []).join('|')
+  // named People are remembered even when none of their photos is loaded
+  const { rememberTags } = lib
+  useEffect(() => { const names = ppl.people.map((x) => normTag(x.name)).filter(Boolean); if (names.length) rememberTags(names) }, [ppl.people, rememberTags])
   const visibleStats = allTags ? stats : stats.filter((s, i) => i < FEW || filters.tags.includes(s.name))
   const hasFilters = filters.tags.length > 0 || filters.query || filters.from || filters.to || filters.quality !== 'any'
   const advancedCount = [filters.from, filters.to, filters.quality !== 'any' ? 'q' : ''].filter(Boolean).length
@@ -261,7 +266,7 @@ export default function App() {
               <button className="btn" onClick={() => setFilters((f) => ({ ...EMPTY_FILTERS, mode: f.mode, sort: f.sort }))}>Clear filters</button>
             </div>
           ) : (
-            <PhotoGrid filtered={filtered} sel={sel} inSelection={inSelection} onTile={onTile} onLong={onLong} onCheck={onCheck} />
+            <PhotoGrid filtered={filtered} offMeta={offMetaKey} sel={sel} inSelection={inSelection} onTile={onTile} onLong={onLong} onCheck={onCheck} />
           )}
       </main>
 
@@ -343,8 +348,10 @@ export default function App() {
 }
 
 
-const PhotoGrid = memo(function PhotoGrid({ filtered, sel, inSelection, onTile, onLong, onCheck }: {
+const PhotoGrid = memo(function PhotoGrid({ filtered, offMeta, sel, inSelection, onTile, onLong, onCheck }: {
   filtered: Photo[]
+  /** disabled Photo metadata toggles, joined with '|' (a string keeps the memo stable) */
+  offMeta: string
   sel: Set<string>; inSelection: boolean
   onTile: (i: number, id: string, e: { shiftKey: boolean }) => void
   onLong: (i: number, id: string) => void
@@ -401,14 +408,14 @@ const PhotoGrid = memo(function PhotoGrid({ filtered, sel, inSelection, onTile, 
     <div className="grid" data-testid="grid" ref={ref} style={virtual ? { paddingTop: topPad, paddingBottom: bottomPad } : undefined}>
       {filtered.slice(start, end).map((p, j) => {
         const i = start + j
-        return <Tile key={p.id} p={p} i={i} selected={sel.has(p.id)} selecting={inSelection} onTile={onTile} onLong={onLong} onCheck={onCheck} />
+        return <Tile key={p.id} p={p} i={i} offMeta={offMeta} selected={sel.has(p.id)} selecting={inSelection} onTile={onTile} onLong={onLong} onCheck={onCheck} />
       })}
     </div>
   )
 })
 
-const Tile = memo(function Tile({ p, i, selected, selecting, onTile, onLong, onCheck }: {
-  p: Photo; i: number; selected: boolean; selecting: boolean
+const Tile = memo(function Tile({ p, i, offMeta, selected, selecting, onTile, onLong, onCheck }: {
+  p: Photo; i: number; offMeta: string; selected: boolean; selecting: boolean
   onTile: (i: number, id: string, e: { shiftKey: boolean }) => void
   onLong: (i: number, id: string) => void
   onCheck: (i: number, id: string) => void
@@ -423,7 +430,8 @@ const Tile = memo(function Tile({ p, i, selected, selecting, onTile, onLong, onC
   const pref = (t: Photo['tags'][number]) => (t.source === 'person' ? 0 : t.source === 'auto' || t.source === 'manual' || t.source === 'dropbox' ? 1 : 2)
   const shown = [...p.tags].sort((a, b) => pref(a) - pref(b)).slice(0, 2)
   const rest = p.tags.filter((t) => !shown.includes(t))
-  const warn = [p.quality.blurry && 'blurry', p.quality.dark && 'dark', p.quality.bright && 'bright'].filter(Boolean) as string[]
+  // 1.0.35: a corner warning only for quality tags switched on in Settings → Tags → Photo metadata
+  const warn = qualityWarnings(p, offMeta.split('|'))
   return (
     <div
       ref={ref}
@@ -447,7 +455,7 @@ const Tile = memo(function Tile({ p, i, selected, selecting, onTile, onLong, onC
         {p.status === 'pending' && <span className="badge pend" title="Tagging…">tagging…</span>}
         {isDropboxVideo(p.name) && <span className="badge video" data-testid="video-badge" title="Video"><i aria-hidden="true" /> video</span>}
         {p.duplicateOf && <span className="badge dupe" data-testid="dupe-badge" title="Marked as a duplicate">duplicate</span>}
-        {warn.length > 0 && <span className="badge warn" title={warn.join(', ')}>{warn[0]}</span>}
+        {warn.length > 0 && <span className="badge warn" data-testid="quality-badge" data-warn={warn.join('|')} title={warn.join(', ')}>{warn[0]}</span>}
       </div>
       <div className="cap">{shown.map((t) => <span key={t.name}>{t.name}</span>)}{rest.length > 0 && <TileMore p={p} rest={rest} />}</div>
       <span className="sr-only">{new Date(photoTime(p)).toDateString()}</span>

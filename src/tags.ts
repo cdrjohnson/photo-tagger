@@ -117,6 +117,18 @@ export function applyMetaTags<T extends Pick<Photo, 'takenAt' | 'dateSource' | '
   return { ...p, tags: [...keep, ...exifAndQualityTags(p, disabled).filter((t) => !names.has(t.name))] }
 }
 
+/**
+ * 1.0.35: the quality warnings to show for a photo (tile corner badge, details) — only those whose Photo metadata toggle
+ * (Settings → Tags: blurry / dark / bright) is on.
+ */
+export function qualityWarnings(p: Pick<Photo, 'quality'>, disabled: readonly string[] = []): ('blurry' | 'dark' | 'bright')[] {
+  const out: ('blurry' | 'dark' | 'bright')[] = []
+  if (p.quality.blurry && !disabled.includes('blurry')) out.push('blurry')
+  if (p.quality.dark && !disabled.includes('dark')) out.push('dark')
+  if (p.quality.bright && !disabled.includes('bright')) out.push('bright')
+  return out
+}
+
 function rawMetaTags(p: Pick<Photo, 'takenAt' | 'dateSource' | 'camera' | 'gps' | 'quality'>): (Tag & { key: string })[] {
   const out: (Tag & { key: string })[] = []
   const push = (key: string, name: string, source: Tag['source']) => out.push({ key, name, source })

@@ -324,7 +324,12 @@ await test('Detection list "Photo metadata" toggles strip and re-apply year/came
   const g1 = await tagsOf('geotagged-cat.jpg')
   ok(!g1.includes('2021') && g1.includes('geotagged') && g1.includes('samplecam sample phone 1') && g1.includes('cat'), 'year stripped, others kept: ' + g1)
   ok(!(await tagsOf('blurry-mountain.jpg')).includes('blurry'), 'blurry tag stripped')
-  ok(/blurry/.test(await tile('blurry-mountain.jpg').locator('.badge.warn').innerText()), 'quality badge still shown')
+  // 1.0.35: the corner warning badge follows the toggle too (Blurry off → no blurry badge; Dark still on → dark badge stays)
+  eq(await tile('blurry-mountain.jpg').getByTestId('quality-badge').count(), 0, 'blurry corner badge hidden while Blurry is off')
+  ok(/dark/.test(await tile('dark-city.jpg').getByTestId('quality-badge').getAttribute('data-warn')), 'dark badge still shown (Dark on)')
+  await tile('blurry-mountain.jpg').click()
+  ok(!/blurry/.test(await page.getByTestId('detail-sharpness').innerText()), 'details: no "(blurry)" while Blurry is off')
+  await page.keyboard.press('Escape'); await page.getByTestId('detail').waitFor({ state: 'detached' })
   // single-photo Re-run tagging honors the toggles too
   await tile('geotagged-cat.jpg').click(); await page.getByRole('button', { name: 'Re-run tagging' }).click(); await settled()
   ok(!(await tagsOf('geotagged-cat.jpg')).includes('2021'), 'Re-run tagging keeps year off')
@@ -337,6 +342,17 @@ await test('Detection list "Photo metadata" toggles strip and re-apply year/came
   await closeSettings(); await settled()
   await page.waitForFunction(() => document.querySelector('[data-name="geotagged-cat.jpg"]').dataset.tags.split('|').includes('2021'), null, { timeout: 300_000 })
   ok((await tagsOf('blurry-mountain.jpg')).includes('blurry'), 'blurry re-applied')
+  eq(await tile('blurry-mountain.jpg').getByTestId('quality-badge').getAttribute('data-warn'), 'blurry', 'blurry corner badge back when Blurry is on')
+  // 1.0.35: all three quality toggles off → no corner warning badge on any tile; on again → back
+  await openSettings('vocab')
+  for (const id of ['blurry', 'dark', 'bright']) await page.getByTestId(`meta-${id}`).uncheck()
+  await closeSettings()
+  await page.waitForFunction(() => !document.querySelector('[data-testid=quality-badge]'), null, { timeout: 10_000 })
+  await openSettings('vocab')
+  for (const id of ['blurry', 'dark', 'bright']) await page.getByTestId(`meta-${id}`).check()
+  await closeSettings()
+  await tile('dark-city.jpg').getByTestId('quality-badge').waitFor()
+  await tile('bright-beach.jpg').getByTestId('quality-badge').waitFor()
 })
 
 await test('tag chip filter with AND / OR', async () => {
@@ -1255,7 +1271,7 @@ await test('Dropbox write queue (1.0.26): bulk add survives 429/5xx/network/401;
     for (const id of picks) ok(tagsOn(id).includes('bulk_retry') && tagsOn(id).includes('second_tag'), `${id} has both tags in Dropbox: ${tagsOn(id)}`)
     ok(st.inject.every((f) => f.times === 0), 'all injected failures were hit: ' + JSON.stringify(st.inject))
     ok(st.refreshes > refreshes0, 'token refreshed mid-queue after 401')
-    ok([...st.meta.values()].filter((v) => v.includes('bulk_retry')).length === 4, 'all four sidecars saved')
+    ok([...st.meta].filter(([k, v]) => k.startsWith('/.photo-tagger/meta/') && v.includes('bulk_retry')).length === 4, 'all four sidecars saved')
     st.inject.length = 0
     // 2) permanent errors go straight to the failure list (no endless loop)
     st.fileTags.set('id:p3', new Set(Array.from({ length: 20 }, (_, i) => 'external_' + i)))
@@ -1858,6 +1874,141 @@ await test('Batches after Remove from app (1.0.34): tag batch 1, remove it at on
   } finally {
     await c.close()
     delete DBX_TREE['/batch']; DBX_TREE[''].splice(DBX_TREE[''].findIndex((e) => e.name === 'Batch'), 1)
+  }
+})
+
+await test('Remembered tags (1.0.35): tags on removed photos, removed tag files and People stay in the Add a tag box after Remove from app, reload and on another device; Settings → Tags renames, merges and removes list entries', async () => {
+  const files = [['m1.jpg', 'beach.jpg', ['birtday', 'beach_day']], ['m2.jpg', 'dog.jpg', ['keepme']], ['m3.jpg', 'cat.jpg', ['only_removed']], ['m4.jpg', 'city.jpg', ['from_removed_sidecar']]]
+  const fid = (n) => 'id:mem-' + n.replace('.jpg', '')
+  DBX_TREE['/mem'] = files.map(([n, smp]) => { SAMPLE_BY_ID[fid(n)] = smp; return dbxFile(fid(n), n, '/Mem') })
+  DBX_TREE[''].push(dbxDir('Mem', ''))
+  const metaKey = (n) => `/.photo-tagger/meta/${fid(n).slice(3)}.json`
+  const seed = (st) => {
+    files.forEach(([n, , tags], i) => {
+      const photo = { id: 'p-' + n, fp: 'fp-' + n, name: n, size: 1000, type: 'image/jpeg', addedAt: Date.now() - i * 1000, dateSource: 'added', width: 400, height: 300,
+        quality: { sharpness: 100, brightness: 120, blurry: false, dark: false, bright: false }, tags: tags.map((name) => ({ name, source: 'manual' })), rejected: [], source: 'dropbox',
+        dropbox: { id: fid(n), path: `/Mem/${n}`, rev: 'r' + i }, dropboxTags: tags, hasOriginal: false, status: 'ready', facesScanned: true, faceCount: 0 }
+      st.meta.set(metaKey(n), JSON.stringify({ app: 'photo-tagger', version: 1, file: photo.dropbox, photo, faces: [] }))
+      st.fileTags.set(fid(n), new Set(tags))
+    })
+    // m4 was removed from the app earlier (another device): its tag file is kept; Aunt May has no photo loaded
+    st.meta.set('/.photo-tagger/removed.json', JSON.stringify({ app: 'photo-tagger', version: 1, removed: [{ id: 'p-m4.jpg', file: fid('m4.jpg'), at: Date.now() - 60_000 }] }))
+    st.meta.set('/.photo-tagger/people.json', JSON.stringify({ app: 'photo-tagger', version: 1, people: [{ id: 'per-aunt', name: 'Aunt May', createdAt: 1 }] }))
+  }
+  const c = await browser.newContext({ viewport: { width: 1280, height: 900 } })
+  await routeModel(c).catch(() => {})
+  const st = await stubDropbox(c); seed(st)
+  const pg = await c.newPage()
+  const errs = []; pg.on('pageerror', (e) => errs.push(e.message))
+  const t = (n) => pg.locator(`[data-testid=photo-tile][data-name="${n}"]`)
+  const tags = async (n) => ((await t(n).getAttribute('data-tags')) ?? '').split('|').filter(Boolean)
+  const suggestions = async (n) => {
+    await t(n).click(); await pg.getByTestId('detail-tag-input').click()
+    const s = await pg.getByTestId('detail-tag-input-suggestions').getByTestId('tag-suggestion').evaluateAll((els) => els.map((e) => e.dataset.tag))
+    await pg.keyboard.press('Escape'); await pg.keyboard.press('Escape'); await pg.getByTestId('detail').waitFor({ state: 'detached' })
+    return s
+  }
+  const openSettingsOn = async (p, tab) => { await p.getByTestId('open-settings').click(); await p.getByTestId(`tab-${tab}`).click() }
+  const closeSettingsOn = (p) => p.getByTestId('settings-close').click()
+  const list = pg.getByTestId('library-tags-list')
+  const row = (n) => list.locator(`[data-testid=library-tag][data-tag="${n}"]`)
+  const flushed = async (fn, msg) => { for (let i = 0; i < 60; i++) { await pg.evaluate(() => window.__ptFlushDropbox()); if (fn()) return; await pg.waitForTimeout(200) } throw new Error(msg) }
+  const tagsJson = () => { const j = st.meta.get('/.photo-tagger/tags.json'); return j ? JSON.parse(j).tags : null }
+  const active = (m) => Object.keys(m.tags).filter((n) => m.tags[n] > (m.forgotten[n] ?? 0)).sort()
+  try {
+    await pg.goto(URL_BASE); await pg.getByTestId('empty').waitFor()
+    await connectDropbox(pg, 'mem_key')
+    await pg.waitForFunction(() => /^3 photos/.test(document.querySelector('[data-testid=count]')?.textContent || ''), null, { timeout: 60_000 })
+    // Remove m3 from the app — its tag must stay in the Add a tag box
+    await t('m3.jpg').getByTestId('tile-check').click()
+    await pg.getByTestId('sel-delete').click(); await pg.getByTestId('remove-confirm-btn').click()
+    await pg.waitForFunction(() => /^2 photos/.test(document.querySelector('[data-testid=count]')?.textContent || ''), null, { timeout: 10_000 })
+    if (await pg.getByTestId('sel-cancel').count()) await pg.getByTestId('sel-cancel').click()
+    const s1 = await suggestions('m1.jpg')
+    for (const n of ['only_removed', 'from_removed_sidecar', 'aunt may', 'keepme', 'birtday', 'beach_day']) ok(s1.includes(n), `suggested: ${n} (${s1})`)
+    // bulk edit uses the same list
+    await t('m2.jpg').getByTestId('tile-check').click(); await pg.getByTestId('bulk-tag').click()
+    await pg.getByTestId('bulk-input').fill('only_rem')
+    await pg.getByTestId('bulk-input-suggestions').locator('[data-tag="only_removed"]').waitFor()
+    await pg.getByTestId('bulk-input').fill(''); await pg.getByTestId('bulk-close').click(); await pg.getByTestId('sel-cancel').click()
+    // Settings → Tags lists remembered tags with how many loaded photos have them
+    await openSettingsOn(pg, 'vocab')
+    await row('only_removed').waitFor()
+    eq(await row('only_removed').getAttribute('data-count'), '0', 'removed photo tag: 0 loaded')
+    ok(/0 loaded photos · remembered/.test(await row('only_removed').getByTestId('library-tag-count').innerText()), 'shown as remembered, 0 loaded')
+    ok(/1 photo/.test(await row('birtday').getByTestId('library-tag-count').innerText()), 'loaded count')
+    for (const n of ['from_removed_sidecar', 'aunt may']) await row(n).waitFor()
+    // rename a typo on a loaded photo
+    await row('birtday').getByTestId('library-tag-rename').click()
+    await pg.getByTestId('library-tag-rename-input').fill('Birthday'); await pg.getByTestId('library-tag-rename-save').click()
+    await pg.getByTestId('rename-confirm').waitFor(); await pg.getByTestId('rename-confirm-btn').click()
+    await row('birthday').waitFor(); eq(await row('birtday').count(), 0, 'typo gone from the list')
+    // rename a tag that's only remembered (no loaded photo) into a close spelling of an existing one → merge, list only
+    await row('only_removed').getByTestId('library-tag-rename').click()
+    await pg.getByTestId('library-tag-rename-input').fill('Beach Day'); await pg.getByTestId('library-tag-rename-save').click()
+    await pg.getByTestId('rename-confirm').waitFor()
+    const why = await pg.getByTestId('rename-confirm').innerText()
+    ok(/merges them/.test(why) && /only your tag list changes/.test(why), 'merge into beach_day, list only: ' + why)
+    await pg.getByTestId('rename-confirm-btn').click()
+    await pg.waitForFunction(() => !document.querySelector('[data-testid=library-tag][data-tag="only_removed"]'))
+    await row('beach_day').waitFor()
+    // Remove from list only: still on the loaded photo, no longer suggested; Suggest again brings it back
+    await row('keepme').getByTestId('library-tag-remove').click()
+    await pg.getByTestId('remove-tag-confirm').waitFor()
+    ok(await pg.getByTestId('remove-tag-cancel').evaluate((b) => b === document.activeElement), 'Cancel focused')
+    ok(/stays on the 1 loaded photo/.test(await pg.getByTestId('remove-tag-explain').innerText()), 'explains photos keep it')
+    await pg.getByTestId('remove-tag-list-only').click()
+    await row('keepme').getByTestId('library-tag-hidden').waitFor()
+    await closeSettingsOn(pg)
+    ok((await tags('m2.jpg')).includes('keepme'), 'photo keeps the tag')
+    ok((await tags('m1.jpg')).includes('birthday') && !(await tags('m1.jpg')).includes('birtday'), 'renamed on the loaded photo')
+    const s2 = await suggestions('m1.jpg')
+    ok(!s2.includes('keepme') && !s2.includes('birtday') && !s2.includes('only_removed') && s2.includes('birthday'), 'suggestions follow the edited list: ' + s2)
+    await openSettingsOn(pg, 'vocab')
+    await row('keepme').getByTestId('library-tag-restore').click()
+    await pg.waitForFunction(() => document.querySelector('[data-testid=library-tag][data-tag="keepme"]')?.dataset.remembered === '1')
+    // Remove from list AND from loaded photos
+    await row('beach_day').getByTestId('library-tag-remove').click()
+    await pg.getByTestId('remove-tag-photos').click()
+    await pg.waitForFunction(() => !document.querySelector('[data-testid=library-tag][data-tag="beach_day"]'))
+    // a person without loaded photos can be taken off the list too
+    await row('aunt may').getByTestId('library-tag-remove').click()
+    eq(await pg.getByTestId('remove-tag-photos').count(), 0, 'no photo option when no loaded photo has it')
+    await pg.getByTestId('remove-tag-list-only').click()
+    await pg.waitForFunction(() => !document.querySelector('[data-testid=library-tag][data-tag="aunt may"]'))
+    await closeSettingsOn(pg)
+    ok(!(await tags('m1.jpg')).includes('beach_day'), 'removed from the loaded photo on request')
+    // saved in Dropbox (/.photo-tagger/tags.json) beside removed.json / people.json
+    await flushed(() => { const m = tagsJson(); return m && active(m).includes('birthday') && !active(m).includes('beach_day') && !active(m).includes('aunt may') }, 'tags.json written')
+    const a1 = active(tagsJson())
+    for (const n of ['birthday', 'keepme', 'from_removed_sidecar']) ok(a1.includes(n), `tags.json has ${n}: ${a1}`)
+    for (const n of ['birtday', 'only_removed', 'beach_day', 'aunt may']) ok(!a1.includes(n), `tags.json dropped ${n}: ${a1}`)
+    eq(st.writes, 0, 'nothing outside /.photo-tagger written')
+    // restart: still remembered, edits kept
+    await pg.reload()
+    await pg.waitForFunction(() => /^2 photos/.test(document.querySelector('[data-testid=count]')?.textContent || ''), null, { timeout: 60_000 })
+    const s3 = await suggestions('m2.jpg')
+    ok(s3.includes('from_removed_sidecar') && s3.includes('birthday') && s3.includes('keepme') && !s3.includes('only_removed') && !s3.includes('aunt may') && !s3.includes('birtday'), 'after reload: ' + s3)
+    // another device / reinstall (fresh local storage, same Dropbox): the list comes from tags.json
+    const c2 = await browser.newContext({ viewport: { width: 1280, height: 900 } })
+    try {
+      await routeModel(c2).catch(() => {})
+      const st2 = await stubDropbox(c2)
+      for (const [k, v] of st.meta) st2.meta.set(k, v)
+      for (const [k, v] of st.fileTags) st2.fileTags.set(k, new Set(v))
+      const p2 = await c2.newPage()
+      await p2.goto(URL_BASE); await p2.getByTestId('empty').waitFor()
+      await connectDropbox(p2, 'mem_key')
+      await p2.waitForFunction(() => /^2 photos/.test(document.querySelector('[data-testid=count]')?.textContent || ''), null, { timeout: 60_000 })
+      await p2.locator('[data-testid=photo-tile][data-name="m2.jpg"]').click(); await p2.getByTestId('detail-tag-input').click()
+      await p2.getByTestId('detail-tag-input-suggestions').locator('[data-tag="from_removed_sidecar"]').waitFor({ timeout: 20_000 })
+      const s4 = await p2.getByTestId('detail-tag-input-suggestions').getByTestId('tag-suggestion').evaluateAll((els) => els.map((e) => e.dataset.tag))
+      ok(s4.includes('birthday') && !s4.includes('only_removed') && !s4.includes('aunt may'), 'other device: ' + s4)
+    } finally { await c2.close() }
+    eq(errs, [], 'no page errors')
+  } finally {
+    await c.close()
+    delete DBX_TREE['/mem']; DBX_TREE[''].splice(DBX_TREE[''].findIndex((e) => e.name === 'Mem'), 1)
   }
 })
 
@@ -2990,7 +3141,12 @@ await test('Settings → Tags lists every library tag (searchable), adds list en
   ok(await page.getByTestId('rename-cancel').evaluate((b) => b === document.activeElement), 'Cancel focused (person)')
   await page.getByTestId('rename-confirm-btn').click()
   await list.locator('[data-tag="joseph biden"]').waitFor()
-  eq(await list.locator('[data-tag="president biden"]').count(), 0, 'old person tag gone')
+  // the person's photos are renamed one by one: wait for the last one, then report what still has the old name
+  await list.locator('[data-tag="president biden"]').waitFor({ state: 'detached', timeout: 15_000 }).catch(() => {})
+  if (await list.locator('[data-tag="president biden"]').count()) {
+    const left = await list.locator('[data-tag="president biden"]').innerText()
+    throw new Error('old person tag gone: still listed — ' + left)
+  }
   await page.getByTestId('library-tags-search').fill('zeb')
   eq(await list.getByTestId('library-tag').evaluateAll((els) => els.map((e) => e.dataset.tag)), ['zebra'], 'search filters')
   await page.getByTestId('library-tags-search').fill('')
@@ -3005,7 +3161,8 @@ await test('Settings → Tags lists every library tag (searchable), adds list en
   ok(await page.getByTestId('rename-cancel').evaluate((b) => b === document.activeElement), 'Cancel focused')
   await page.getByTestId('rename-confirm-btn').click()
   await list.locator('[data-tag="wedding day"]').waitFor()
-  eq(await list.locator('[data-tag="wedding"]').count(), 0, 'old name gone')
+  await list.locator('[data-tag="wedding"]').waitFor({ state: 'detached', timeout: 15_000 }).catch(() => {})
+  if (await list.locator('[data-tag="wedding"]').count()) throw new Error('old name gone: still listed — ' + await list.locator('[data-tag="wedding"]').innerText())
   await closeSettings(); await settled()
   ok(await page.locator('[data-testid=photo-tile]').evaluateAll((els) => els.some((e) => e.dataset.tags.split('|').includes('joseph biden')) && !els.some((e) => e.dataset.tags.split('|').includes('president biden'))), 'person renamed on photos')
   ok(await page.locator('[data-testid=photo-tile]').evaluateAll((els) => els.some((e) => e.dataset.tags.split('|').includes('wedding day')) && !els.some((e) => e.dataset.tags.split('|').includes('wedding'))), 'renamed on the photo')

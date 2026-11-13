@@ -349,7 +349,10 @@ function Data() {
   )
 }
 
-/** Settings → Tags: every tag already in the library (plus your own list entries), searchable, with rename/merge. */
+/**
+ * Settings → Tags: every tag you've used (1.0.35: remembered — also tags on photos removed from the app and named People),
+ * plus your own list entries; searchable, with rename/merge and Remove from the list.
+ */
 function LibraryTags({ onDirty }: { onDirty: () => void }) {
   const lib = useLibrary()
   const ppl = usePeople()
@@ -357,26 +360,32 @@ function LibraryTags({ onDirty }: { onDirty: () => void }) {
   const [adding, setAdding] = useState('')
   const [busy, setBusy] = useState(false)
   const [edit, setEdit] = useState<{ from: string; to: string } | null>(null)
-  const [ask, setAsk] = useState<{ from: string; to: string; ids: string[]; personId?: string; typed?: string } | null>(null)
+  const [ask, setAsk] = useState<{ from: string; to: string; ids: string[]; personId?: string; typed?: string; exists?: boolean } | null>(null)
+  const [removeAsk, setRemoveAsk] = useState<string | null>(null)
+  /** how many loaded photos have each tag */
   const counts = useMemo(() => {
     const m = new Map<string, number>()
     for (const p of lib.photos) for (const t of p.tags) m.set(t.name, (m.get(t.name) ?? 0) + 1)
-    for (const c of lib.custom) { const n = normTag(c.label); if (n && !m.has(n)) m.set(n, 0) }
     return m
-  }, [lib.photos, lib.custom])
-  const all = useMemo(() => [...counts.keys()].sort((a, b) => a.localeCompare(b)), [counts])
+  }, [lib.photos])
+  const remembered = useMemo(() => new Set(lib.knownTags), [lib.knownTags])
+  const customNames = useMemo(() => new Map(lib.custom.map((c) => [normTag(c.label), c.id])), [lib.custom])
+  // remembered tags + anything on a loaded photo (a tag you took off the list but that's still on photos shows as "not suggested")
+  const all = useMemo(() => [...new Set([...lib.knownTags, ...counts.keys()])].sort((a, b) => a.localeCompare(b)), [lib.knownTags, counts])
   const shown = q.trim() ? matchTags(q, all, all.length) : all
   const offL = new Set(lib.settings.disabledLabels), offM = new Set(lib.settings.disabledMetaTags ?? [])
   const autoOff = DEFAULT_LABELS.every((l) => offL.has(l.id)) && lib.custom.every((c) => offL.has(c.id)) && META_TAGS.every((m) => offM.has(m.id))
   const personOnly = (name: string) => lib.photos.every((p) => !p.tags.some((t) => t.name === name && t.source !== 'person'))
   const doRename = async (from: string, to: string, ids: string[]) => {
-    await lib.updatePhotos(ids, (p) => {
+    lib.renameRememberedTag(from, to)
+    if (ids.length) await lib.updatePhotos(ids, (p) => {
       const old = p.tags.find((t) => t.name === from && t.source !== 'person'); if (!old) return p
       return addTag(userRemoveTags(p, [from]), to, 'manual')
     })
-    lib.toast(`Renamed “${from}” to “${to}” on ${ids.length} photo(s)`, 'ok')
+    lib.toast(ids.length ? `Renamed “${from}” to “${to}” on ${ids.length} photo(s)` : `Renamed “${from}” to “${to}” in your tag list`, 'ok')
   }
   const personFor = (name: string) => ppl.people.find((x) => normTag(x.name) === name)
+  const isPerson = (name: string) => !!personFor(name) && personOnly(name)
   const startRename = (from: string, typed: string) => {
     const person = personOnly(from) ? personFor(from) : undefined
     if (person) {
@@ -391,21 +400,26 @@ function LibraryTags({ onDirty }: { onDirty: () => void }) {
     setEdit(null)
     if (!to || to === from) return
     const ids = lib.photos.filter((p) => p.tags.some((t) => t.name === from && t.source !== 'person')).map((p) => p.id)
-    if (!ids.length) { lib.toast(`“${from}” isn't on any photo yet — add “${to}” to the list instead`); return }
-    setAsk({ from, to, ids })
+    setAsk({ from, to, ids, exists: all.includes(to) })
+  }
+  const countText = (t: string) => {
+    const n = counts.get(t) ?? 0
+    if (n) return `${n} photo${n === 1 ? '' : 's'}`
+    // remembered from photos removed from the app, People without loaded photos, or your list
+    return customNames.has(t) ? 'not on a photo yet' : '0 loaded photos · remembered'
   }
   return (
     <section className="lib-tags tag-card library" data-testid="library-tags">
       <div className="eyebrow">On your photos</div>
       <h3>Tags in your library <small className="muted">({all.length})</small></h3>
       <div><VerifyDropboxTags photos={lib.photos.filter((p) => !!p.dropbox)} library /></div>
-      <p className="muted small">Every tag already on your photos — people, your own, detected, Dropbox, date/camera and quality tags — plus tags you've added to this list. Renaming a person's tag renames that person (same as on the People page). Use it to review your tags, find near-duplicates, or rename one everywhere (renaming to a close spelling of another tag merges them). Changes are saved to Dropbox like any tag edit.</p>
+      <p className="muted small">Every tag you've used — people, your own, detected, Dropbox, date/camera and quality tags — including tags on photos you removed from the app, plus tags you've added to this list. These are the tags the Add a tag boxes suggest; the count shows how many photos loaded in the app have each one. Renaming a person's tag renames that person (same as on the People page). Use it to find near-duplicates or typos: <b>Rename</b> changes a tag everywhere it's loaded (renaming to a close spelling of another tag merges them); <b>Remove</b> takes it off this list so it's no longer suggested. Changes are saved to Dropbox like any tag edit.</p>
       <div className="row wrap">
         <input className="grow" placeholder="Search tags in your library…" value={q} onChange={(e) => setQ(e.target.value)} data-testid="library-tags-search" />
       </div>
       <ul className="lib-tag-list" data-testid="library-tags-list">
         {shown.map((t) => (
-          <li key={t} data-testid="library-tag" data-tag={t}>
+          <li key={t} data-testid="library-tag" data-tag={t} data-remembered={remembered.has(t) ? '1' : '0'} data-count={counts.get(t) ?? 0}>
             {edit?.from === t ? (
               <form className="row" onSubmit={(e) => { e.preventDefault(); startRename(t, edit.to) }}>
                 <input autoFocus className="grow" value={edit.to} onChange={(e) => setEdit({ from: t, to: e.target.value })} aria-label={`New name for ${t}`} data-testid="library-tag-rename-input"
@@ -415,8 +429,12 @@ function LibraryTags({ onDirty }: { onDirty: () => void }) {
               </form>
             ) : (<>
               <span className="grow lib-tag-name">{t}</span>
-              <small className="muted" data-testid="library-tag-count">{counts.get(t) ? `${counts.get(t)} photo${counts.get(t) === 1 ? '' : 's'}` : 'not on a photo yet'}</small>
-              {(counts.get(t) ?? 0) > 0 && (!personOnly(t) || personFor(t)) && <button type="button" className="btn small" data-testid="library-tag-rename" onClick={() => setEdit({ from: t, to: personOnly(t) ? personFor(t)!.name : t })} aria-label={`Rename ${t}`}>Rename</button>}
+              {!remembered.has(t) && <small className="badge" data-testid="library-tag-hidden" title="You removed this tag from the list; it's still on loaded photos but isn't suggested">not suggested</small>}
+              <small className="muted" data-testid="library-tag-count">{countText(t)}</small>
+              {(!personOnly(t) || personFor(t) || !(counts.get(t) ?? 0)) && <button type="button" className="btn small" data-testid="library-tag-rename" onClick={() => setEdit({ from: t, to: isPerson(t) ? personFor(t)!.name : t })} aria-label={`Rename ${t}`}>Rename</button>}
+              {remembered.has(t)
+                ? <button type="button" className="btn small" data-testid="library-tag-remove" onClick={() => setRemoveAsk(t)} aria-label={`Remove ${t} from the list`}>Remove…</button>
+                : <button type="button" className="btn small" data-testid="library-tag-restore" onClick={() => lib.rememberTags([t], true)} aria-label={`Suggest ${t} again`}>Suggest again</button>}
             </>)}
           </li>
         ))}
@@ -428,20 +446,38 @@ function LibraryTags({ onDirty }: { onDirty: () => void }) {
         e.preventDefault()
         const n = resolveTagName(adding, all)
         if (!n) return
-        if (counts.has(n)) { lib.toast(`“${n}” is already in your list`); setAdding(''); return }
+        if (remembered.has(n) || customNames.has(n)) { lib.toast(`“${n}” is already in your list`); lib.rememberTags([n], true); setAdding(''); return }
+        if (counts.has(n)) { lib.rememberTags([n], true); lib.toast(`“${n}” is suggested again`, 'ok'); setAdding(''); return }
         setBusy(true); onDirty()
-        try { await lib.addCustomLabel(n, '') } finally { setBusy(false); setAdding('') }
+        try { lib.rememberTags([n], true); await lib.addCustomLabel(n, '') } finally { setBusy(false); setAdding('') }
       }}>
         <input className="grow" placeholder="Add a tag to the list…" value={adding} onChange={(e) => setAdding(e.target.value)} data-testid="library-tags-add-input" />
         <button className="btn" disabled={busy || !adding.trim()} data-testid="library-tags-add">{busy ? 'Adding…' : 'Add to list'}</button>
       </form>
       {ask && <RenameConfirm {...ask} onCancel={() => setAsk(null)} onConfirm={async () => { const a = ask; setAsk(null)
-        if (a.personId) { await ppl.rename(a.personId, a.typed!); lib.toast(`Renamed person “${a.from}” to “${a.typed}”`, 'ok') } else await doRename(a.from, a.to, a.ids) }} />}
+        if (a.personId) { lib.renameRememberedTag(a.from, a.to); await ppl.rename(a.personId, a.typed!); lib.toast(`Renamed person “${a.from}” to “${a.typed}”`, 'ok') } else await doRename(a.from, a.to, a.ids) }} />}
+      {removeAsk && (() => {
+        const t = removeAsk
+        const ids = lib.photos.filter((p) => p.tags.some((x) => x.name === t && x.source !== 'person')).map((p) => p.id)
+        const customId = customNames.get(t)
+        const forget = async (fromPhotos: boolean) => {
+          setRemoveAsk(null)
+          lib.forgetTags([t])
+          if (customId) await lib.removeCustomLabel(customId)
+          if (fromPhotos && ids.length) await lib.removeTags(ids, [t])
+          lib.toast(fromPhotos && ids.length ? `Removed “${t}” from the list and from ${ids.length} photo(s)` : `Removed “${t}” from the list — photos keep it`, 'ok')
+        }
+        return <RemoveTagConfirm name={t} photos={ids.length} person={isPerson(t) || (counts.get(t) ?? 0) > ids.length} detection={!!customId}
+          onCancel={() => setRemoveAsk(null)} onListOnly={() => void forget(false)} onAlsoPhotos={() => void forget(true)} />
+      })()}
     </section>
   )
 }
 
-function RenameConfirm({ from, to, ids, onCancel, onConfirm }: { from: string; to: string; ids: string[]; onCancel: () => void; onConfirm: () => void }) {
+/** 1.0.35: remove a tag from the remembered list — list only (default), or also from the loaded photos that have it. */
+function RemoveTagConfirm({ name, photos, person, detection, onCancel, onListOnly, onAlsoPhotos }: {
+  name: string; photos: number; person: boolean; detection: boolean; onCancel: () => void; onListOnly: () => void; onAlsoPhotos: () => void
+}) {
   const cancelRef = useRef<HTMLButtonElement>(null)
   useEffect(() => {
     cancelRef.current?.focus()
@@ -449,12 +485,42 @@ function RenameConfirm({ from, to, ids, onCancel, onConfirm }: { from: string; t
     window.addEventListener('keydown', k, true)
     return () => window.removeEventListener('keydown', k, true)
   }, [onCancel])
-  const merge = looseTagKey(from) === looseTagKey(to)
+  return (
+    <div className="modal sheet" role="alertdialog" aria-modal="true" aria-labelledby="rmtag-title" data-testid="remove-tag-confirm">
+      <div className="sheet-card">
+        <h2 id="rmtag-title">Remove “{name}” from your tag list?</h2>
+        <p data-testid="remove-tag-explain"><b>Remove from list</b> only stops suggesting it in the Add a tag boxes. {photos
+          ? <>It stays on the {photos} loaded photo{photos === 1 ? '' : 's'} that have it (and in Dropbox) unless you choose <b>Also remove from {photos} photo{photos === 1 ? '' : 's'}</b>.</>
+          : <>No photo loaded in the app has it, and no photo is changed.</>}
+          {person ? ' People names stay on their photos — rename or remove a person on the People page.' : ''}
+          {detection ? ' It is also taken off Your detection tags, so new photos are no longer tagged with it automatically.' : ''}
+          {' '}Adding it to a photo again puts it back on the list.</p>
+        <div className="row wrap" style={{ justifyContent: 'flex-end', gap: 8 }}>
+          <button type="button" ref={cancelRef} className="btn" data-testid="remove-tag-cancel" onClick={onCancel}>Cancel</button>
+          <button type="button" className="btn primary" data-testid="remove-tag-list-only" onClick={onListOnly}>Remove from list</button>
+          {photos > 0 && <button type="button" className="btn danger" data-testid="remove-tag-photos" onClick={onAlsoPhotos}>Also remove from {photos} photo{photos === 1 ? '' : 's'}</button>}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function RenameConfirm({ from, to, ids, personId, exists, onCancel, onConfirm }: { from: string; to: string; ids: string[]; personId?: string; exists?: boolean; onCancel: () => void; onConfirm: () => void }) {
+  const cancelRef = useRef<HTMLButtonElement>(null)
+  useEffect(() => {
+    cancelRef.current?.focus()
+    const k = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.stopPropagation(); e.preventDefault(); onCancel() } }
+    window.addEventListener('keydown', k, true)
+    return () => window.removeEventListener('keydown', k, true)
+  }, [onCancel])
+  const merge = !!exists || looseTagKey(from) === looseTagKey(to)
   return (
     <div className="modal sheet" role="alertdialog" aria-modal="true" aria-labelledby="rename-title" data-testid="rename-confirm">
       <div className="sheet-card">
         <h2 id="rename-title">Rename “{from}” to “{to}”?</h2>
-        <p>{merge ? `“${to}” already exists — this merges them. ` : ''}It changes the tag on {ids.length} photo{ids.length === 1 ? '' : 's'} in Photo Tagger and, for Dropbox photos, on the files' Dropbox tags.</p>
+        <p data-testid="rename-explain">{merge ? `“${to}” already exists — this merges them. ` : ''}{ids.length
+          ? `It changes the tag on ${ids.length} photo${ids.length === 1 ? '' : 's'} in Photo Tagger and, for Dropbox photos, on the files' Dropbox tags. Your tag list suggests “${to}” instead of “${from}”.`
+          : personId ? 'It renames the person.' : `It isn't on any photo loaded in the app, so only your tag list changes: “${to}” is suggested instead of “${from}”.`}</p>
         <div className="row wrap" style={{ justifyContent: 'flex-end', gap: 8 }}>
           <button type="button" ref={cancelRef} className="btn" data-testid="rename-cancel" onClick={onCancel}>Cancel</button>
           <button type="button" className="btn primary" data-testid="rename-confirm-btn" onClick={onConfirm}>Rename</button>

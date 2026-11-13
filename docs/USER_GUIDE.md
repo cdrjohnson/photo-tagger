@@ -100,7 +100,7 @@ If the app is closed in the middle of a folder import, the next time you open it
 
 The first time, the app downloads its tagging model (about 64 MB) – a progress bar shows this. It is stored in the browser, so this only happens once. Photos you add again later (same name, size and date) are skipped as duplicates.
 
-While a photo is being processed its tile shows *tagging…*; tags appear a moment later. Videos carry a teal **▶ video** badge in the tile's top-right corner (above any *duplicate* or *blurry/dark/bright* badge); photos have no badge.
+While a photo is being processed its tile shows *tagging…*; tags appear a moment later. Videos carry a teal **▶ video** badge in the tile's top-right corner (above any *duplicate* or *blurry/dark/bright* badge — the quality badges only show while that Photo metadata toggle is on); photos have no badge.
 
 ## 2. What the tags mean
 
@@ -261,13 +261,28 @@ Results stay in a searchable list, with **Only missing tags / errors** to focus 
 
 ### Tags (the vocabulary)
 
-**Tags in your library** lists every tag on the photos currently in the app. If there are none it says **“No tags on your photos yet.”** It adds a short note when automatic tags are turned off, since new photos then only get the tags you add or the ones they already have in Dropbox. **“No tags match.”** only appears when your search finds nothing.
+**Tags in your library** lists every tag you've used (1.0.35: see *Remembered tags* below). If there are none it says **“No tags on your photos yet.”** It adds a short note when automatic tags are turned off, since new photos then only get the tags you add or the ones they already have in Dropbox. **“No tags match.”** only appears when your search finds nothing.
 ![Tags](images/desktop-labels.png)
 
 Settings → **Tags** has two cards on one page. **Tags in your library** (first card, *On your photos*) lists **every** tag already on your photos — people, your own, detected, Dropbox, date/camera and quality tags — A–Z with how many photos have each, plus tags you've added to the list but not used yet. The whole list is shown; just scroll the Settings page (there is no small inner box to scroll). Search it to review your tags or spot near-duplicates; **Add to list** puts a new tag in the add-tag suggestions (and lets detection look for it); **Rename** changes a tag on every photo that has it (and in Dropbox) after you confirm — renaming to a close spelling of another tag ("family trip" → `family_trip`) merges the two. **Renaming a person's tag** renames that person (same as on the People page) and updates their photos; renaming to an existing person's name merges them. Reset detection list never changes tags on your photos.
 
+#### Remembered tags (1.0.35)
+
+Photo Tagger now **remembers every tag you've used**, so the **Add a tag** box (one photo, or **Tags…** for a selection) and **Tags in your library** keep offering them even when the photos that had them are no longer loaded:
+
+- tags on photos you **Removed from app** (and on photos removed earlier — their tag files in Dropbox are read when the app starts),
+- **People** names, even when none of their photos is loaded,
+- tags on photos in the app (yours, detected, Dropbox, photo info) and your own list entries.
+
+The list is kept on this device and, with Dropbox connected, in `/.photo-tagger/tags.json` (next to `removed.json` and `people.json`), so it survives updates, restarts, reinstalls and is shared by your other devices. The Add a tag box shows the **whole** list (scroll it, or type to narrow it — there's no 300-tag limit any more).
+
+Each row in **Tags in your library** shows how many photos **loaded in the app** have it — **“0 loaded photos · remembered”** means it's only remembered (for example from removed photos). To tidy the list — say someone typed `birtday` or a near-duplicate:
+
+- **Rename** — renames it in the list and on every loaded photo that has it (and their Dropbox tags). Renaming to a close spelling of another tag merges the two. If no loaded photo has it, only the list changes (the confirmation says so).
+- **Remove…** — asks first (Cancel is focused). **Remove from list** only stops suggesting it; photos keep it (rows still on loaded photos then show **not suggested** with **Suggest again**). **Also remove from N photos** takes it off those loaded photos too. A tag you added to the list as a detection tag is also taken off *Your detection tags*. Typing the tag on a photo again puts it back on the list.
+
 The second card, **Detection list** (*What the app can find*), holds the tags Photo Tagger *can* detect automatically — not the tags already on your photos (the same word, e.g. `beach`, can appear in both). You can:
-- **Photo metadata** (first group): **Year**, **Camera**, **Geotagged**, **Blurry**, **Dark**, **Bright** — all on by default. Switch one off and that tag is no longer added, and **Re-tag library** / **Re-run tagging** removes it from existing photos; switch it back on and re-tag to re-apply it. Closing Settings only saves your list — it does not change existing photos. Dates, camera, GPS, sorting, the detail panel, the quality badges and the quality filter keep working either way.
+- **Photo metadata** (first group): **Year**, **Camera**, **Geotagged**, **Blurry**, **Dark**, **Bright** — all on by default. Switch one off and that tag is no longer added, and **Re-tag library** / **Re-run tagging** removes it from existing photos; switch it back on and re-tag to re-apply it. Closing Settings only saves your list — it does not change existing photos. Dates, camera, GPS, sorting and the quality filter keep working either way. Since 1.0.35, switching **Blurry**, **Dark** or **Bright** off also hides that warning badge in the photo tile's corner (and the *(blurry)/(dark)/(bright)* note in the detail panel) right away; switch it on to show it again.
 - **Turn all off** (1.0.32, under *All automatic tags* at the top of the card) switches **every** automatic tag off in one go — the whole detection list, your own detection tags and all Photo metadata toggles. It saves right away and applies to **new photos only**: photos already in the library keep their tags (use **Re-tag library now** if you want them updated), and tags you added yourself and people's names are never touched. While everything is off the card says **“Automatic tags are off — new photos are added with no automatic tags.”** and offers **Restore previous** (brings back exactly the selection you had before Turn all off) and **Turn all on** (everything on). Face recognition (People) isn't an automatic tag and stays as set.
 - **Switch tags off** you don't want (for example `wedding`). Your own detection tags have a tick box too.
 - **Add a detection tag**: type a name ("lighthouse", "bike race", "my dog Rex") and, if you like, a short description such as *a photo of a lighthouse by the sea* – a good description improves accuracy. The first custom tag downloads a small text model (about 72 MB, once).

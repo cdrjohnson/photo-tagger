@@ -5,6 +5,7 @@ import { getBlob } from '../storage'
 import { fetchDropboxOriginal, isDropboxVideo } from '../dropbox'
 import type { Photo } from '../types'
 import { TagInput } from './TagInput'
+import { qualityWarnings } from '../tags'
 import { RemoveConfirm } from './RemoveConfirm'
 import { DeleteDropboxConfirm } from './DeleteDropbox'
 import { usePeople } from '../people'
@@ -27,6 +28,8 @@ export function Detail({ list, index, onIndex, onClose, allTags }: {
   const [delAsk, setDelAsk] = useState(false)
   const ppl = usePeople()
   const p = list[index]
+  // 1.0.35: quality labels follow the Photo metadata toggles (Settings → Tags), like the tile badges
+  const warn = p ? qualityWarnings(p, lib.settings.disabledMetaTags ?? []) : []
   const url = useViewUrl(p?.id)
 
   const [zoom, setZoom] = useState(1)
@@ -284,8 +287,8 @@ export function Detail({ list, index, onIndex, onClose, allTags }: {
               ? <a href={`https://www.openstreetmap.org/?mlat=${p.gps.lat}&mlon=${p.gps.lon}#map=14/${p.gps.lat}/${p.gps.lon}`} target="_blank" rel="noreferrer noopener" data-testid="gps">{p.gps.lat.toFixed(4)}, {p.gps.lon.toFixed(4)}</a>
               : 'No GPS data'}</dd>
             <dt>Size</dt><dd>{p.width} × {p.height} · {fmtSize(p.size)}</dd>
-            <dt>Sharpness</dt><dd>{p.quality.sharpness}{p.quality.blurry ? ' (blurry)' : ''}</dd>
-            <dt>Brightness</dt><dd>{Math.round(p.quality.brightness)} / 255{p.quality.dark ? ' (dark)' : p.quality.bright ? ' (bright)' : ''}</dd>
+            <dt>Sharpness</dt><dd data-testid="detail-sharpness">{p.quality.sharpness}{warn.includes('blurry') ? ' (blurry)' : ''}</dd>
+            <dt>Brightness</dt><dd data-testid="detail-brightness">{Math.round(p.quality.brightness)} / 255{warn.includes('dark') ? ' (dark)' : warn.includes('bright') ? ' (bright)' : ''}</dd>
             <dt>Faces</dt><dd data-testid="face-count">{p.facesScanned ? p.faceCount ?? 0 : 'not checked'}</dd>
             <dt>Source</dt><dd>{p.source === 'dropbox' ? 'Dropbox' : 'This device'}</dd>
             {p.dropbox && <><dt>Dropbox path</dt><dd data-testid="dropbox-path">{p.dropbox.path}</dd></>}

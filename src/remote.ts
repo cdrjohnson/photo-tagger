@@ -3,6 +3,7 @@
  * and persists tags / faces / embeddings as JSON sidecars under /.photo-tagger/meta/ in the user's Dropbox.
  * Nothing about these photos is written to IndexedDB or the desktop library folder.
  */
+import { cleanTagMemory, emptyTagMemory, mergeTagMemory, rememberTags, sameTagMemory, type TagMemory } from './tagMemory'
 import { activeDropbox, isNotFoundError, isTransientDropboxError, META_ROOT, toDropboxTagText, type DropboxClient } from './dropbox'
 import type { Face, Person, Photo } from './types'
 import { addTag, normTag, removeTag, repairPhotoTags } from './tags'
@@ -32,6 +33,31 @@ function applyRemoteRemovals(p: Photo, gone: string[]): Photo {
 
 export const metaPath = (p: { dropbox?: { id: string } }) => `${META_ROOT}/meta/${p.dropbox!.id.replace(/^id:/, '').replace(/[^A-Za-z0-9_-]/g, '_')}.json`
 const PEOPLE_PATH = `${META_ROOT}/people.json`
+/** 1.0.35: remembered tags (every tag ever used — also on photos removed from the app), shared by your devices */
+const TAGS_PATH = `${META_ROOT}/tags.json`
+let tagMemory: TagMemory = emptyTagMemory()
+let tagMemoryDirty = false
+const tagMemoryListeners = new Set<(m: TagMemory) => void>()
+/** called when Dropbox's copy (other devices) brought something new */
+export const onRemoteTagMemory = (fn: (m: TagMemory) => void) => { tagMemoryListeners.add(fn); return () => { tagMemoryListeners.delete(fn) } }
+export const remoteTagMemory = () => tagMemory
+/** Queue this device's remembered tags for Dropbox (merged with Dropbox's copy when written; never shrinks it). */
+export function setTagMemory(m: TagMemory) {
+  const merged = mergeTagMemory(tagMemory, m)
+  if (merged === tagMemory && tagMemoryLoaded) return
+  tagMemory = merged; tagMemoryDirty = true; schedule(); persistQueue()
+}
+let tagMemoryLoaded = false
+const removedTagNames = new Set<string>()
+async function writeTagMemory(c: DropboxClient) {
+  const cur = await c.downloadRaw(TAGS_PATH).then((b) => b?.text()).catch(() => null)
+  let theirs = emptyTagMemory()
+  try { theirs = cleanTagMemory(cur ? JSON.parse(cur).tags : null) } catch { /* unreadable: ours replaces it */ }
+  const merged = mergeTagMemory(tagMemory, theirs)
+  if (cur && sameTagMemory(merged, theirs)) { tagMemory = merged; return }
+  await c.writeMeta(TAGS_PATH, JSON.stringify({ app: 'photo-tagger', version: 1, tags: merged }))
+  if (merged !== tagMemory) { tagMemory = merged; tagMemoryListeners.forEach((f) => f(merged)) }
+}
 
 export const isRemotePhoto = (p: Photo | undefined) => !!p?.dropbox && !p.hasOriginal && p.source === 'dropbox'
 // 1.0.34: a photo removed from the app can stay in memory (hidden) until its queued tag saves have reached Dropbox
@@ -156,7 +182,7 @@ function missingList(): MissingFile[] {
   return [...missing.values()].filter((m) => photos.has(m.id) && !hide.has(m.id)).sort((a, b) => a.name.localeCompare(b.name))
 }
 /** Photos with edits not yet confirmed in Dropbox (used to warn before closing). */
-export const pendingWrites = () => new Set([...dirty, ...inflight]).size + (peopleDirty ? 1 : 0) + removals.size
+export const pendingWrites = () => new Set([...dirty, ...inflight]).size + (peopleDirty ? 1 : 0) + (tagMemoryDirty ? 1 : 0) + removals.size
 let statusRaf = 0
 function emitStatus() {
   if (!dirty.size && !inflight.size) batch.clear()
@@ -422,10 +448,14 @@ export function flush(force = true): Promise<void> {
       try { await c.writeMeta(PEOPLE_PATH, JSON.stringify({ app: 'photo-tagger', version: 1, people })) }
       catch (e) { peopleDirty = true; if (!classify(e).transient) onWriteError?.(e) }
     }
+    if (tagMemoryDirty) {
+      tagMemoryDirty = false
+      try { await writeTagMemory(c) } catch { tagMemoryDirty = true }
+    }
     persistQueue(); emitStatus()
     const rmNext = [...removals.values()].map((r) => r.next ?? Date.now()).filter((t) => t !== Infinity)
-    if (dirty.size || peopleDirty || rmNext.length || removedLogDirty) {
-      const next = Math.min(...[...dirty].map((id) => retry.get(id)?.next ?? Date.now()), ...rmNext, peopleDirty || removedLogDirty ? Date.now() + queueBackoff(1) : Infinity)
+    if (dirty.size || peopleDirty || rmNext.length || removedLogDirty || tagMemoryDirty) {
+      const next = Math.min(...[...dirty].map((id) => retry.get(id)?.next ?? Date.now()), ...rmNext, peopleDirty || removedLogDirty || tagMemoryDirty ? Date.now() + queueBackoff(1) : Infinity)
       schedule(Math.max(50, next - Date.now()))
     }
   })
@@ -822,7 +852,7 @@ async function thumbSlot<T>(fn: () => Promise<T>): Promise<T> {
 
 /** Forget everything held in memory (on disconnect / app wipe). Dropbox is untouched. */
 export function clearMemory() {
-  photos.clear(); thumbs.clear(); views.clear(); embeddings.clear(); faces.clear(); people = []; dirty.clear(); peopleDirty = false; syncedKey.clear(); owned.clear(); missing.clear(); relinked.clear(); repaired.clear(); removals.clear(); rmBatch.clear(); trBatch.clear(); removedLog = []; removedIds.clear(); removedLogDirty = false; retry.clear(); failures.clear(); inflight.clear(); batch.clear(); emitStatus()
+  photos.clear(); thumbs.clear(); views.clear(); embeddings.clear(); faces.clear(); people = []; tagMemory = emptyTagMemory(); tagMemoryDirty = false; tagMemoryLoaded = false; dirty.clear(); peopleDirty = false; syncedKey.clear(); owned.clear(); missing.clear(); relinked.clear(); repaired.clear(); removals.clear(); rmBatch.clear(); trBatch.clear(); removedLog = []; removedIds.clear(); removedLogDirty = false; retry.clear(); failures.clear(); inflight.clear(); batch.clear(); emitStatus()
 }
 
 /** Read every sidecar from Dropbox into memory. */
@@ -853,7 +883,10 @@ export async function loadFromDropbox(c: DropboxClient = activeDropbox()!) {
             queueRemoval({ id: j.photo.id, file: j.photo.dropbox.id, name: j.photo.name, meta: metaPath(j.photo), tags: [], trash: true })
             continue
           }
-          if (!queuedIds.has(j.photo.id) || removals.has(j.photo.id)) continue
+          if (!queuedIds.has(j.photo.id) || removals.has(j.photo.id)) {
+            for (const t of Array.isArray(j.photo.tags) ? j.photo.tags : []) if (t?.name) removedTagNames.add(String(t.name))
+            continue
+          }
         }
         const raw: Photo = { ...j.photo, hasOriginal: false, source: 'dropbox', relPath: undefined }
         // 1.0.28 repair: stray spaces in tag names, duplicates, old long camera tag → saved later via the paced queue
@@ -872,11 +905,17 @@ export async function loadFromDropbox(c: DropboxClient = activeDropbox()!) {
   faces.clear(); nextFaces.forEach((v, k) => faces.set(k, v))
   embeddings.clear(); nextEmb.forEach((v, k) => embeddings.set(k, v))
   try { people = pj ? (JSON.parse(pj).people ?? []) : [] } catch { people = [] }
+  // 1.0.35 remembered tags from Dropbox (merged into anything this device queued meanwhile)
+  const tj = await c.downloadRaw(TAGS_PATH).then((b) => b?.text()).catch(() => null)
+  try { tagMemory = mergeTagMemory(cleanTagMemory(tj ? JSON.parse(tj).tags : null), tagMemory) } catch { /* unreadable: rewritten on next save */ }
+  tagMemoryLoaded = true
+  // tags of photos removed from the app whose tag files are still in Dropbox: remembered too
+  if (removedTagNames.size) { const before = tagMemory; tagMemory = rememberTags(tagMemory, removedTagNames); removedTagNames.clear(); if (tagMemory !== before) tagMemoryDirty = true }
   resumePersisted()
   persistRemovals()
   // removed photos loaded only to finish queued saves: nothing queued for them after all → forget them again
   for (const id of [...photos.keys()]) if (removedIds.has(id) && !dirty.has(id)) purge(id)
-  if (removals.size || removedLogDirty) { emitStatus(); schedule(300) }
+  if (removals.size || removedLogDirty || tagMemoryDirty) { emitStatus(); schedule(300) }
 }
 /** Tell listeners (People) that remote data changed — call after the photo list is refreshed. */
 export const notifyRemote = emit
